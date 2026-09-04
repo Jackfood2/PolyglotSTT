@@ -700,10 +700,10 @@ class MoonshineGUI(ctk.CTk):
                      ).grid(row=2, column=0, sticky="w", padx=(12, 4), pady=(2, 2))
         try:
             from srt import BURN_SPEED_LABELS as _BSL
-            _speed_vals = [BURN_SPEED_LABELS[k] for k in
+            _speed_vals = [_BSL[k] for k in
                            ("match", "fast", "fastest",
                             "nvenc_draft", "nvenc_turbo", "nvenc_balanced")
-                           if k in BURN_SPEED_LABELS]
+                           if k in _BSL]
         except Exception:
             _speed_vals = ["Match size (2-pass x264)", "Fast (1-pass x264)",
                            "Fastest (ultrafast 1-pass)"]
