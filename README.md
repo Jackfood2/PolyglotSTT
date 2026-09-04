@@ -138,9 +138,13 @@ records the actual outcome so the next estimate is better. The bar keeps
 moving even through Whisper's long single pass and slow Canary chunks.
 
 **Burn-in** — with SRTs generated, *Burn SRT into MP4* hardcodes each
-queued video's subtitles into a size-matched `.burned.mp4` next to it
-(same folder or the chosen output folder). Needs the SRT first or the
-file is skipped with a notice. Drag *Subtitle size*, hit *Preview Frame*
+queued video's subtitles into a `.burned.mp4` next to it (same folder or
+the chosen output folder). Needs the SRT first or the file is skipped
+with a notice. *Burn speed* offers **Match size (2-pass)** — exact
+(±1–3%, slow, two full encodes), **Fast (1-pass)** — ~half the time at
+~±10% size drift, or **Fastest (ultrafast 1-pass)** — several times
+faster but visibly softer (fine for a quick check, not for keeps; CPU
+threads come from the slider). Drag *Subtitle size*, hit *Preview Frame*
 to see one burned frame instantly (also needs that file's SRT), then run
 the full encode. No SRT yet? Preview auto-transcribes just the
 *Sample from / Sample len* slice (e.g. 15s @ 0:30) with the current live

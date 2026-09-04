@@ -620,7 +620,7 @@ class MoonshineGUI(ctk.CTk):
         self.srt_preview_btn.grid(row=0, column=3, sticky="e", padx=(6, 12), pady=(10, 2))
         ctk.CTkLabel(style_card, text="Preview burns one frame with the current size - instant check before the full encode",
                      font=("Segoe UI", 9), text_color=FG_DIM, wraplength=420,
-                     justify="left").grid(row=2, column=0, columnspan=4,
+                     justify="left").grid(row=3, column=0, columnspan=4,
                                           sticky="w", padx=12, pady=(2, 10))
         self._srt_preview_cb = None
         self._preview_running = False
@@ -644,6 +644,26 @@ class MoonshineGUI(ctk.CTk):
             values=["10s", "15s", "30s", "60s"], width=80,
             fg_color=BG_INPUT, button_color=ACCENT)
         self.sample_len_menu.grid(row=1, column=3, sticky="e", padx=(4, 12), pady=(2, 2))
+        # Burn speed: exact size (2-pass) vs fast / fastest single pass.
+        ctk.CTkLabel(style_card, text="Burn speed:",
+                     font=("Segoe UI", 10), text_color=FG_DIM
+                     ).grid(row=2, column=0, sticky="w", padx=(12, 4), pady=(2, 2))
+        try:
+            from srt import BURN_SPEED_LABELS as _BSL
+            _speed_vals = [BURN_SPEED_LABELS[k] for k in ("match", "fast", "fastest")
+                           if k in BURN_SPEED_LABELS]
+        except Exception:
+            _speed_vals = ["Match size (2-pass)", "Fast (1-pass)",
+                           "Fastest (ultrafast 1-pass)"]
+        if not _speed_vals:
+            _speed_vals = ["Match size (2-pass)"]
+        self.burn_speed_var = ctk.StringVar(value=_speed_vals[0])
+        self.burn_speed_menu = ctk.CTkOptionMenu(
+            style_card, variable=self.burn_speed_var,
+            values=_speed_vals, width=220,
+            fg_color=BG_INPUT, button_color=ACCENT)
+        self.burn_speed_menu.grid(row=2, column=1, columnspan=3, sticky="w",
+                                  padx=4, pady=(2, 2))
 
         # Progress card
         prog_card = ctk.CTkFrame(scroll, fg_color=BG_CARD, corner_radius=12)
@@ -1402,9 +1422,14 @@ class MoonshineGUI(ctk.CTk):
                 cpu = max(1, int(round(float(self.srt_cpu_slider.get()))))
             except Exception:
                 cpu = 1
+            try:
+                from srt import BURN_SPEED_IDS as _BSI
+                speed = _BSI.get((self.burn_speed_var.get() or "").strip(), "match")
+            except Exception:
+                speed = "match"
             threading.Thread(target=self._srt_burn_cb,
                              args=(paths, out_dir, cpu,
-                                   self.get_burn_font_size()),
+                                   self.get_burn_font_size(), speed),
                              daemon=True).start()
 
     def _on_srt_open_folder(self):

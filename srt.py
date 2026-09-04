@@ -1373,6 +1373,34 @@ def default_burn_path(src: Path, out_dir: Optional[str]) -> Path:
     return src.parent / (src.stem + BURN_SUFFIX)
 
 
+# Burn speed modes: id -> (x264 preset, passes). Two-pass ABR is the only
+# way to land file size within ~1-3%; 1-pass ABR is ~half the time but
+# drifts (~±10%). Faster presets trade sharpness for speed at the same
+# size (ultrafast is visibly softer - fine for a quick check, not for
+# keeps). No NVENC option on purpose: GPU rate control cannot promise the
+# size match this feature exists for.
+BURN_SPEEDS = {
+    "match": ("medium", 2),
+    "fast": ("veryfast", 1),
+    "fastest": ("ultrafast", 1),
+}
+BURN_SPEED_LABELS = {
+    "match": "Match size (2-pass)",
+    "fast": "Fast (1-pass)",
+    "fastest": "Fastest (ultrafast 1-pass)",
+}
+BURN_SPEED_IDS = {v: k for k, v in BURN_SPEED_LABELS.items()}
+
+
+def resolve_burn_speed(speed) -> tuple:
+    """(preset, passes) for a speed id; unknown/empty -> exact-match mode."""
+    try:
+        key = str(speed or "match").strip().lower()
+    except Exception:
+        key = "match"
+    return BURN_SPEEDS.get(key, BURN_SPEEDS["match"])
+
+
 def probe_media(path, ffmpeg: str) -> dict:
     """ffprobe-less probe via `ffmpeg -i` stderr (imageio-ffmpeg ships no
     ffprobe binary). Raises RuntimeError when duration/size unreadable."""
@@ -1765,13 +1793,16 @@ def _burn_popen_wait(proc, total_frames: int, base: float, span: float,
 def burn_subtitles(src_path: str, srt_path: str, out_path: str, ffmpeg: str,
                    video_kbps: int, audio_kbps: int = 128,
                    audio_copy: bool = True, threads: int = 0,
-                   font_size: int = 18,
+                   font_size: int = 18, speed: str = "match",
                    progress_cb: Optional[Callable[[float, str], None]] = None,
                    log_cb: Optional[Callable[[str], None]] = None,
                    cancel_event: Optional[threading.Event] = None):
-    """Burn an SRT into a new MP4 with x264 two-pass at a fixed video bitrate
-    (size targeting lives in plan_burn_bitrates). Same resolution/fps as the
-    source. Returns (out_path, in_bytes, out_bytes)."""
+    """Burn an SRT into a new MP4 at a fixed video bitrate (size targeting
+    lives in plan_burn_bitrates). Same resolution/fps as the source.
+    speed: "match" (x264 medium 2-pass, size within ~1-3%), "fast"
+    (veryfast 1-pass, ~half the time, size within ~±10%), "fastest"
+    (ultrafast 1-pass, several times faster, visibly softer). Unknown
+    speeds fall back to "match". Returns (out_path, in_bytes, out_bytes)."""
     import tempfile as _tf
     src, srtp, out = Path(src_path), Path(srt_path), Path(out_path)
     if not srtp.exists():
@@ -1779,6 +1810,7 @@ def burn_subtitles(src_path: str, srt_path: str, out_path: str, ffmpeg: str,
     info = probe_media(src, ffmpeg)
     if not info.get("vcodec"):
         raise RuntimeError(f"no video stream to burn into: {src.name}")
+    preset, passes = resolve_burn_speed(speed)
     beta = EtaTracker("burn")
     beta.set_duration(info["duration"])
 
@@ -1799,11 +1831,10 @@ def burn_subtitles(src_path: str, srt_path: str, out_path: str, ffmpeg: str,
         # (quotes/brackets/unicode in real filenames) entirely.
         vf = stage_subtitles_filter(srtp, font_size, tmpd)
         vbps = max(100, int(video_kbps))
-        vbps = max(100, int(video_kbps))
         base = [ffmpeg, "-hide_banner", "-y", "-v", "info", "-i", str(src),
                 "-map", "0:v:0", "-map", "0:a:0?",
                 "-c:v", "libx264", "-b:v", f"{vbps}k",
-                "-preset", "medium", "-pix_fmt", "yuv420p",
+                "-preset", preset, "-pix_fmt", "yuv420p",
                 "-vf", vf]
         if threads and int(threads) > 0:
             base += ["-threads", str(int(threads))]
@@ -1816,31 +1847,44 @@ def burn_subtitles(src_path: str, srt_path: str, out_path: str, ffmpeg: str,
         else:
             base += ["-an"]
         passlog = str(tmpd / "x264pass")
-        if log_cb:
-            try:
-                log_cb(f"burn pass 1/2 (analysis, {vbps} kbps video)...")
-            except Exception:
-                pass
-        p1 = subprocess.Popen(base + ["-pass", "1", "-passlogfile", passlog,
-                                      "-f", "mp4", os.devnull],
-                              stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
-        _burn_popen_wait(p1, total_frames, 0.0, 0.45, _bprog,
-                         cancel_event, label="pass 1/2 ")
-        if log_cb:
-            try:
-                log_cb("burn pass 2/2 (final encode)...")
-            except Exception:
-                pass
         try:
             if out.exists():
                 out.unlink()
         except Exception:
             pass
-        p2 = subprocess.Popen(base + ["-pass", "2", "-passlogfile", passlog,
-                                      str(out)],
-                              stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
-        _burn_popen_wait(p2, total_frames, 0.45, 0.55, _bprog,
-                         cancel_event, label="pass 2/2 ")
+        if passes == 2:
+            if log_cb:
+                try:
+                    log_cb(f"burn pass 1/2 (analysis, {vbps} kbps video)...")
+                except Exception:
+                    pass
+            p1 = subprocess.Popen(base + ["-pass", "1", "-passlogfile", passlog,
+                                          "-f", "mp4", os.devnull],
+                                  stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+            _burn_popen_wait(p1, total_frames, 0.0, 0.45, _bprog,
+                             cancel_event, label="pass 1/2 ")
+            if log_cb:
+                try:
+                    log_cb("burn pass 2/2 (final encode)...")
+                except Exception:
+                    pass
+            p2 = subprocess.Popen(base + ["-pass", "2", "-passlogfile", passlog,
+                                          str(out)],
+                                  stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+            _burn_popen_wait(p2, total_frames, 0.45, 0.55, _bprog,
+                             cancel_event, label="pass 2/2 ")
+        else:
+            # Single ABR pass: ~half the time, size lands within ~±10%
+            # instead of ~1-3% (logged honestly, totals still reported).
+            if log_cb:
+                try:
+                    log_cb(f"burn single pass ({preset}, {vbps} kbps video, size approx)...")
+                except Exception:
+                    pass
+            p = subprocess.Popen(base + [str(out)],
+                                 stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+            _burn_popen_wait(p, total_frames, 0.0, 1.0, _bprog,
+                             cancel_event, label="")
         try:
             out_bytes = out.stat().st_size if out.exists() else 0
         except Exception:

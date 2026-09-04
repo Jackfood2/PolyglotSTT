@@ -56,6 +56,7 @@ DEFAULT_CONFIG = {
     "burn_font_size": 18,           # burned subtitle size (ASS units, 10-40)
     "burn_sample_start": "0:30",    # preview sample start (ss / mm:ss)
     "burn_sample_len": 15,          # preview sample length seconds (5-120)
+    "burn_speed": "match",          # match (2-pass) | fast (1-pass) | fastest (ultrafast 1-pass)
 }
 
 def load_local_config():
@@ -97,6 +98,13 @@ def apply_suffix(text: str, suffix: str) -> str:
     if suffix == "period_space":
         return text + ". "
     return text
+
+def _speed_label(speed_id: str) -> str:
+    try:
+        from srt import BURN_SPEED_LABELS
+        return BURN_SPEED_LABELS.get(speed_id, "Match size (2-pass)")
+    except Exception:
+        return "Match size (2-pass)"
 
 class MoonshineSTTApp:
     def __init__(self):
@@ -187,6 +195,9 @@ class MoonshineSTTApp:
             needs_save = True
         if not isinstance(self.config.get("burn_sample_start"), str):
             self.config["burn_sample_start"] = "0:30"
+            needs_save = True
+        if self.config.get("burn_speed") not in ("match", "fast", "fastest"):
+            self.config["burn_speed"] = "match"
             needs_save = True
         if needs_save:
             save_local_config(self.config)
@@ -285,6 +296,13 @@ class MoonshineSTTApp:
                         _bsl = f"{int(self.config.get('burn_sample_len', 15))}s"
                         if _bsl in ("10s", "15s", "30s", "60s"):
                             self.gui.sample_len_var.set(_bsl)
+                    except Exception:
+                        pass
+                    try:
+                        from srt import BURN_SPEED_LABELS as _BSL
+                        _bl = _BSL.get(self.config.get("burn_speed", "match"),
+                                       _BSL.get("match", "Match size (2-pass)"))
+                        self.gui.burn_speed_var.set(_bl)
                     except Exception:
                         pass
                     # SRT language dropdowns (only meaningful for Canary/Whisper)
@@ -1443,7 +1461,7 @@ class MoonshineSTTApp:
         return f"{int(v)}B"
 
     def _burn_start(self, input_paths, out_dir: str, cpu_workers: int,
-                    font_size: int = 0):
+                    font_size: int = 0, speed: str = "match"):
         # Same single-flight machinery as SRT: one heavy job at a time, same
         # Cancel button/event, same running UI state.
         with self._srt_lock:
@@ -1480,9 +1498,14 @@ class MoonshineSTTApp:
                     _fs = 18
                 _fs = max(10, min(40, _fs))
                 self.config["burn_font_size"] = _fs
+                _spd = str(speed or "").strip().lower()
+                if _spd not in ("match", "fast", "fastest"):
+                    _spd = "match"
+                self.config["burn_speed"] = _spd
                 save_local_config(self.config)
                 job = {"paths": paths, "out_dir": out_dir,
-                       "cpu_workers": int(cpu_workers), "font_size": _fs}
+                       "cpu_workers": int(cpu_workers), "font_size": _fs,
+                       "speed": _spd}
             self._srt_cancel.clear()
             if self.gui:
                 self.gui.after(0, lambda: self.gui.set_srt_running(True))
@@ -1492,7 +1515,7 @@ class MoonshineSTTApp:
                     0, f"Starting burn ({_n} file(s))..."))
                 self._gui_queue.put(
                     ("srt_log", f"Burn: {_n} file(s), {_cpu} threads (x264 multi-core), "
-                                f"size-match target"))
+                                f"{_speed_label(job.get('speed', 'match'))}"))
         except Exception as e:
             with self._srt_lock:
                 self._srt_busy = False
@@ -1528,6 +1551,7 @@ class MoonshineSTTApp:
                         str(src), str(srt_path), str(out_path), ffmpeg,
                         vbps // 1000, (abps // 1000) if not acopy else 128,
                         acopy, job["cpu_workers"], job["font_size"],
+                        job["speed"],
                         progress_cb=progress_cb, log_cb=log_cb,
                         cancel_event=self._srt_cancel)
 
