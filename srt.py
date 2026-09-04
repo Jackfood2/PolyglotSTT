@@ -22,14 +22,30 @@ from typing import Callable, Dict, List, Optional, Tuple
 import numpy as np
 
 
-# ---------------- ETA tracking (history baseline + live adaptive) ----------------
-# Aggregated baseline: per-engine totals persist in srt_eta.json so repeat
-# jobs predict from YOUR machine's measured speed, not guesses. The live
-# estimate then blends history with measured progress (trusting the measured
-# rate more as the job advances), so the countdown self-corrects.
+# ---------------- ETA tracking (history baseline, confident countdown) ----------------
+# Aggregated baseline: per-engine, per-LENGTH totals persist in srt_eta.json
+# so repeat jobs predict from YOUR machine's measured speed, not guesses.
+# Length matters because short clips are dominated by fixed overhead (model
+# load, ffmpeg extract, VAD) while long files converge on the true rate -
+# one global factor would mislead both. Buckets: s<60s, m<600s, l=rest.
+# The countdown commits to the estimate (linear to 99% / 0s, no hedging);
+# the ACTUAL outcome is recorded at completion, so the next estimate in
+# that bucket is better. Old flat-format files migrate automatically.
 ETA_PATH = Path(__file__).parent / "srt_eta.json"
 ETA_DEFAULTS = {"whisper": 1.0, "canary": 3.0, "moonshine": 0.3, "burn": 1.5}
+ETA_BUCKETS = (("s", 60.0), ("m", 600.0), ("l", float("inf")))
 _ETA_LOCK = threading.Lock()
+
+
+def _eta_bucket(audio_s) -> str:
+    try:
+        v = float(audio_s)
+    except Exception:
+        return "m"
+    for name, limit in ETA_BUCKETS:
+        if v < limit:
+            return name
+    return "l"
 
 
 def _load_eta_stats() -> Dict:
@@ -41,14 +57,37 @@ def _load_eta_stats() -> Dict:
         return {}
 
 
-def _eta_factor(key: str) -> float:
+def _bucket_entry(stats: Dict, key: str, bucket: Optional[str]):
+    """(entry_or_None, fell_back) - prefers the length bucket, then the
+    engine-wide aggregate, then legacy flat entries."""
     try:
-        stats = _load_eta_stats()
-        entry = stats.get(key) or stats.get((key or "").split(":")[0]) or {}
-        a = float(entry.get("audio") or 0)
-        p = float(entry.get("proc") or 0)
-        if a > 1.0 and p > 0:
-            return min(20.0, max(0.05, p / a))
+        node = stats.get(key) or {}
+        if not isinstance(node, dict):
+            return None, True
+        if bucket and isinstance(node.get(bucket), dict):
+            e = node[bucket]
+            if float(e.get("audio") or 0) > 1.0 and float(e.get("proc") or 0) > 0:
+                return e, False
+        all_e = node.get("all")
+        if isinstance(all_e, dict) and float(all_e.get("audio") or 0) > 1.0:
+            return all_e, True
+        # Legacy flat format: {"n":..,"audio":..,"proc":..} directly on key.
+        if float(node.get("audio") or 0) > 1.0:
+            return node, True
+    except Exception:
+        pass
+    return None, True
+
+
+def _eta_factor(key: str, duration=None) -> float:
+    try:
+        bucket = _eta_bucket(duration) if duration else None
+        entry, _fb = _bucket_entry(_load_eta_stats(), key, bucket)
+        if entry:
+            a = float(entry.get("audio") or 0)
+            p = float(entry.get("proc") or 0)
+            if a > 1.0 and p > 0:
+                return min(20.0, max(0.05, p / a))
     except Exception:
         pass
     base = (key or "").split(":")[0]
@@ -59,24 +98,33 @@ def _eta_factor(key: str) -> float:
 
 
 def record_srt_job(key: str, audio_s: float, proc_s: float):
-    """Fold one successful job into the aggregated baseline (atomic write)."""
+    """Fold one successful job into the aggregated baseline (atomic write),
+    updating both its length bucket and the engine-wide aggregate."""
     try:
         audio_s, proc_s = float(audio_s), float(proc_s)
     except Exception:
         return
     if not (audio_s >= 1.0 and proc_s >= 0.0) or not key:
         return
+    bucket = _eta_bucket(audio_s)
     with _ETA_LOCK:
         try:
             stats = _load_eta_stats()
-            e = stats.get(key) or {}
-            try:
-                e = {"n": int(e.get("n", 0)) + 1,
-                     "audio": float(e.get("audio", 0.0)) + audio_s,
-                     "proc": float(e.get("proc", 0.0)) + proc_s}
-            except Exception:
-                return
-            stats[key] = e
+            node = stats.get(key)
+            if not isinstance(node, dict):
+                node = {}
+            for slot in (bucket, "all"):
+                e = node.get(slot)
+                if not isinstance(e, dict):
+                    e = {"n": 0, "audio": 0.0, "proc": 0.0}
+                try:
+                    e = {"n": int(e.get("n", 0)) + 1,
+                         "audio": float(e.get("audio", 0.0)) + audio_s,
+                         "proc": float(e.get("proc", 0.0)) + proc_s}
+                except Exception:
+                    continue
+                node[slot] = e
+            stats[key] = node
             tmp = str(ETA_PATH) + ".tmp"
             with open(tmp, "w", encoding="utf-8") as f:
                 json.dump(stats, f, indent=1)
@@ -101,9 +149,10 @@ class ProgressPump:
     """Keeps bar/%/ETA alive across ONE blocking call (Whisper native pass,
     a slow Canary chunk) that otherwise freezes progress for minutes.
 
-    A daemon thread ticks prog() toward base+span asymptotically (never
-    reaching it - the real completion sets the true value). stop() is
-    idempotent; the pump never raises.
+    Committed linear countdown: advances toward base+99% of span over the
+    estimated seconds and HOLDS at 99% if the estimate is exceeded (never
+    backward, never past it - the real completion sets the true value).
+    A daemon thread ticks; stop() is idempotent; the pump never raises.
     """
 
     def __init__(self, prog, base: float, span: float, total_s: float,
@@ -131,18 +180,17 @@ class ProgressPump:
         return self
 
     def _tick(self):
-        import math as _math
         try:
             while not self._stop.wait(0.5):
                 try:
                     el = max(0.0, time.monotonic() - self._t0)
-                    frac = self._base + self._span * (
-                        1.0 - _math.exp(-3.0 * el / self._total))
-                    cap = self._base + self._span * 0.97
-                    self._prog(min(cap, frac),
+                    frac = self._base + self._span * min(el / self._total, 0.99)
+                    self._prog(min(self._base + self._span * 0.99, frac),
                                f"{self._label} ({int(el)}s)".strip())
                 except Exception:
                     pass
+        except Exception:
+            pass
         except Exception:
             pass
 
@@ -179,7 +227,10 @@ def _eta_key_for(engine_kind, arch=0) -> str:
 
 
 class EtaTracker:
-    """Remaining-time estimator: history baseline blended with live speed."""
+    """Remaining-time estimator: committed countdown from the bucketed
+    baseline. No mid-run hedging - the estimate is fixed once audio length
+    is known, counts linearly to 0, and the ACTUAL outcome is recorded for
+    the next aggregate."""
 
     def __init__(self, key: str):
         self.key = key or "job"
@@ -189,6 +240,7 @@ class EtaTracker:
         except Exception:
             self.factor = 1.0
         self.dur = None
+        self.total = None
 
     def set_duration(self, seconds):
         try:
@@ -196,6 +248,18 @@ class EtaTracker:
             self.dur = d if d > 0 else None
         except Exception:
             self.dur = None
+        if self.dur:
+            # Resolve the LENGTH-CLASS factor now (audio length just arrived).
+            try:
+                self.factor = float(_eta_factor(self.key, self.dur))
+            except Exception:
+                pass
+            try:
+                self.total = max(1.0, self.dur * max(0.05, self.factor))
+            except Exception:
+                self.total = None
+        else:
+            self.total = None
 
     def elapsed(self) -> float:
         try:
@@ -203,20 +267,15 @@ class EtaTracker:
         except Exception:
             return 0.0
 
-    def remaining(self, progress):
+    def remaining(self, progress=None):
+        el = self.elapsed()
+        if self.total:
+            return max(0.0, self.total - el)
         try:
             p = float(progress)
         except Exception:
             return None
-        el = self.elapsed()
-        if self.dur:
-            hist_total = self.dur * self.factor
-            if p > 0.03:
-                measured = el / max(p, 1e-6)
-                w = min(0.85, max(0.0, p * 1.5))
-                return max(0.0, (1.0 - w) * hist_total + w * measured - el)
-            return max(0.0, hist_total - el)
-        if p > 0.05:
+        if p is not None and p > 0.05:
             return max(0.0, el / max(p, 1e-6) - el)
         return None
 
