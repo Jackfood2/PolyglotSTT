@@ -981,9 +981,10 @@ class MoonshineGUI(ctk.CTk):
                     can_del = bool(it.get("downloaded")) and not bool(it.get("in_use"))
                     btn = ctk.CTkButton(
                         card, text="Delete", width=80, height=30,
-                        font=("Segoe UI", 11), fg_color="#2D3748",
-                        hover_color="#4A5568" if can_del else "#2D3748",
-                        text_color=FG_SECONDARY if can_del else FG_DIM,
+                        font=("Segoe UI", 11),
+                        fg_color=DANGER if can_del else "#2D3748",
+                        hover_color="#C0392B" if can_del else "#2D3748",
+                        text_color=FG_PRIMARY if can_del else FG_DIM,
                         state="normal" if can_del else "disabled",
                         command=lambda e=eng, k=it.get("kind"),
                                        i=it.get("id"), n=name,
