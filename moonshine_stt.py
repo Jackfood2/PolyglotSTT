@@ -106,7 +106,7 @@ class MoonshineSTTApp:
                 needs_save = True
         try:
             arch = int(self.config.get("model_arch", 5))
-            if arch not in (0,1,2,4,5):
+            if arch not in (0,1,2,3,4,5):
                 arch = 5
                 self.config["model_arch"] = 5
                 needs_save = True

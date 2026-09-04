@@ -46,13 +46,18 @@ WHISPER_SOURCE_LANGS = [
     "ar", "hi", "tr", "id", "uk", "vi", "th",
 ]
 # Downloadable sizes (faster-whisper Systran aliases; auto-fetched on first
-# use when online, then cached offline). NOTE: no turbo here - OpenAI
-# trained turbo on transcription data only, so it cannot translate.
+# use when online, then cached offline). Full multilingual ladder.
+# Deliberately NOT offered: large-v3-turbo/turbo (OpenAI excluded
+# translation from turbo training - it silently transcribes instead of
+# translating) and distil-*/.en variants (English-only).
 WHISPER_MODEL_CHOICES = {
     "Tiny (75MB, fastest)": "tiny",
     "Base (145MB)": "base",
     "Small (500MB)": "small",
     "Medium (1.5GB)": "medium",
+    "Large (3GB)": "large",
+    "Large v1 (3GB)": "large-v1",
+    "Large v2 (3GB)": "large-v2",
     "Large v3 (3GB, best)": "large-v3",
 }
 WHISPER_MODEL_CHOICES_REV = {v: k for k, v in WHISPER_MODEL_CHOICES.items()}

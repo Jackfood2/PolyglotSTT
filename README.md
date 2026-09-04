@@ -85,7 +85,7 @@ connection — grab them manually:
 |---|---|---|---|
 | Moonshine medium-streaming (default) + tiny-streaming | ~155 MB | fetched by `setup.bat` via `moonshine_voice.download` | `models_cache\download.moonshine.ai\` |
 | `nvidia/canary-1b` | ~3.9 GB | <https://huggingface.co/nvidia/canary-1b> — or drop a `canary-1b.nemo` file at `models_cache\canary-1b\canary-1b.nemo` (>100 MB is picked up automatically, fully offline) | `models_cache\canary-1b\` (+ `models_cache\huggingface\`, `models_cache\torch\`) |
-| `Systran/faster-whisper-large-v3` (+ tiny/base/small/medium) | 75 MB – 3 GB | <https://huggingface.co/Systran/faster-whisper-large-v3> (auto-downloaded by Faster-Whisper) — pick the size in the Live tab *Model* row when the Whisper engine is active; each size downloads once on first selection | `models_cache\whisper-models\` |
+| `Systran/faster-whisper-*` (tiny/base/small/medium/large/v1/v2/v3) | 75 MB – 3 GB | <https://huggingface.co/Systran/faster-whisper-large-v3> (auto-downloaded by Faster-Whisper) — pick the size in the Live tab *Model* row when the Whisper engine is active; each size downloads once on first selection. No Turbo offered: it cannot translate by training design; no distil/`.en` (English-only) | `models_cache\whisper-models\` |
 
 `ffmpeg` ships via the `imageio-ffmpeg` wheel (no system install needed).
 Everything the app needs lives inside the project folder (except the

@@ -20,27 +20,36 @@ FG_PRIMARY = "#FFFFFF"
 FG_SECONDARY = "#B2BEC3"
 FG_DIM = "#636E72"
 
-# Model size choices - maps display label -> arch int (from catalog)
+# Model size choices - maps display label -> arch int (from catalog 0-5)
 MODEL_CHOICES = {
     "Tiny (26MB, fastest)": 0,
     "Tiny Streaming (45MB, light)": 2,
     "Base (60MB, balanced)": 1,
+    "Base Streaming (60MB, light)": 3,
     "Small Streaming (80MB, good)": 4,
     "Medium Streaming (110MB, best)": 5,
 }
 MODEL_CHOICES_REV = {v: k for k, v in MODEL_CHOICES.items()}
 
-# Downloadable Whisper sizes (faster-whisper auto-fetches on first use).
-# No turbo: OpenAI excluded translation from turbo training, so it cannot
-# translate regardless of conversion.
-WHISPER_MODEL_CHOICES = {
-    "Tiny (75MB, fastest)": "tiny",
-    "Base (145MB)": "base",
-    "Small (500MB)": "small",
-    "Medium (1.5GB)": "medium",
-    "Large v3 (3GB, best)": "large-v3",
-}
-WHISPER_MODEL_CHOICES_REV = {v: k for k, v in WHISPER_MODEL_CHOICES.items()}
+# Downloadable Whisper sizes - single source of truth lives in
+# whisper_engine (imported; local fallback only if that import fails).
+try:
+    from whisper_engine import (WHISPER_MODEL_CHOICES as _WMC,
+                                WHISPER_MODEL_CHOICES_REV as _WMCR)
+    WHISPER_MODEL_CHOICES = dict(_WMC)
+    WHISPER_MODEL_CHOICES_REV = dict(_WMCR)
+except Exception:
+    WHISPER_MODEL_CHOICES = {
+        "Tiny (75MB, fastest)": "tiny",
+        "Base (145MB)": "base",
+        "Small (500MB)": "small",
+        "Medium (1.5GB)": "medium",
+        "Large (3GB)": "large",
+        "Large v1 (3GB)": "large-v1",
+        "Large v2 (3GB)": "large-v2",
+        "Large v3 (3GB, best)": "large-v3",
+    }
+    WHISPER_MODEL_CHOICES_REV = {v: k for k, v in WHISPER_MODEL_CHOICES.items()}
 CANARY_MODEL_LABEL = "Canary-1B (3.9GB, fixed)"
 
 ENGINE_CHOICES = ["Moonshine v2", "Canary-1B", "Whisper Large v3"]
@@ -725,11 +734,11 @@ class MoonshineGUI(ctk.CTk):
     def _on_engine_changed(self, value):
         # Update UI state immediately
         self._refresh_srt_engine_label()
-        is_moonshine = (value == "Moonshine v2")
         is_heavy = (value in ("Canary-1B", "Whisper Large v3"))
-        # Moonshine uses Model menu; Canary + Whisper share Task/Src menus
+        # Moonshine sizes + Whisper downloadable sizes share the Model menu;
+        # Canary-1B has one fixed model. Task/Src serve Canary + Whisper.
         try:
-            self.model_menu.configure(state="normal" if is_moonshine else "disabled")
+            self.model_menu.configure(state=self._model_menu_state(value))
             self.canary_task_menu.configure(state="normal" if is_heavy else "disabled")
             self.canary_lang_menu.configure(state="normal" if is_heavy else "disabled")
         except Exception:
@@ -766,6 +775,13 @@ class MoonshineGUI(ctk.CTk):
             MODEL_CHOICES_REV.get(arch, "Medium Streaming (110MB, best)"),
             callback)
 
+    @staticmethod
+    def _model_menu_state(engine_kind: str) -> str:
+        # Model row is usable for Moonshine sizes and Whisper downloadable
+        # sizes; Canary-1B has a single fixed model.
+        return ("normal" if engine_kind in ("Moonshine v2", "Whisper Large v3")
+                else "disabled")
+
     def set_model_options(self, values, current: str, callback: Callable):
         """Swap the Model row to another engine's choices (Whisper sizes /
         Canary fixed label) and select `current`."""
@@ -789,10 +805,9 @@ class MoonshineGUI(ctk.CTk):
         self.canary_task_var.set(task if task in CANARY_TASKS else "transcribe")
         self.canary_lang_var.set(src_lang if src_lang in CANARY_LANGS else "auto")
         # Apply initial enable/disable
-        is_moonshine = (engine == "Moonshine v2")
         is_heavy = (engine in ("Canary-1B", "Whisper Large v3"))
         try:
-            self.model_menu.configure(state="normal" if is_moonshine else "disabled")
+            self.model_menu.configure(state=self._model_menu_state(engine))
             self.canary_task_menu.configure(state="normal" if is_heavy else "disabled")
             self.canary_lang_menu.configure(state="normal" if is_heavy else "disabled")
         except Exception:
