@@ -30,7 +30,10 @@ each engine the languages it can actually do.
 
 - **Live tab** — hold `F2` to record, release to transcribe; text is typed
   into the focused window (clipboard fallback), with level meter, waveform,
-  history, and per-engine Task / source-language selectors.
+  history, and per-engine Task / source-language selectors. The *Model* row
+  follows the engine: Moonshine sizes, downloadable Whisper sizes (Tiny
+  75MB → Large v3 3GB, fetched once on first pick), or the fixed Canary-1B.
+  Recording is politely refused for a moment while a model is swapping.
 - **SRT File tab** — queue one or many video/audio files (batch runs one by
   one, failures don't stop the queue), pick an output folder, generate
   `.srt` with live progress bar, per-file status list, per-chunk log,
@@ -109,7 +112,8 @@ as the job runs.
 queued video's subtitles into a size-matched `.burned.mp4` next to it
 (same folder or the chosen output folder). Needs the SRT first or the
 file is skipped with a notice. Drag *Subtitle size*, hit *Preview Frame*
-to see one burned frame instantly, then run the full encode.
+to see one burned frame instantly (also needs that file's SRT), then run
+the full encode.
 
 ## Project structure
 
@@ -119,7 +123,8 @@ gui.py             customtkinter dark UI (Live + SRT File tabs)
 engine.py          Moonshine v2 wrapper
 recorder.py        microphone capture (16 kHz)
 input_sim.py       clipboard + Ctrl+V insertion
-srt.py             SRT backend: ffmpeg extract, VAD, cue packing, timing refine
+srt.py             SRT backend: ffmpeg extract, VAD, word-anchored cue packing,
+                 timing refine, batch queue, size-matched burn-in, ETA tracking
 canary_engine.py   Canary-1B wrapper (NeMo, offline, language-validated)
 whisper_engine.py  Faster-Whisper large-v3 wrapper (per-call task/lang overrides)
 setup.bat          one-click setup (venv, deps, wheels cache, Moonshine model)
@@ -145,6 +150,9 @@ requirements*.txt  dependency pins (base / Canary / Whisper)
 - **Burn says CJK cannot be burned** — by design: burned CJK subtitles
   would come out blank with the bundled renderer. Generate English
   subtitles (`translate`) and burn those instead.
+- **Switching engines feels lighter the second time** — the idle heavy
+  engine is unloaded to reclaim gigabytes of RAM; it reloads from cache
+  when you switch back.
 
 ## Credits & licenses
 
