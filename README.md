@@ -217,7 +217,13 @@ requirements*.txt  dependency pins (base / Canary / Whisper)
 
 ## Changelog
 
-### v1.0.7 (latest)
+### v1.0.8 (latest)
+
+- Fixed Burn speed menu `NameError` in `gui.py` (imported as `_BSL` but read
+  as `BURN_SPEED_LABELS`): menu silently fell back to 3 CPU entries, hiding
+  the Draft / Turbo / Balanced NVENC options — all 6 speeds now show
+
+### v1.0.7
 
 - Fixed duplicate output-size check in burn path (srt.py)
 - NVENC Turbo burn speed now properly recognized in config validation
