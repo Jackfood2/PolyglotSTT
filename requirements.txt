@@ -1,0 +1,12 @@
+moonshine-voice>=0.0.44
+customtkinter>=5.5.0
+sounddevice>=0.5.1
+numpy>=1.24.0
+pynput>=1.7.7
+pyperclip>=1.8.2
+pycaw>=20240210
+comtypes>=1.4.1
+soundfile>=0.12.1
+huggingface_hub>=0.25
+tkinterdnd2>=0.6.0
+imageio-ffmpeg>=0.5.0

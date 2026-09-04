@@ -1,0 +1,17 @@
+# Heavy / machine-local artifacts - never commit these.
+# Models re-download via setup.bat / first run (see README.md).
+models_cache/
+# Python environments (local portable copy + venv).
+python/
+venv/
+# Downloaded dependency wheels (torch wheel alone exceeds GitHub limits).
+wheels/
+# Bytecode caches.
+__pycache__/
+*.pyc
+*.pyo
+# Per-machine settings (auto-created with defaults on first launch).
+moonshine_config.json
+# SRT job temp files.
+*.srt_tmp16k.wav
+*.tmp
