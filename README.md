@@ -118,7 +118,10 @@ queued video's subtitles into a size-matched `.burned.mp4` next to it
 (same folder or the chosen output folder). Needs the SRT first or the
 file is skipped with a notice. Drag *Subtitle size*, hit *Preview Frame*
 to see one burned frame instantly (also needs that file's SRT), then run
-the full encode.
+the full encode. No SRT yet? Preview auto-transcribes just the
+*Sample from / Sample len* slice (e.g. 15s @ 0:30) with the current live
+engine settings and previews from that instead — a quick look before
+committing to a full transcription.
 
 ## Project structure
 

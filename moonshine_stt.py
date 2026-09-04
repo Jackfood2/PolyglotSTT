@@ -53,6 +53,8 @@ DEFAULT_CONFIG = {
     "srt_input_lang": "ja",         # SRT input language code (auto/en/ja/zh/ko/...)
     "srt_output_lang": "en",        # SRT output language code (en/ja/zh/ko/...)
     "burn_font_size": 18,           # burned subtitle size (ASS units, 10-40)
+    "burn_sample_start": "0:30",    # preview sample start (ss / mm:ss)
+    "burn_sample_len": 15,          # preview sample length seconds (5-120)
 }
 
 def load_local_config():
@@ -169,6 +171,19 @@ class MoonshineSTTApp:
         if self.config.get("burn_font_size") != _bf:
             self.config["burn_font_size"] = _bf
             needs_save = True
+        try:
+            _bl = int(self.config.get("burn_sample_len", 15))
+        except Exception:
+            _bl = 15
+        if _bl not in (10, 15, 30, 60):
+            _bl = 15
+            needs_save = True
+        if self.config.get("burn_sample_len") != _bl:
+            self.config["burn_sample_len"] = _bl
+            needs_save = True
+        if not isinstance(self.config.get("burn_sample_start"), str):
+            self.config["burn_sample_start"] = "0:30"
+            needs_save = True
         if needs_save:
             save_local_config(self.config)
 
@@ -258,6 +273,14 @@ class MoonshineSTTApp:
                         _bfs = int(self.config.get("burn_font_size", 18))
                         self.gui.burn_font_slider.set(_bfs)
                         self.gui._on_burn_fontsize_changed(_bfs)
+                    except Exception:
+                        pass
+                    try:
+                        self.gui.sample_start_var.set(
+                            str(self.config.get("burn_sample_start", "0:30")))
+                        _bsl = f"{int(self.config.get('burn_sample_len', 15))}s"
+                        if _bsl in ("10s", "15s", "30s", "60s"):
+                            self.gui.sample_len_var.set(_bsl)
                     except Exception:
                         pass
                     # SRT language dropdowns (only meaningful for Canary/Whisper)
@@ -1581,13 +1604,16 @@ class MoonshineSTTApp:
             self._srt_thread = _t
         _t.start()
 
-    def _burn_preview(self, input_paths, out_dir: str, font_size: int):
+    def _burn_preview(self, input_paths, out_dir: str, font_size: int,
+                      sample_start: str = "", sample_len: int = 15):
         """Render ONE frame with the burn filter (current size) and open it.
 
-        Fast by design (single frame, own thread, no busy flag): the user
-        drags the size slider and re-previews until the subtitles look
-        right, then runs the FULL encode. First queued file that already
-        has an SRT wins; otherwise "Generate SRT first".
+        Two paths, both fast:
+        1. A queued video already has an SRT -> frame at its first cue.
+        2. Otherwise the [sample start, +length] slice is auto-transcribed
+           with the current live engine settings into a temp SRT, shifted
+           back onto the video timeline, and the frame comes from there.
+        Own thread, no busy flag (re-entrant via the button guard).
         """
         def _done():
             if self.gui:
@@ -1597,11 +1623,12 @@ class MoonshineSTTApp:
                     pass
 
         def _work():
+            import subprocess as _sp
+            import tempfile as _tf
+            from pathlib import Path as _P
+            import srt as srtmod
+            tmpd = _P(_tf.mkdtemp(prefix="burnprev_"))
             try:
-                import subprocess as _sp
-                import tempfile as _tf
-                from pathlib import Path as _P
-                import srt as srtmod
                 if isinstance(input_paths, str):
                     paths = [input_paths]
                 else:
@@ -1611,18 +1638,42 @@ class MoonshineSTTApp:
                         paths = []
                 paths = [str(p).strip().strip('"') for p in paths
                          if str(p or "").strip()]
+                if not paths:
+                    self._gui_queue.put(("srt_progress", (0.0, "Add video files first")))
+                    return
                 try:
                     size = max(10, min(40, int(font_size or 0)))
                 except Exception:
                     size = 18
                 if not size:
                     size = 18
+                try:
+                    s_len = int(sample_len or 15)
+                except Exception:
+                    s_len = 15
+                s_len = max(5, min(120, s_len))
                 with _CONFIG_LOCK:
                     self.config["burn_font_size"] = size
+                    self.config["burn_sample_start"] = str(sample_start or "")
+                    self.config["burn_sample_len"] = s_len
                     save_local_config(self.config)
+                    snap = {
+                        "engine_kind": self.config.get("engine", "Moonshine v2"),
+                        "moonshine_arch": int(self.config.get("model_arch", 5)),
+                        "canary_task": self.config.get("canary_task", "transcribe"),
+                        "canary_src": self.config.get("canary_src_lang", "auto"),
+                        "whisper_task": self.config.get("whisper_task", "translate"),
+                        "whisper_src": self.config.get("whisper_src_lang", "ja"),
+                        "srt_input_lang": self.config.get("srt_input_lang", "auto"),
+                        "srt_output_lang": self.config.get("srt_output_lang", "en"),
+                        "cpu_workers": int(self.config.get("srt_cpu", 0) or 0),
+                    }
+                if snap["engine_kind"] not in ("Moonshine v2", "Canary-1B", "Whisper Large v3"):
+                    snap["engine_kind"] = "Moonshine v2"
                 ffmpeg = srtmod.get_ffmpeg_exe()
                 if not ffmpeg:
                     raise RuntimeError("ffmpeg not found - run setup.bat once.")
+                # Path 1: an existing SRT wins (exact timings, instant).
                 target = None
                 for p in paths:
                     try:
@@ -1630,13 +1681,53 @@ class MoonshineSTTApp:
                     except Exception:
                         continue
                     if cand.exists():
-                        target = (_P(p), cand)
+                        target = (_P(p), cand, False)
                         break
+                sample_origin = 0.0
                 if target is None:
-                    self._gui_queue.put(("srt_log", "Preview needs an SRT - Generate SRT first"))
-                    self._gui_queue.put(("srt_progress", (0.0, "Generate SRT first")))
-                    return
-                src, srt_path = target
+                    # Path 2: transcribe just the sample slice, then shift
+                    # its cues back onto the original timeline.
+                    src0 = _P(paths[0])
+                    try:
+                        info0 = srtmod.probe_media(src0, ffmpeg)
+                        dur0 = max(1.0, float(info0.get("duration") or 0))
+                    except Exception:
+                        dur0 = 0.0
+                    start = srtmod.parse_time_to_seconds(sample_start, dur0)
+                    if dur0 > 0:
+                        s_len = max(5, min(s_len, int(max(5.0, dur0 - start))))
+                    sample_origin = start
+                    self._gui_queue.put(("srt_log",
+                        f"Preview: no SRT yet - transcribing {s_len}s sample "
+                        f"@{start:.0f}s with {snap['engine_kind']}..."))
+                    self._gui_queue.put(("srt_progress",
+                        (0.0, f"Sample @{start:.0f}s ({s_len}s) transcribing...")))
+                    clip_wav = tmpd / "sample16k.wav"
+                    srtmod.extract_clip(str(src0), str(clip_wav), ffmpeg,
+                                        start, s_len)
+                    sample_srt = srtmod.run_srt_job(
+                        src_path=str(clip_wav), out_dir=str(tmpd),
+                        engine_kind=snap["engine_kind"],
+                        moonshine_arch=snap["moonshine_arch"],
+                        canary_task=snap["canary_task"],
+                        canary_src=snap["canary_src"],
+                        cpu_workers=snap["cpu_workers"] or 4,
+                        get_moonshine_transcriber=self._get_srt_moonshine_transcriber,
+                        get_canary_engine=lambda: self._get_canary_engine(False),
+                        progress_cb=lambda f, m: self._gui_queue.put(
+                            ("srt_progress", (f, f"[sample] {m}"))),
+                        log_cb=lambda m: self._gui_queue.put(("srt_log", f"[sample] {m}")),
+                        cancel_event=None,
+                        whisper_task=snap["whisper_task"],
+                        whisper_src=snap["whisper_src"],
+                        get_whisper_engine=lambda: self._get_whisper_engine(False),
+                        srt_input_lang=snap["srt_input_lang"],
+                        srt_output_lang=snap["srt_output_lang"],
+                    )
+                    shifted = tmpd / "sample_shifted.srt"
+                    srtmod.offset_srt_file(sample_srt, sample_origin, shifted)
+                    target = (src0, shifted, True)
+                src, srt_path, _is_sample = target
                 try:
                     ts = srtmod.first_cue_at(srt_path)
                 except Exception:
@@ -1653,41 +1744,38 @@ class MoonshineSTTApp:
                     out_png.parent.mkdir(parents=True, exist_ok=True)
                 except Exception:
                     pass
-                tmpd = _P(_tf.mkdtemp(prefix="burnprev_"))
+                vf = srtmod.stage_subtitles_filter(srt_path, size, tmpd)
+                # Fast-seek near the cue, then accurate-seek the last
+                # seconds: instant even in a 2h movie, frame-accurate.
+                pre = max(0.0, ts - 10.0)
+                cmd = [ffmpeg, "-hide_banner", "-y", "-v", "error",
+                       "-ss", f"{pre:.3f}", "-i", str(src),
+                       "-ss", f"{ts - pre:.3f}",
+                       "-frames:v", "1", "-vf", vf, "-an", str(out_png)]
+                proc = _sp.run(cmd, stdout=_sp.DEVNULL,
+                               stderr=_sp.PIPE, timeout=180,
+                               text=True, errors="replace")
+                if proc.returncode != 0 or not out_png.exists():
+                    raise RuntimeError(
+                        f"preview encode failed: {(proc.stderr or '')[-200:]}")
+                self._gui_queue.put(("srt_log", f"Preview (size {size}): {out_png}"))
+                self._gui_queue.put(("srt_progress", (0.0, f"Preview saved: {out_png.name}")))
                 try:
-                    vf = srtmod.stage_subtitles_filter(srt_path, size, tmpd)
-                    # Fast-seek near the cue, then accurate-seek the last
-                    # seconds: instant even in a 2h movie, frame-accurate.
-                    pre = max(0.0, ts - 10.0)
-                    cmd = [ffmpeg, "-hide_banner", "-y", "-v", "error",
-                           "-ss", f"{pre:.3f}", "-i", str(src),
-                           "-ss", f"{ts - pre:.3f}",
-                           "-frames:v", "1", "-vf", vf, "-an", str(out_png)]
-                    proc = _sp.run(cmd, stdout=_sp.DEVNULL,
-                                   stderr=_sp.PIPE, timeout=180,
-                                   text=True, errors="replace")
-                    if proc.returncode != 0 or not out_png.exists():
-                        raise RuntimeError(
-                            f"preview encode failed: {(proc.stderr or '')[-200:]}")
-                    self._gui_queue.put(("srt_log", f"Preview (size {size}): {out_png}"))
-                    self._gui_queue.put(("srt_progress", (0.0, f"Preview saved: {out_png.name}")))
-                    try:
-                        import os as _os
-                        _os.startfile(str(out_png))
-                    except Exception:
-                        pass
-                finally:
-                    try:
-                        import shutil as _sh
-                        _sh.rmtree(str(tmpd), ignore_errors=True)
-                    except Exception:
-                        pass
+                    import os as _os
+                    _os.startfile(str(out_png))
+                except Exception:
+                    pass
             except Exception as e:
                 import traceback
                 traceback.print_exc()
                 self._gui_queue.put(("srt_log", f"Preview failed: {e}"))
                 self._gui_queue.put(("srt_progress", (0.0, f"Preview failed: {e}")))
             finally:
+                try:
+                    import shutil as _sh
+                    _sh.rmtree(str(tmpd), ignore_errors=True)
+                except Exception:
+                    pass
                 _done()
 
         threading.Thread(target=_work, daemon=True).start()

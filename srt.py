@@ -1388,6 +1388,138 @@ def first_cue_at(srt_path, fallback_ratio: float = 0.25) -> float:
     return -1.0  # caller decides fallback (e.g. probe duration * ratio)
 
 
+def parse_time_to_seconds(text, duration: float = 0.0) -> float:
+    """Parse 'ss', 'mm:ss' or 'hh:mm:ss' (fractions allowed) into seconds,
+    clamped to [0, duration-1] when duration is known. Garbage/empty ->
+    10% into the file (or 30s default), so previews land on content."""
+    try:
+        t = str(text or "").strip().replace(",", ".")
+    except Exception:
+        t = ""
+    val = None
+    if t:
+        try:
+            parts = [float(x) for x in t.split(":")]
+            if len(parts) == 1:
+                val = parts[0]
+            elif len(parts) == 2:
+                val = parts[0] * 60 + parts[1]
+            elif len(parts) == 3:
+                val = parts[0] * 3600 + parts[1] * 60 + parts[2]
+        except Exception:
+            val = None
+    if val is None or val < 0:
+        try:
+            dur = float(duration or 0)
+        except Exception:
+            dur = 0.0
+        val = dur * 0.10 if dur > 0 else 30.0
+    try:
+        dur = float(duration or 0)
+        if dur > 2:
+            val = max(0.0, min(val, dur - 1.0))
+        else:
+            val = max(0.0, val)
+    except Exception:
+        pass
+    return float(val)
+
+
+def extract_clip(src_path, dst_wav, ffmpeg: str, start_s: float,
+                 dur_s: float, cancel_event=None):
+    """Cut [start, start+dur) to 16kHz mono wav. Fast-seeks to 5s before
+    the mark, then accurately seeks the rest (instant even in long files,
+    frame-accurate). Raises on failure."""
+    try:
+        start_s = max(0.0, float(start_s))
+        dur_s = max(1.0, float(dur_s))
+    except Exception:
+        start_s, dur_s = 0.0, 15.0
+    pre = max(0.0, start_s - 5.0)
+    cmd = [ffmpeg, "-hide_banner", "-y", "-v", "error",
+           "-ss", f"{pre:.3f}", "-i", str(src_path),
+           "-ss", f"{start_s - pre:.3f}", "-t", f"{dur_s:.3f}",
+           "-ac", "1", "-ar", "16000", "-vn", str(dst_wav)]
+    try:
+        proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL,
+                                stderr=subprocess.PIPE)
+    except FileNotFoundError:
+        raise RuntimeError(f"ffmpeg not executable: {ffmpeg}")
+    try:
+        while proc.poll() is None:
+            if cancel_event is not None and cancel_event.is_set():
+                try:
+                    proc.terminate()
+                except Exception:
+                    pass
+                try:
+                    proc.wait(timeout=5)
+                except Exception:
+                    try:
+                        proc.kill()
+                    except Exception:
+                        pass
+                raise InterruptedError("cancelled")
+            try:
+                proc.wait(timeout=0.2)
+            except subprocess.TimeoutExpired:
+                pass
+        _, err = proc.communicate(timeout=30)
+    except InterruptedError:
+        raise
+    except Exception as e:
+        try:
+            proc.kill()
+        except Exception:
+            pass
+        raise RuntimeError(f"ffmpeg clip extract failed: {e}")
+    if proc.returncode != 0 or not Path(dst_wav).exists():
+        msg = ""
+        try:
+            msg = (err.decode("utf-8", "ignore")
+                   if isinstance(err, bytes) else (err or ""))[:200]
+        except Exception:
+            pass
+        raise RuntimeError(f"ffmpeg clip extract failed: {msg}")
+
+
+_CUE_TS = re.compile(
+    r"(\d+):(\d+):([\d.,]+)\s*-->\s*(\d+):(\d+):([\d.,]+)")
+
+
+def _cue_secs(h1, m1, s1) -> float:
+    return int(h1) * 3600 + int(m1) * 60 + float(str(s1).replace(",", "."))
+
+
+def offset_srt_file(src_srt, offset_s: float, dst_srt):
+    """Rewrite an SRT with every cue shifted by offset seconds (used to map
+    a sample-clip SRT back onto the original video timeline)."""
+    try:
+        off = float(offset_s)
+    except Exception:
+        off = 0.0
+
+    def _fmt(t: float) -> str:
+        t = max(0.0, t)
+        h, rem = divmod(t, 3600)
+        m, rem2 = divmod(rem, 60)
+        s = int(rem2)
+        ms = int(round((rem2 - s) * 1000))
+        if ms >= 1000:
+            s += 1
+            ms -= 1000
+        return f"{int(h):02d}:{int(m):02d}:{s:02d},{ms:03d}"
+
+    def _rep(m):
+        a = _cue_secs(m.group(1), m.group(2), m.group(3)) + off
+        b = _cue_secs(m.group(4), m.group(5), m.group(6)) + off
+        return f"{_fmt(a)} --> {_fmt(b)}"
+
+    data = Path(src_srt).read_text(encoding="utf-8", errors="ignore")
+    Path(dst_srt).write_text(_CUE_TS.sub(_rep, data), encoding="utf-8")
+    return str(dst_srt)
+
+
 def _burn_popen_wait(proc, total_frames: int, base: float, span: float,
                      progress_cb=None, cancel_event=None, label: str = "",
                      stall_s: float = 600.0):

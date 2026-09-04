@@ -620,10 +620,30 @@ class MoonshineGUI(ctk.CTk):
         self.srt_preview_btn.grid(row=0, column=3, sticky="e", padx=(6, 12), pady=(10, 2))
         ctk.CTkLabel(style_card, text="Preview burns one frame with the current size - instant check before the full encode",
                      font=("Segoe UI", 9), text_color=FG_DIM, wraplength=420,
-                     justify="left").grid(row=1, column=0, columnspan=4,
+                     justify="left").grid(row=2, column=0, columnspan=4,
                                           sticky="w", padx=12, pady=(2, 10))
         self._srt_preview_cb = None
         self._preview_running = False
+        # Sample controls: when no SRT exists yet, Preview transcribes just
+        # this slice (start mm:ss + length) instead of the whole video.
+        ctk.CTkLabel(style_card, text="Sample from:",
+                     font=("Segoe UI", 10), text_color=FG_DIM
+                     ).grid(row=1, column=0, sticky="w", padx=(12, 4), pady=(2, 2))
+        self.sample_start_var = ctk.StringVar(value="0:30")
+        self.sample_start_entry = ctk.CTkEntry(
+            style_card, textvariable=self.sample_start_var, width=70,
+            font=("Segoe UI", 11), fg_color=BG_INPUT, text_color=FG_PRIMARY,
+            corner_radius=8, height=30)
+        self.sample_start_entry.grid(row=1, column=1, sticky="w", padx=4, pady=(2, 2))
+        ctk.CTkLabel(style_card, text="Sample len:",
+                     font=("Segoe UI", 10), text_color=FG_DIM
+                     ).grid(row=1, column=2, sticky="e", padx=(4, 4), pady=(2, 2))
+        self.sample_len_var = ctk.StringVar(value="15s")
+        self.sample_len_menu = ctk.CTkOptionMenu(
+            style_card, variable=self.sample_len_var,
+            values=["10s", "15s", "30s", "60s"], width=80,
+            fg_color=BG_INPUT, button_color=ACCENT)
+        self.sample_len_menu.grid(row=1, column=3, sticky="e", padx=(4, 12), pady=(2, 2))
 
         # Progress card
         prog_card = ctk.CTkFrame(scroll, fg_color=BG_CARD, corner_radius=12)
@@ -1272,6 +1292,21 @@ class MoonshineGUI(ctk.CTk):
         except Exception:
             return 18
 
+    def get_preview_sample(self):
+        """(start_text, length_seconds) snapshot for the sample preview."""
+        try:
+            start_text = (self.sample_start_var.get() or "").strip()
+        except Exception:
+            start_text = ""
+        try:
+            length = int(str(self.sample_len_var.get() or "15s").strip()
+                         .lower().rstrip("s"))
+        except Exception:
+            length = 15
+        if length not in (10, 15, 30, 60):
+            length = 15
+        return start_text, length
+
     def set_srt_preview_callback(self, cb: Callable):
         self._srt_preview_cb = cb
 
@@ -1293,7 +1328,8 @@ class MoonshineGUI(ctk.CTk):
                 pass
             threading.Thread(target=self._srt_preview_cb,
                              args=(self.get_srt_input_paths(), out_dir,
-                                   self.get_burn_font_size()),
+                                   self.get_burn_font_size(),
+                                   *self.get_preview_sample()),
                              daemon=True).start()
 
     def set_srt_preview_done(self):
