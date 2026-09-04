@@ -234,6 +234,23 @@ class WhisperEngine:
             return
         self.load()
 
+    def unload(self) -> bool:
+        """Drop weights to reclaim RAM (multi-GB) when another engine takes
+        over. Refuses while a load is in flight (the loader thread would
+        resurrect the model after). Returns True when memory was freed."""
+        with self._lock:
+            if self._loading or self._model is None:
+                return False
+            self._model = None
+            self._ready = False
+            self._last_error = None
+        try:
+            import gc
+            gc.collect()
+        except Exception:
+            pass
+        return True
+
     def _snapshot_opts(self) -> tuple:
         """Atomic (task, source_lang, target_lang) snapshot for one inference call."""
         with self._lock:

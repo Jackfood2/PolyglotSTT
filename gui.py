@@ -179,6 +179,8 @@ class StatusBadge(ctk.CTkFrame):
 
 
 class HistoryPanel(ctk.CTkScrollableFrame):
+    MAX_ENTRIES = 100  # unbounded history = unbounded widgets/RAM + scroll crawl
+
     def __init__(self, master, **kwargs):
         super().__init__(master, fg_color=BG_INPUT, corner_radius=12,
                          scrollbar_button_color=ACCENT, **kwargs)
@@ -198,6 +200,11 @@ class HistoryPanel(ctk.CTkScrollableFrame):
         text_label.pack(anchor="w", padx=8, pady=(2, 6))
 
         self._entries.append(entry_frame)
+        while len(self._entries) > self.MAX_ENTRIES:
+            try:
+                self._entries.pop(0).destroy()
+            except Exception:
+                break
         try:
             self._parent_canvas.yview_moveto(1.0)
         except Exception:
@@ -421,12 +428,22 @@ class MoonshineGUI(ctk.CTk):
         self._enable_drop(file_card)
 
         import tkinter as _tk
+        _listrow = ctk.CTkFrame(file_card, fg_color="transparent")
+        _listrow.pack(fill="x", padx=10, pady=(0, 6))
+        _listrow.grid_columnconfigure(0, weight=1)
         self.srt_file_list = _tk.Listbox(
-            file_card, height=5, font=("Segoe UI", 10),
+            _listrow, height=5, font=("Segoe UI", 10),
             bg=BG_INPUT, fg=FG_PRIMARY, selectbackground=ACCENT,
             selectforeground=FG_PRIMARY, highlightthickness=0,
             relief="flat", activestyle="none")
-        self.srt_file_list.pack(fill="x", padx=10, pady=(0, 6))
+        self.srt_file_list.grid(row=0, column=0, sticky="ew")
+        try:
+            _sb = _tk.Scrollbar(_listrow, orient="vertical",
+                                command=self.srt_file_list.yview)
+            _sb.grid(row=0, column=1, sticky="ns")
+            self.srt_file_list.configure(yscrollcommand=_sb.set)
+        except Exception:
+            pass
         try:
             self._enable_drop(self.srt_file_list)
         except Exception:
@@ -532,9 +549,40 @@ class MoonshineGUI(ctk.CTk):
         self._srt_output_lang_cb = None
         self.lang_card = lang_card
 
+        # Burn style card (subtitle size + frame preview before full encode)
+        style_card = ctk.CTkFrame(scroll, fg_color=BG_CARD, corner_radius=12)
+        style_card.grid(row=4, column=0, sticky="ew", padx=4, pady=(0, 8))
+        style_card.grid_columnconfigure(1, weight=1)
+        ctk.CTkLabel(style_card, text="Subtitle size:",
+                     font=("Segoe UI", 10, "bold"), text_color=FG_DIM
+                     ).grid(row=0, column=0, sticky="w", padx=(12, 4), pady=(10, 2))
+        self.burn_font_size_var = ctk.IntVar(value=18)
+        self.burn_font_slider = ctk.CTkSlider(
+            style_card, from_=12, to=32, number_of_steps=20,
+            button_color=ACCENT, progress_color=ACCENT,
+            command=self._on_burn_fontsize_changed)
+        self.burn_font_slider.grid(row=0, column=1, sticky="ew", padx=4, pady=(10, 2))
+        self.burn_font_slider.set(18)
+        self.burn_font_value = ctk.CTkLabel(style_card, text="18",
+                                            font=("Segoe UI", 11, "bold"),
+                                            text_color=FG_PRIMARY)
+        self.burn_font_value.grid(row=0, column=2, sticky="e", padx=(4, 6), pady=(10, 2))
+        self.srt_preview_btn = ctk.CTkButton(
+            style_card, text="Preview Frame", font=("Segoe UI", 12),
+            fg_color="#2D3748", hover_color="#4A5568", height=34,
+            corner_radius=8, text_color=FG_SECONDARY,
+            command=self._on_srt_preview)
+        self.srt_preview_btn.grid(row=0, column=3, sticky="e", padx=(6, 12), pady=(10, 2))
+        ctk.CTkLabel(style_card, text="Preview burns one frame with the current size - instant check before the full encode",
+                     font=("Segoe UI", 9), text_color=FG_DIM, wraplength=420,
+                     justify="left").grid(row=1, column=0, columnspan=4,
+                                          sticky="w", padx=12, pady=(2, 10))
+        self._srt_preview_cb = None
+        self._preview_running = False
+
         # Progress card
         prog_card = ctk.CTkFrame(scroll, fg_color=BG_CARD, corner_radius=12)
-        prog_card.grid(row=4, column=0, sticky="ew", padx=4, pady=(0, 8))
+        prog_card.grid(row=5, column=0, sticky="ew", padx=4, pady=(0, 8))
         prog_card.grid_columnconfigure(0, weight=1)
         toprow = ctk.CTkFrame(prog_card, fg_color="transparent")
         toprow.pack(fill="x", padx=12, pady=(10, 2))
@@ -561,7 +609,7 @@ class MoonshineGUI(ctk.CTk):
 
         # Action buttons - always visible at bottom of tab
         abtn = ctk.CTkFrame(scroll, fg_color="transparent")
-        abtn.grid(row=5, column=0, sticky="ew", padx=4, pady=(0, 8))
+        abtn.grid(row=6, column=0, sticky="ew", padx=4, pady=(0, 8))
         abtn.grid_columnconfigure(0, weight=2)
         abtn.grid_columnconfigure(1, weight=1)
         self.srt_start_btn = ctk.CTkButton(
@@ -820,17 +868,28 @@ class MoonshineGUI(ctk.CTk):
             _exts = ()
         added = 0
         try:
+            import os as _os
+            try:
+                seen = {_os.path.normcase(p) for p in self._srt_input_paths}
+            except Exception:
+                seen = set()
             for raw in (paths or []):
                 p = str(raw or "").strip().strip('"')
                 if not p:
                     continue
-                import os as _os
                 if _exts and _os.path.splitext(p)[1].lower() not in _exts:
                     try:
                         self.srt_log(f"skip (unsupported type): {_os.path.basename(p)}")
                     except Exception:
                         pass
                     continue
+                if _os.path.normcase(p) in seen:
+                    try:
+                        self.srt_log(f"skip (already queued): {_os.path.basename(p)}")
+                    except Exception:
+                        pass
+                    continue
+                seen.add(_os.path.normcase(p))
                 self._srt_input_paths.append(p)
                 self._srt_file_status[len(self._srt_input_paths) - 1] = "queued"
                 added += 1
@@ -912,6 +971,53 @@ class MoonshineGUI(ctk.CTk):
         pct = int(round(n / max(1, self._srt_max_cpu) * 100))
         self.srt_cpu_value.configure(text=f"{n} threads ({pct}%)")
 
+    def _on_burn_fontsize_changed(self, value):
+        try:
+            n = max(12, min(32, int(round(float(value)))))
+        except Exception:
+            n = 18
+        try:
+            self.burn_font_value.configure(text=f"{n}")
+        except Exception:
+            pass
+
+    def get_burn_font_size(self) -> int:
+        try:
+            return max(10, min(40, int(round(float(self.burn_font_slider.get())))))
+        except Exception:
+            return 18
+
+    def set_srt_preview_callback(self, cb: Callable):
+        self._srt_preview_cb = cb
+
+    def _on_srt_preview(self):
+        if getattr(self, "_preview_running", False):
+            return
+        if not self.get_srt_input_paths():
+            self.set_srt_progress(0, "Add video files first (preview needs the queue)")
+            return
+        if self._srt_preview_cb:
+            try:
+                out_dir = self.srt_out_entry.get().strip()
+            except Exception:
+                out_dir = ""
+            self._preview_running = True
+            try:
+                self.srt_preview_btn.configure(state="disabled")
+            except Exception:
+                pass
+            threading.Thread(target=self._srt_preview_cb,
+                             args=(self.get_srt_input_paths(), out_dir,
+                                   self.get_burn_font_size()),
+                             daemon=True).start()
+
+    def set_srt_preview_done(self):
+        self._preview_running = False
+        try:
+            self.srt_preview_btn.configure(state="normal")
+        except Exception:
+            pass
+
     def _on_srt_start(self):
         if self._srt_running:
             return
@@ -976,7 +1082,8 @@ class MoonshineGUI(ctk.CTk):
             except Exception:
                 cpu = 1
             threading.Thread(target=self._srt_burn_cb,
-                             args=(paths, out_dir, cpu),
+                             args=(paths, out_dir, cpu,
+                                   self.get_burn_font_size()),
                              daemon=True).start()
 
     def _on_srt_open_folder(self):
@@ -1068,6 +1175,17 @@ class MoonshineGUI(ctk.CTk):
         try:
             self.srt_log_box.configure(state="normal")
             self.srt_log_box.insert("end", str(msg).rstrip() + "\n")
+            # Cap the log: hours-long batches would otherwise grow this
+            # widget unbounded (Tk text slows dramatically past ~1k lines).
+            self._srt_log_lines = getattr(self, "_srt_log_lines", 0) + 1
+            if self._srt_log_lines >= 20:
+                self._srt_log_lines = 0
+                try:
+                    total = int(float(self.srt_log_box.index("end-1c").split(".")[0]))
+                    if total > 800:
+                        self.srt_log_box.delete("1.0", "300.0")
+                except Exception:
+                    pass
             self.srt_log_box.see("end")
             self.srt_log_box.configure(state="disabled")
         except Exception:

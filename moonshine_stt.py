@@ -52,6 +52,7 @@ DEFAULT_CONFIG = {
     "srt_out_dir": "",              # "" = same folder as source file
     "srt_input_lang": "ja",         # SRT input language code (auto/en/ja/zh/ko/...)
     "srt_output_lang": "en",        # SRT output language code (en/ja/zh/ko/...)
+    "burn_font_size": 18,           # burned subtitle size (ASS units, 10-40)
 }
 
 def load_local_config():
@@ -158,6 +159,16 @@ class MoonshineSTTApp:
         if self.config.get("srt_output_lang") not in _srt_langs:
             self.config["srt_output_lang"] = "en"
             needs_save = True
+        try:
+            _bf = int(self.config.get("burn_font_size", 18))
+        except Exception:
+            _bf = 18
+        if _bf < 10 or _bf > 40:
+            _bf = 18
+            needs_save = True
+        if self.config.get("burn_font_size") != _bf:
+            self.config["burn_font_size"] = _bf
+            needs_save = True
         if needs_save:
             save_local_config(self.config)
 
@@ -177,6 +188,9 @@ class MoonshineSTTApp:
 
         self.recorder = AudioRecorder(sample_rate=SAMPLE_RATE)
         self._recording = False
+        # True while a model is being swapped (record/F2 refused: inference
+        # would return empty on a half-loaded engine).
+        self._model_switching = False
         # Serializes the recorder start/stop sequence: a fast F2 hammer
         # could otherwise start() while the old stream is still closing
         # ("Device unavailable") or double-start two streams.
@@ -235,6 +249,13 @@ class MoonshineSTTApp:
                 try:
                     self.gui.set_srt_callbacks(self._srt_start, self._srt_cancel,
                                                self._burn_start)
+                    self.gui.set_srt_preview_callback(self._burn_preview)
+                    try:
+                        _bfs = int(self.config.get("burn_font_size", 18))
+                        self.gui.burn_font_slider.set(_bfs)
+                        self.gui._on_burn_fontsize_changed(_bfs)
+                    except Exception:
+                        pass
                     # SRT language dropdowns (only meaningful for Canary/Whisper)
                     try:
                         self.gui.set_srt_languages(
@@ -409,6 +430,7 @@ class MoonshineSTTApp:
                     self.gui.record_btn.configure(state="normal")
                 except Exception:
                     pass
+                self._model_switching = False
                 if success:
                     self.gui.set_status(f"Ready \u2022 {display_label}", SUCCESS)
                 else:
@@ -425,6 +447,7 @@ class MoonshineSTTApp:
             self.config["engine"] = "Moonshine v2"
             save_local_config(self.config)
             self.engine = self.moonshine_engine
+        self._model_switching = True
         self.engine.switch_model(new_arch, on_ready=_model_switched)
 
     def _on_whisper_model_changed(self, display_label: str):
@@ -465,6 +488,7 @@ class MoonshineSTTApp:
                     self.gui.record_btn.configure(state="normal")
                 except Exception:
                     pass
+                self._model_switching = False
                 if success:
                     self.gui.set_status(f"Ready \u2022 Whisper {new_id}", SUCCESS)
                 else:
@@ -477,10 +501,12 @@ class MoonshineSTTApp:
 
         eng = self._get_whisper_engine()
         try:
+            self._model_switching = True
             eng.switch_model(new_id, on_ready=_whisper_switched)
         except AttributeError:
             # Fallback target (moonshine) has no whisper switch - shouldn't
-            # happen, but never wedge the UI.
+            # happen, but never wedge the UI (or the switching flag).
+            self._model_switching = False
             _whisper_switched(False, "engine unavailable")
 
     def _on_engine_changed(self, display_label: str):
@@ -574,6 +600,37 @@ class MoonshineSTTApp:
                     self.moonshine_engine.load()
                 else:
                     self.gui.set_status(f"Ready \u2022 Moonshine {self.moonshine_engine.current_arch_name}", SUCCESS)
+        # Free the other heavy engine's weights (each is 3-4GB; keeping both
+        # resident alongside torch + a burn encode pages 16GB machines into a
+        # severe hang). Skipped while a job runs - it may still need them.
+        self._unload_idle_engines()
+
+    def _unload_idle_engines(self):
+        """Release whichever heavy engine is NOT active (multi-GB RAM back).
+        Never touches the active engine, a loading engine, or anything while
+        an SRT/burn job is running (the job may hold the old engine)."""
+        try:
+            if self._srt_busy:
+                return
+            active = self.config.get("engine", "Moonshine v2")
+            for name in ("canary_engine", "whisper_engine"):
+                try:
+                    eng = getattr(self, name, None)
+                    if eng is None or eng is self.engine:
+                        continue
+                    if active == "Canary-1B" and name == "canary_engine":
+                        continue
+                    if active == "Whisper Large v3" and name == "whisper_engine":
+                        continue
+                    try:
+                        if eng.unload():
+                            self._log(f"Unloaded idle {name} (RAM reclaimed)")
+                    except Exception:
+                        pass
+                except Exception:
+                    pass
+        except Exception:
+            pass
 
     def _on_canary_task_changed(self, value):
         # Shared Task widget - routes to the active heavy engine
@@ -774,6 +831,9 @@ class MoonshineSTTApp:
         with self._rec_lock:
             if self._recording:
                 return
+            if getattr(self, "_model_switching", False):
+                self._gui_queue.put(("status", ("Switching model - wait a moment", WARNING)))
+                return
             try:
                 self.recorder.start()
             except Exception as e:
@@ -831,6 +891,15 @@ class MoonshineSTTApp:
             return
 
         # Enqueue for serial processing - allows recording next chunk while this one transcribes
+        try:
+            if self.audio_queue.qsize() >= 25:
+                # Pathological hammering guard: ~25 queued clips is minutes
+                # of audio and hundreds of MB - tell the user to wait.
+                self._gui_queue.put(("status", ("Queue full - wait for processing", WARNING)))
+                self._update_indicator()
+                return
+        except Exception:
+            pass
         self.audio_queue.put((audio, settings_snapshot))
         # Update indicator to show queue depth
         self._update_indicator()
@@ -1133,7 +1202,8 @@ class MoonshineSTTApp:
             return f"{v / 1e6:.0f}MB"
         return f"{int(v)}B"
 
-    def _burn_start(self, input_paths, out_dir: str, cpu_workers: int):
+    def _burn_start(self, input_paths, out_dir: str, cpu_workers: int,
+                    font_size: int = 0):
         # Same single-flight machinery as SRT: one heavy job at a time, same
         # Cancel button/event, same running UI state.
         with self._srt_lock:
@@ -1163,9 +1233,16 @@ class MoonshineSTTApp:
                     self.config["srt_cpu"] = int(cpu_workers)
                 except Exception:
                     self.config["srt_cpu"] = 0
+                try:
+                    _fs = int(font_size) if font_size else int(
+                        self.config.get("burn_font_size", 18))
+                except Exception:
+                    _fs = 18
+                _fs = max(10, min(40, _fs))
+                self.config["burn_font_size"] = _fs
                 save_local_config(self.config)
                 job = {"paths": paths, "out_dir": out_dir,
-                       "cpu_workers": int(cpu_workers)}
+                       "cpu_workers": int(cpu_workers), "font_size": _fs}
             self._srt_cancel.clear()
             if self.gui:
                 self.gui.after(0, lambda: self.gui.set_srt_running(True))
@@ -1210,7 +1287,7 @@ class MoonshineSTTApp:
                     return srtmod.burn_subtitles(
                         str(src), str(srt_path), str(out_path), ffmpeg,
                         vbps // 1000, (abps // 1000) if not acopy else 128,
-                        acopy, job["cpu_workers"],
+                        acopy, job["cpu_workers"], job["font_size"],
                         progress_cb=progress_cb, log_cb=log_cb,
                         cancel_event=self._srt_cancel)
 
@@ -1291,6 +1368,117 @@ class MoonshineSTTApp:
         with self._srt_lock:
             self._srt_thread = _t
         _t.start()
+
+    def _burn_preview(self, input_paths, out_dir: str, font_size: int):
+        """Render ONE frame with the burn filter (current size) and open it.
+
+        Fast by design (single frame, own thread, no busy flag): the user
+        drags the size slider and re-previews until the subtitles look
+        right, then runs the FULL encode. First queued file that already
+        has an SRT wins; otherwise "Generate SRT first".
+        """
+        def _done():
+            if self.gui:
+                try:
+                    self.gui.after(0, lambda: self.gui.set_srt_preview_done())
+                except Exception:
+                    pass
+
+        def _work():
+            try:
+                import subprocess as _sp
+                import tempfile as _tf
+                from pathlib import Path as _P
+                import srt as srtmod
+                if isinstance(input_paths, str):
+                    paths = [input_paths]
+                else:
+                    try:
+                        paths = list(input_paths or [])
+                    except Exception:
+                        paths = []
+                paths = [str(p).strip().strip('"') for p in paths
+                         if str(p or "").strip()]
+                try:
+                    size = max(10, min(40, int(font_size or 0)))
+                except Exception:
+                    size = 18
+                if not size:
+                    size = 18
+                with _CONFIG_LOCK:
+                    self.config["burn_font_size"] = size
+                    save_local_config(self.config)
+                ffmpeg = srtmod.get_ffmpeg_exe()
+                if not ffmpeg:
+                    raise RuntimeError("ffmpeg not found - run setup.bat once.")
+                target = None
+                for p in paths:
+                    try:
+                        cand = srtmod.default_out_path(_P(p), out_dir)
+                    except Exception:
+                        continue
+                    if cand.exists():
+                        target = (_P(p), cand)
+                        break
+                if target is None:
+                    self._gui_queue.put(("srt_log", "Preview needs an SRT - Generate SRT first"))
+                    self._gui_queue.put(("srt_progress", (0.0, "Generate SRT first")))
+                    return
+                src, srt_path = target
+                try:
+                    ts = srtmod.first_cue_at(srt_path)
+                except Exception:
+                    ts = -1.0
+                if ts is None or ts < 0:
+                    try:
+                        info = srtmod.probe_media(src, ffmpeg)
+                        ts = max(0.0, float(info.get("duration") or 0) * 0.25)
+                    except Exception:
+                        ts = 5.0
+                out_png = ((_P(out_dir) if out_dir and str(out_dir).strip() else src.parent)
+                           / (src.stem + ".burn_preview.png"))
+                try:
+                    out_png.parent.mkdir(parents=True, exist_ok=True)
+                except Exception:
+                    pass
+                tmpd = _P(_tf.mkdtemp(prefix="burnprev_"))
+                try:
+                    vf = srtmod.stage_subtitles_filter(srt_path, size, tmpd)
+                    # Fast-seek near the cue, then accurate-seek the last
+                    # seconds: instant even in a 2h movie, frame-accurate.
+                    pre = max(0.0, ts - 10.0)
+                    cmd = [ffmpeg, "-hide_banner", "-y", "-v", "error",
+                           "-ss", f"{pre:.3f}", "-i", str(src),
+                           "-ss", f"{ts - pre:.3f}",
+                           "-frames:v", "1", "-vf", vf, "-an", str(out_png)]
+                    proc = _sp.run(cmd, stdout=_sp.DEVNULL,
+                                   stderr=_sp.PIPE, timeout=180,
+                                   text=True, errors="replace")
+                    if proc.returncode != 0 or not out_png.exists():
+                        raise RuntimeError(
+                            f"preview encode failed: {(proc.stderr or '')[-200:]}")
+                    self._gui_queue.put(("srt_log", f"Preview (size {size}): {out_png}"))
+                    self._gui_queue.put(("srt_progress", (0.0, f"Preview saved: {out_png.name}")))
+                    try:
+                        import os as _os
+                        _os.startfile(str(out_png))
+                    except Exception:
+                        pass
+                finally:
+                    try:
+                        import shutil as _sh
+                        _sh.rmtree(str(tmpd), ignore_errors=True)
+                    except Exception:
+                        pass
+            except Exception as e:
+                import traceback
+                traceback.print_exc()
+                self._gui_queue.put(("srt_log", f"Preview failed: {e}"))
+                self._gui_queue.put(("srt_progress", (0.0, f"Preview failed: {e}")))
+            finally:
+                _done()
+
+        threading.Thread(target=_work, daemon=True).start()
 
     def _gui_record_start(self):
         if not self._recording:

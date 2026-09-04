@@ -1351,11 +1351,56 @@ def _esc_filter_path(p: str) -> str:
     return (str(p).replace("\\", "/").replace(":", "\\:").replace("'", "\\'"))
 
 
+def stage_subtitles_filter(srt_path, font_size: int, dest_dir) -> str:
+    """Copy the SRT under a plain-ASCII name into dest_dir and build the
+    libass filter string. Returns the -vf value (caller keeps dest_dir
+    alive for the encode)."""
+    try:
+        size = max(10, min(40, int(font_size)))
+    except Exception:
+        size = 18
+    safe_srt = Path(dest_dir) / "subs.srt"
+    shutil.copy(str(srt_path), str(safe_srt))
+    # FontName=Arial is forced: it is the ONLY family this libass build
+    # resolves (every other forced family renders nothing - verified), and
+    # Arial is pixel-proven. CJK SRTs are rejected by the caller first.
+    return ("subtitles='%s':fontsdir='%s':force_style='FontName=Arial,"
+            "FontSize=%d,PrimaryColour=&H00FFFFFF,"
+            "OutlineColour=&H80000000,BorderStyle=1,Outline=1,"
+            "Shadow=0,MarginV=28'" % (
+                _esc_filter_path(str(safe_srt)),
+                _esc_filter_path("C:/Windows/Fonts"), size))
+
+
+def first_cue_at(srt_path, fallback_ratio: float = 0.25) -> float:
+    """Start time (seconds) of the first SRT cue +0.4s, for frame previews.
+    Falls back to duration*fraction when unparseable (needs probe: caller
+    may pass duration via fallback... kept simple - middle fallback)."""
+    try:
+        data = Path(srt_path).read_text(encoding="utf-8", errors="ignore")
+        m = re.search(r"(\d+):(\d+):([\d.,]+)\s*-->", data)
+        if m:
+            sec = (int(m.group(1)) * 3600 + int(m.group(2)) * 60
+                   + float(m.group(3).replace(",", ".")))
+            return max(0.0, sec + 0.4)
+    except Exception:
+        pass
+    return -1.0  # caller decides fallback (e.g. probe duration * ratio)
+
+
 def _burn_popen_wait(proc, total_frames: int, base: float, span: float,
-                     progress_cb=None, cancel_event=None, label: str = ""):
+                     progress_cb=None, cancel_event=None, label: str = "",
+                     stall_s: float = 600.0):
     """Drain stderr on a thread (ffmpeg status lines use \\r, not \\n),
-    poll for cancel, report frame-based progress. Raises on failure."""
-    chunks: list = []
+    poll for cancel, report frame-based progress. Raises on failure.
+
+    Two hang guards: the shared buffer is capped at 16KB (an hours-long
+    encode would otherwise grow it unboundedly and re-scanning it each
+    poll turns quadratic), and a stall detector kills ffmpeg when no new
+    frame arrives for `stall_s` (corrupt input hanging x264 forever).
+    """
+    buf = bytearray()
+    lock = threading.Lock()
 
     def _drain():
         try:
@@ -1363,13 +1408,17 @@ def _burn_popen_wait(proc, total_frames: int, base: float, span: float,
                 data = proc.stderr.read(65536)
                 if not data:
                     break
-                chunks.append(data)
+                with lock:
+                    buf.extend(data)
+                    if len(buf) > 16384:
+                        del buf[:-16384]
         except Exception:
             pass
 
     t = threading.Thread(target=_drain, daemon=True)
     t.start()
     last = 0
+    last_change = time.monotonic()
     try:
         while proc.poll() is None:
             if cancel_event is not None and cancel_event.is_set():
@@ -1386,21 +1435,39 @@ def _burn_popen_wait(proc, total_frames: int, base: float, span: float,
                         pass
                 raise InterruptedError("cancelled")
             try:
-                buf = b"".join(chunks)
-                if buf:
-                    found = re.findall(rb"frame=\s*(\d+)", buf)
+                with lock:
+                    snap = bytes(buf)
+                if snap:
+                    found = re.findall(rb"frame=\s*(\d+)", snap)
                     if found:
                         try:
-                            last = max(last, int(found[-1]))
+                            cur = int(found[-1])
                         except Exception:
-                            pass
+                            cur = last
+                        if cur > last:
+                            last, last_change = cur, time.monotonic()
             except Exception:
                 pass
+            if last > 0 and (time.monotonic() - last_change) > stall_s:
+                try:
+                    proc.terminate()
+                except Exception:
+                    pass
+                try:
+                    proc.wait(timeout=5)
+                except Exception:
+                    try:
+                        proc.kill()
+                    except Exception:
+                        pass
+                raise RuntimeError(
+                    f"ffmpeg burn {label}stalled (no progress for "
+                    f"{int(stall_s)}s) - input may be corrupt")
             if progress_cb and total_frames > 0:
                 try:
                     frac = base + span * min(1.0, last / total_frames)
                     progress_cb(max(0.0, min(1.0, frac)),
-                                f"{label} frame {last}/{total_frames}")
+                                f"{label}frame {last}/{total_frames}")
                 except Exception:
                     pass
             try:
@@ -1414,7 +1481,8 @@ def _burn_popen_wait(proc, total_frames: int, base: float, span: float,
             pass
     tail = ""
     try:
-        tail = b"".join(chunks)[-600:].decode("utf-8", "ignore")
+        with lock:
+            tail = bytes(buf)[-600:].decode("utf-8", "ignore")
     except Exception:
         pass
     if proc.returncode != 0:
@@ -1425,6 +1493,7 @@ def _burn_popen_wait(proc, total_frames: int, base: float, span: float,
 def burn_subtitles(src_path: str, srt_path: str, out_path: str, ffmpeg: str,
                    video_kbps: int, audio_kbps: int = 128,
                    audio_copy: bool = True, threads: int = 0,
+                   font_size: int = 18,
                    progress_cb: Optional[Callable[[float, str], None]] = None,
                    log_cb: Optional[Callable[[str], None]] = None,
                    cancel_event: Optional[threading.Event] = None):
@@ -1437,6 +1506,8 @@ def burn_subtitles(src_path: str, srt_path: str, out_path: str, ffmpeg: str,
         raise FileNotFoundError(f"SRT not found: {srtp} (Generate SRT first)")
     assert_burnable_text(srtp)
     info = probe_media(src, ffmpeg)
+    if not info.get("vcodec"):
+        raise RuntimeError(f"no video stream to burn into: {src.name}")
     beta = EtaTracker("burn")
     beta.set_duration(info["duration"])
 
@@ -1449,22 +1520,16 @@ def burn_subtitles(src_path: str, srt_path: str, out_path: str, ffmpeg: str,
 
     total_frames = max(1, int(info["duration"] * (info["fps"] or 30.0)))
     in_bytes = info["size"]
-    # NOTE: FontName=Arial is forced because it is the ONLY family this
-    # libass build resolves (DirectWrite matching fails for everything
-    # else, silently rendering nothing). CJK SRTs are rejected above, so
-    # Arial's Latin-only coverage is sufficient here.
+    # NOTE on fonts: FontName=Arial is forced (see stage_subtitles_filter)
+    # because it is the ONLY family this libass build resolves - everything
+    # else renders nothing (verified). CJK SRTs are rejected earlier
+    # (assert_burnable_text) instead of burning blank video.
     tmpd = Path(_tf.mkdtemp(prefix="burn_"))
     try:
         # Plain-ASCII temp SRT copy: sidesteps filter-escaping pitfalls
         # (quotes/brackets/unicode in real filenames) entirely.
-        safe_srt = tmpd / "subs.srt"
-        shutil.copy(str(srtp), str(safe_srt))
-        vf = ("subtitles='%s':fontsdir='%s':force_style='FontName=Arial,"
-              "FontSize=18,PrimaryColour=&H00FFFFFF,"
-              "OutlineColour=&H80000000,BorderStyle=1,Outline=1,"
-              "Shadow=0,MarginV=28'" % (
-                  _esc_filter_path(str(safe_srt)),
-                  _esc_filter_path("C:/Windows/Fonts")))
+        vf = stage_subtitles_filter(srtp, font_size, tmpd)
+        vbps = max(100, int(video_kbps))
         vbps = max(100, int(video_kbps))
         base = [ffmpeg, "-hide_banner", "-y", "-v", "info", "-i", str(src),
                 "-map", "0:v:0", "-map", "0:a:0?",

@@ -158,6 +158,31 @@ class CanaryEngine:
         with self._lock:
             return self.task, self.source_lang, self.target_lang
 
+    def unload(self) -> bool:
+        """Drop weights to reclaim RAM (multi-GB) when another engine takes
+        over. Refuses while a load is in flight. Returns True when freed."""
+        with self._lock:
+            if self._loading or self._model is None:
+                return False
+            self._model = None
+            self._ready = False
+            self._last_error = None
+            self.supported_source_langs = None
+        try:
+            import gc
+            gc.collect()
+        except Exception:
+            pass
+        try:
+            import torch
+            try:
+                torch.cuda.empty_cache()
+            except Exception:
+                pass
+        except Exception:
+            pass
+        return True
+
     def _detect_supported_langs(self):
         """Read <|xx|> language tokens from the loaded tokenizer.
 

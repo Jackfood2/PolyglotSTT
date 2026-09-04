@@ -37,8 +37,10 @@ each engine the languages it can actually do.
   cancel, and a remaining-time countdown.
 - **Burn SRT into MP4** — hardcode subtitles into a new `.mp4`
   (`<name>.burned.mp4`, any input: mp4/mkv/ts/…) with x264 two-pass sized
-  to match the original file (audio copied when possible). Latin subtitles
-  only — CJK burns are refused loudly instead of producing blank video.
+  to match the original file (audio copied when possible, CPU threads from
+  the slider). Subtitle size is adjustable (12–32) with an instant
+  single-frame **Preview** before the full encode. Latin subtitles only —
+  CJK burns are refused loudly instead of producing blank video.
 - **Live + jobs at once** — hold-to-talk dictation keeps working while an
   SRT/burn job runs (separate threads; engines serialize inference, so
   everything just shares CPU).
@@ -106,7 +108,8 @@ as the job runs.
 **Burn-in** — with SRTs generated, *Burn SRT into MP4* hardcodes each
 queued video's subtitles into a size-matched `.burned.mp4` next to it
 (same folder or the chosen output folder). Needs the SRT first or the
-file is skipped with a notice.
+file is skipped with a notice. Drag *Subtitle size*, hit *Preview Frame*
+to see one burned frame instantly, then run the full encode.
 
 ## Project structure
 
