@@ -1373,32 +1373,37 @@ def default_burn_path(src: Path, out_dir: Optional[str]) -> Path:
     return src.parent / (src.stem + BURN_SUFFIX)
 
 
-# Burn speed modes: id -> (x264 preset, passes). Two-pass ABR is the only
-# way to land file size within ~1-3%; 1-pass ABR is ~half the time but
-# drifts (~±10%). Faster presets trade sharpness for speed at the same
-# size (ultrafast is visibly softer - fine for a quick check, not for
-# keeps). No NVENC option on purpose: GPU rate control cannot promise the
-# size match this feature exists for.
+# Burn speed modes: id -> dict(encoder/preset/passes). x264 two-pass is the
+# only combo promising ±1-3% size; 1-pass ABR drifts (~±10%); ultrafast is
+# visibly softer at the same size. NVENC (h264_nvenc) is 3-6x faster than
+# x264 but coarser at hitting sizes even in multipass VBR - offered as
+# explicit Draft/Balanced choices (greyed out without NVIDIA), never silent.
 BURN_SPEEDS = {
-    "match": ("medium", 2),
-    "fast": ("veryfast", 1),
-    "fastest": ("ultrafast", 1),
+    "match": {"encoder": "cpu", "preset": "medium", "passes": 2,
+              "label": "Match size (2-pass x264)"},
+    "fast": {"encoder": "cpu", "preset": "veryfast", "passes": 1,
+             "label": "Fast (1-pass x264)"},
+    "fastest": {"encoder": "cpu", "preset": "ultrafast", "passes": 1,
+                "label": "Fastest (ultrafast 1-pass)"},
+    "nvenc_draft": {"encoder": "nvenc", "preset": "p1", "passes": 1,
+                    "label": "Draft (NVENC fast 1-pass)"},
+    "nvenc_balanced": {"encoder": "nvenc", "preset": "p4", "passes": 2,
+                       "label": "Balanced (NVENC 2-pass)"},
 }
-BURN_SPEED_LABELS = {
-    "match": "Match size (2-pass)",
-    "fast": "Fast (1-pass)",
-    "fastest": "Fastest (ultrafast 1-pass)",
-}
+BURN_SPEED_LABELS = {k: v["label"] for k, v in BURN_SPEEDS.items()}
 BURN_SPEED_IDS = {v: k for k, v in BURN_SPEED_LABELS.items()}
 
 
-def resolve_burn_speed(speed) -> tuple:
-    """(preset, passes) for a speed id; unknown/empty -> exact-match mode."""
+def resolve_burn_speed(speed) -> dict:
+    """Full speed config dict; unknown/empty -> exact-match mode."""
     try:
         key = str(speed or "match").strip().lower()
     except Exception:
         key = "match"
-    return BURN_SPEEDS.get(key, BURN_SPEEDS["match"])
+    cfg = BURN_SPEEDS.get(key)
+    if isinstance(cfg, dict):
+        return dict(cfg)
+    return dict(BURN_SPEEDS["match"])
 
 
 def probe_media(path, ffmpeg: str) -> dict:
@@ -1810,7 +1815,21 @@ def burn_subtitles(src_path: str, srt_path: str, out_path: str, ffmpeg: str,
     info = probe_media(src, ffmpeg)
     if not info.get("vcodec"):
         raise RuntimeError(f"no video stream to burn into: {src.name}")
-    preset, passes = resolve_burn_speed(speed)
+    _spd = resolve_burn_speed(speed)
+    preset, passes = _spd["preset"], _spd["passes"]
+    use_nvenc = (_spd.get("encoder") == "nvenc")
+    if use_nvenc:
+        # Defensive at the library layer too (the app pre-checks and the
+        # GUI reverts, but direct callers deserve the clear error).
+        try:
+            import gpu as _gpumod
+            _nv_ok = bool(_gpumod.nvenc_available(ffmpeg))
+        except Exception:
+            _nv_ok = False
+        if not _nv_ok:
+            raise RuntimeError(
+                "NVENC burn needs an NVIDIA GPU + h264_nvenc encoder - "
+                "none detected. Pick a CPU burn speed instead.")
     beta = EtaTracker("burn")
     beta.set_duration(info["duration"])
 
@@ -1832,12 +1851,22 @@ def burn_subtitles(src_path: str, srt_path: str, out_path: str, ffmpeg: str,
         vf = stage_subtitles_filter(srtp, font_size, tmpd)
         vbps = max(100, int(video_kbps))
         base = [ffmpeg, "-hide_banner", "-y", "-v", "info", "-i", str(src),
-                "-map", "0:v:0", "-map", "0:a:0?",
-                "-c:v", "libx264", "-b:v", f"{vbps}k",
-                "-preset", preset, "-pix_fmt", "yuv420p",
-                "-vf", vf]
-        if threads and int(threads) > 0:
-            base += ["-threads", str(int(threads))]
+                "-map", "0:v:0", "-map", "0:a:0?"]
+        if use_nvenc:
+            # NVENC VBR with headroom caps (multipass flag added at run time
+            # below for the 2-pass mode). -threads is x264-only; NVENC
+            # scales internally.
+            base += ["-c:v", "h264_nvenc", "-preset", preset, "-tune", "hq",
+                     "-b:v", f"{vbps}k",
+                     "-maxrate", f"{int(vbps * 1.5)}k",
+                     "-bufsize", f"{int(vbps * 2)}k",
+                     "-pix_fmt", "yuv420p"]
+        else:
+            base += ["-c:v", "libx264", "-b:v", f"{vbps}k",
+                     "-preset", preset, "-pix_fmt", "yuv420p"]
+            if threads and int(threads) > 0:
+                base += ["-threads", str(int(threads))]
+        base += ["-vf", vf]
         if info["has_audio"]:
             if audio_copy:
                 base += ["-c:a", "copy"]
@@ -1852,7 +1881,23 @@ def burn_subtitles(src_path: str, srt_path: str, out_path: str, ffmpeg: str,
                 out.unlink()
         except Exception:
             pass
-        if passes == 2:
+        if use_nvenc:
+            # NVENC multipass=2-pass VBR happens INSIDE one ffmpeg run (not
+            # two runs like x264) - size lands approximately (~±5-10%).
+            if passes == 2:
+                multi, mlabel = ["-multipass", "fullres"], "multipass 2-pass VBR"
+            else:
+                multi, mlabel = [], "1-pass VBR"
+            if log_cb:
+                try:
+                    log_cb(f"burn (nvenc {preset}, {mlabel}, {vbps} kbps video, size approx)...")
+                except Exception:
+                    pass
+            p = subprocess.Popen(base + multi + [str(out)],
+                                 stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+            _burn_popen_wait(p, total_frames, 0.0, 1.0, _bprog,
+                             cancel_event, label="")
+        elif passes == 2:
             if log_cb:
                 try:
                     log_cb(f"burn pass 1/2 (analysis, {vbps} kbps video)...")

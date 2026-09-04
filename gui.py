@@ -53,6 +53,16 @@ except Exception:
 CANARY_MODEL_LABEL = "Canary-1B (3.9GB, fixed)"
 
 
+# One-line trade-off notes for the burn-speed menu, keyed by menu label.
+BURN_SPEED_HELP = {
+    "Match size (2-pass x264)": "Exact size (±1–3%). Slowest — encodes the video twice.",
+    "Fast (1-pass x264)": "About half the time, size within ~±10%.",
+    "Fastest (ultrafast 1-pass)": "Several times faster, visibly softer. For quick checks, not keeps.",
+    "Draft (NVENC fast 1-pass)": "Needs NVIDIA GPU. Fastest encode, size approximate (~±10%).",
+    "Balanced (NVENC 2-pass)": "Needs NVIDIA GPU. GPU two-pass, closer size (~±5–10%).",
+}
+
+
 def apply_badge_map(values, status_fn=None):
     """Build (display_list, {display: base}) with ✓/↓ download badges.
 
@@ -618,9 +628,20 @@ class MoonshineGUI(ctk.CTk):
             corner_radius=8, text_color=FG_SECONDARY,
             command=self._on_srt_preview)
         self.srt_preview_btn.grid(row=0, column=3, sticky="e", padx=(6, 12), pady=(10, 2))
-        ctk.CTkLabel(style_card, text="Preview burns one frame with the current size - instant check before the full encode",
+        try:
+            import gpu as _gpumod
+            _ggpu = _gpumod.best_gpu()
+            if _ggpu:
+                _ghint = (f" GPU: {_ggpu.get('name', 'NVIDIA')} "
+                          f"({_ggpu.get('free_mb', '?')}MB free) - NVENC modes enabled.")
+            else:
+                _ghint = " GPU: none detected - CPU modes only."
+        except Exception:
+            _ghint = ""
+        ctk.CTkLabel(style_card,
+                     text="Preview burns one frame with the current size - instant check before the full encode." + _ghint,
                      font=("Segoe UI", 9), text_color=FG_DIM, wraplength=420,
-                     justify="left").grid(row=3, column=0, columnspan=4,
+                     justify="left").grid(row=4, column=0, columnspan=4,
                                           sticky="w", padx=12, pady=(2, 10))
         self._srt_preview_cb = None
         self._preview_running = False
@@ -650,10 +671,12 @@ class MoonshineGUI(ctk.CTk):
                      ).grid(row=2, column=0, sticky="w", padx=(12, 4), pady=(2, 2))
         try:
             from srt import BURN_SPEED_LABELS as _BSL
-            _speed_vals = [BURN_SPEED_LABELS[k] for k in ("match", "fast", "fastest")
+            _speed_vals = [BURN_SPEED_LABELS[k] for k in
+                           ("match", "fast", "fastest",
+                            "nvenc_draft", "nvenc_balanced")
                            if k in BURN_SPEED_LABELS]
         except Exception:
-            _speed_vals = ["Match size (2-pass)", "Fast (1-pass)",
+            _speed_vals = ["Match size (2-pass x264)", "Fast (1-pass x264)",
                            "Fastest (ultrafast 1-pass)"]
         if not _speed_vals:
             _speed_vals = ["Match size (2-pass)"]
@@ -661,9 +684,16 @@ class MoonshineGUI(ctk.CTk):
         self.burn_speed_menu = ctk.CTkOptionMenu(
             style_card, variable=self.burn_speed_var,
             values=_speed_vals, width=220,
-            fg_color=BG_INPUT, button_color=ACCENT)
+            fg_color=BG_INPUT, button_color=ACCENT,
+            command=self._on_burn_speed_changed)
         self.burn_speed_menu.grid(row=2, column=1, columnspan=3, sticky="w",
                                   padx=4, pady=(2, 2))
+        self.burn_speed_desc = ctk.CTkLabel(
+            style_card, text="", font=("Segoe UI", 10),
+            text_color=ACCENT_GLOW, wraplength=420, justify="left")
+        self.burn_speed_desc.grid(row=3, column=0, columnspan=4,
+                                  sticky="w", padx=12, pady=(0, 2))
+        self._refresh_burn_speed_desc()
 
         # Progress card
         prog_card = ctk.CTkFrame(scroll, fg_color=BG_CARD, corner_radius=12)
@@ -1305,6 +1335,83 @@ class MoonshineGUI(ctk.CTk):
             self.burn_font_value.configure(text=f"{n}")
         except Exception:
             pass
+
+    def _refresh_burn_speed_desc(self):
+        """One-line trade-off note for the selected burn speed. NVENC rows
+        also state availability on this machine."""
+        try:
+            label = (self.burn_speed_var.get() or "").strip()
+        except Exception:
+            label = ""
+        try:
+            text = BURN_SPEED_HELP.get(label, "")
+        except Exception:
+            text = ""
+        if "NVENC" in label:
+            try:
+                import gpu as _gpumod
+                from srt import get_ffmpeg_exe as _get_ff
+                try:
+                    exe = _get_ff()
+                except Exception:
+                    exe = None
+                if _gpumod.nvenc_available(exe):
+                    try:
+                        import gpu as _g2
+                        _best = _g2.best_gpu() or {}
+                        text += f" Ready: {_best.get('name', 'NVIDIA GPU')}."
+                    except Exception:
+                        text += " Ready on this machine."
+                else:
+                    text += " Not available on this machine."
+            except Exception:
+                pass
+        try:
+            self.burn_speed_desc.configure(text=text)
+        except Exception:
+            pass
+
+    def _on_burn_speed_changed(self, value):
+        try:
+            self._refresh_burn_speed_desc()
+        except Exception:
+            pass
+        # NVENC entries stay visible (discoverability) but refuse without
+        # hardware: revert to exact-match and say why (same pattern as the
+        # Whisper-model busy revert).
+        try:
+            from srt import BURN_SPEED_IDS as _BSI
+            sid = _BSI.get((value or "").strip(), "match")
+        except Exception:
+            return
+        if sid not in ("nvenc_draft", "nvenc_balanced"):
+            return
+        ok = False
+        try:
+            import gpu as _gpumod
+            from srt import get_ffmpeg_exe as _get_ff
+            try:
+                exe = _get_ff()
+            except Exception:
+                exe = None
+            ok = bool(_gpumod.nvenc_available(exe))
+        except Exception:
+            ok = False
+        if not ok:
+            try:
+                from srt import BURN_SPEED_LABELS as _BSL
+                self.burn_speed_var.set(_BSL.get("match", value))
+            except Exception:
+                pass
+            try:
+                self._refresh_burn_speed_desc()
+            except Exception:
+                pass
+            self.set_srt_progress(0, "NVENC needs an NVIDIA GPU - reverted to Match size")
+            try:
+                self.srt_log("NVENC unavailable (no NVIDIA GPU/encoder) - pick a CPU mode.")
+            except Exception:
+                pass
 
     def get_burn_font_size(self) -> int:
         try:

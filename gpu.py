@@ -13,6 +13,7 @@ import time
 _SMI_TIMEOUT = 8
 _cache = {}
 _cache_lock = threading.Lock()
+_nvenc_cache = {}
 
 
 def _smi_gpus():
@@ -166,3 +167,40 @@ def describe() -> str:
                 f"ct2-cuda={'yes' if ct.get('ok') else 'no'}")
     except Exception as e:
         return f"GPU: probe failed ({e})"
+
+
+def nvenc_available(ffmpeg=None) -> bool:
+    """Can this box burn with h264_nvenc? Needs BOTH an NVIDIA dGPU and
+    the encoder in the ffmpeg build. Cached per binary. Never raises."""
+    try:
+        if best_gpu() is None:
+            return False
+    except Exception:
+        return False
+    exe = ffmpeg
+    if not exe:
+        try:
+            from srt import get_ffmpeg_exe as _get_ffmpeg
+            exe = _get_ffmpeg()
+        except Exception:
+            return False
+    if not exe:
+        return False
+    key = str(exe)
+    with _cache_lock:
+        if key in _nvenc_cache:
+            return bool(_nvenc_cache[key])
+    ok = False
+    try:
+        import re as _re
+        proc = subprocess.run(
+            [exe, "-hide_banner", "-encoders"],
+            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+            text=True, errors="replace", timeout=30)
+        out = proc.stdout or ""
+        ok = bool(_re.search(r"\bh264_nvenc\b", out))
+    except Exception:
+        ok = False
+    with _cache_lock:
+        _nvenc_cache[key] = ok
+    return ok

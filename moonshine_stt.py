@@ -196,7 +196,8 @@ class MoonshineSTTApp:
         if not isinstance(self.config.get("burn_sample_start"), str):
             self.config["burn_sample_start"] = "0:30"
             needs_save = True
-        if self.config.get("burn_speed") not in ("match", "fast", "fastest"):
+        if self.config.get("burn_speed") not in ("match", "fast", "fastest",
+                                                   "nvenc_draft", "nvenc_balanced"):
             self.config["burn_speed"] = "match"
             needs_save = True
         if needs_save:
@@ -301,8 +302,13 @@ class MoonshineSTTApp:
                     try:
                         from srt import BURN_SPEED_LABELS as _BSL
                         _bl = _BSL.get(self.config.get("burn_speed", "match"),
-                                       _BSL.get("match", "Match size (2-pass)"))
-                        self.gui.burn_speed_var.set(_bl)
+                                       _BSL.get("match"))
+                        if _bl:
+                            self.gui.burn_speed_var.set(_bl)
+                        try:
+                            self.gui._refresh_burn_speed_desc()
+                        except Exception:
+                            pass
                     except Exception:
                         pass
                     # SRT language dropdowns (only meaningful for Canary/Whisper)
@@ -1499,7 +1505,8 @@ class MoonshineSTTApp:
                 _fs = max(10, min(40, _fs))
                 self.config["burn_font_size"] = _fs
                 _spd = str(speed or "").strip().lower()
-                if _spd not in ("match", "fast", "fastest"):
+                if _spd not in ("match", "fast", "fastest",
+                                "nvenc_draft", "nvenc_balanced"):
                     _spd = "match"
                 self.config["burn_speed"] = _spd
                 save_local_config(self.config)
@@ -1529,6 +1536,16 @@ class MoonshineSTTApp:
                 ffmpeg = srtmod.get_ffmpeg_exe()
                 if not ffmpeg:
                     raise RuntimeError("ffmpeg not found - run setup.bat once.")
+                if job.get("speed", "match") in ("nvenc_draft", "nvenc_balanced"):
+                    try:
+                        import gpu as _gpumod
+                        _nv_ok = bool(_gpumod.nvenc_available(ffmpeg))
+                    except Exception:
+                        _nv_ok = False
+                    if not _nv_ok:
+                        raise RuntimeError(
+                            "NVENC burn needs an NVIDIA GPU + h264_nvenc encoder - "
+                            "none detected. Pick a CPU burn speed instead.")
 
                 def _run_one(path, progress_cb, log_cb):
                     from pathlib import Path as _P
