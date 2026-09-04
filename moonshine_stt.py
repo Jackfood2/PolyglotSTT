@@ -48,6 +48,7 @@ DEFAULT_CONFIG = {
     "whisper_task": "translate",    # transcribe | translate (->en, Whisper only outputs EN on translate)
     "whisper_src_lang": "ja",       # auto + whisper langs (ja/zh/ko/en/...)
     "whisper_model": "large-v3",    # tiny | base | small | medium | large-v3 (downloaded on demand)
+    "whisper_device": "auto",       # auto | cpu | cuda (cuda falls back to CPU when unusable)
     "srt_cpu": 0,                   # 0 = auto (80% of cores), else thread count
     "srt_out_dir": "",              # "" = same folder as source file
     "srt_input_lang": "ja",         # SRT input language code (auto/en/ja/zh/ko/...)
@@ -148,6 +149,9 @@ class MoonshineSTTApp:
             needs_save = True
         if self.config.get("whisper_model") not in _wmodels:
             self.config["whisper_model"] = "large-v3"
+            needs_save = True
+        if self.config.get("whisper_device") not in ("auto", "cpu", "cuda"):
+            self.config["whisper_device"] = "auto"
             needs_save = True
         # Validate SRT language codes
         try:
@@ -376,6 +380,7 @@ class MoonshineSTTApp:
                             source_lang=self.config.get("whisper_src_lang", "ja"),
                             target_lang="en",
                             model_id=self.config.get("whisper_model", "large-v3"),
+                            device=self.config.get("whisper_device", "auto"),
                             on_ready=self._model_ready,
                         )
                     except Exception as e:

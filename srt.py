@@ -97,6 +97,75 @@ def format_eta(seconds) -> str:
     return f"{s // 3600}h{(s % 3600) // 60:02d}m"
 
 
+class ProgressPump:
+    """Keeps bar/%/ETA alive across ONE blocking call (Whisper native pass,
+    a slow Canary chunk) that otherwise freezes progress for minutes.
+
+    A daemon thread ticks prog() toward base+span asymptotically (never
+    reaching it - the real completion sets the true value). stop() is
+    idempotent; the pump never raises.
+    """
+
+    def __init__(self, prog, base: float, span: float, total_s: float,
+                 label: str = ""):
+        self._prog = prog
+        self._base = max(0.0, min(1.0, float(base)))
+        self._span = max(0.0, float(span))
+        try:
+            self._total = max(1.0, float(total_s))
+        except Exception:
+            self._total = 60.0
+        self._label = label or ""
+        self._stop = threading.Event()
+        self._thread = None
+        self._t0 = time.monotonic()
+
+    def start(self):
+        if self._thread is not None:
+            return self
+        try:
+            self._thread = threading.Thread(target=self._tick, daemon=True)
+            self._thread.start()
+        except Exception:
+            self._thread = None
+        return self
+
+    def _tick(self):
+        import math as _math
+        try:
+            while not self._stop.wait(0.5):
+                try:
+                    el = max(0.0, time.monotonic() - self._t0)
+                    frac = self._base + self._span * (
+                        1.0 - _math.exp(-3.0 * el / self._total))
+                    cap = self._base + self._span * 0.97
+                    self._prog(min(cap, frac),
+                               f"{self._label} ({int(el)}s)".strip())
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+    def stop(self):
+        try:
+            self._stop.set()
+        except Exception:
+            pass
+        try:
+            if self._thread is not None:
+                self._thread.join(timeout=2)
+        except Exception:
+            pass
+        self._thread = None
+
+    def __enter__(self):
+        return self.start()
+
+    def __exit__(self, *exc):
+        self.stop()
+        return False
+
+
 def _eta_key_for(engine_kind, arch=0) -> str:
     ek = engine_kind or ""
     if "Whisper" in ek:
@@ -925,15 +994,18 @@ def run_srt_job(src_path: str, out_dir: str, engine_kind: str,
                 _err = _checker(_sup, canary_task, eff_src, eff_tgt)
                 if _err:
                     raise RuntimeError(_err)
-            log(f"Transcribing {len(spans)} chunks with Canary-1B ({canary_task} {eff_src}->{eff_tgt})...")
+            log(f"Transcribing {len(spans)} chunks with Canary-1B ({canary_task} {eff_src}->{eff_tgt}, {getattr(eng, 'device_info', 'cpu')})...")
             import soundfile as _sf
             import tempfile as _tf
+            _n_spans = max(1, len(spans))
             for i, (s, e) in enumerate(spans):
                 if cancelled():
                     raise InterruptedError("cancelled")
                 # Announce BEFORE the blocking call: a single Canary chunk can
                 # take 30s+ on CPU, and without this the bar/log look frozen.
-                prog(0.15 + 0.75 * i / len(spans),
+                _slice_base = 0.15 + 0.75 * i / _n_spans
+                _slice_span = 0.75 / _n_spans
+                prog(_slice_base,
                      f"Canary chunk {i + 1}/{len(spans)} ({s:.0f}s, {e - s:.1f}s audio)...")
                 log(f"  chunk {i + 1}/{len(spans)}: transcribing {e - s:.1f}s audio...")
                 s_i, e_i = int(s * sr), int(e * sr)
@@ -941,21 +1013,25 @@ def run_srt_job(src_path: str, out_dir: str, engine_kind: str,
                 with _tf.NamedTemporaryFile(suffix=".wav", delete=False) as tf:
                     tmp_c = tf.name
                 got_text = False
-                try:
-                    _sf.write(tmp_c, chunk, samplerate=sr)
-                    text = eng.transcribe_file(tmp_c, task=canary_task,
-                                               source_lang=eff_src,
-                                               target_lang=eff_tgt)
-                    if text and text.strip() and not text.startswith("["):
-                        segments.append((s, e, text.strip()))
-                        got_text = True
-                    elif text and text.startswith("[") and first_engine_error is None:
-                        first_engine_error = text.strip()
-                finally:
+                # Pump ticks the bar through the blocking inference below.
+                with ProgressPump(prog, _slice_base, _slice_span,
+                                  max(3.0, (e - s) * max(0.3, eta.factor)),
+                                  f"Canary chunk {i + 1}/{len(spans)}"):
                     try:
-                        os.unlink(tmp_c)
-                    except Exception:
-                        pass
+                        _sf.write(tmp_c, chunk, samplerate=sr)
+                        text = eng.transcribe_file(tmp_c, task=canary_task,
+                                                   source_lang=eff_src,
+                                                   target_lang=eff_tgt)
+                        if text and text.strip() and not text.startswith("["):
+                            segments.append((s, e, text.strip()))
+                            got_text = True
+                        elif text and text.startswith("[") and first_engine_error is None:
+                            first_engine_error = text.strip()
+                    finally:
+                        try:
+                            os.unlink(tmp_c)
+                        except Exception:
+                            pass
                 prog(0.15 + 0.75 * (i + 1) / len(spans),
                      f"Canary chunk {i + 1}/{len(spans)} done")
                 if got_text:
@@ -974,10 +1050,17 @@ def run_srt_job(src_path: str, out_dir: str, engine_kind: str,
             _wait_for_model(eng, f"Whisper {getattr(eng, 'model_id', 'Large v3')}",
                             f"Loading Whisper {getattr(eng, 'model_id', 'Large v3')} "
                             f"(slow first time - downloads when missing)...", 0.16)
-            log(f"Transcribing full audio with Whisper Large v3 ({whisper_task} {eff_wsrc}->{eff_wtgt}, native timestamps)...")
+            _wmodel = getattr(eng, 'model_id', 'Large v3')
+            _wdev = getattr(eng, 'device_info', 'cpu')
+            log(f"Transcribing full audio with Whisper {_wmodel} ({whisper_task} {eff_wsrc}->{eff_wtgt}, {_wdev}, native timestamps)...")
             prog(0.20, "Whisper transcribing (single pass)...")
             if cancelled():
                 raise InterruptedError("cancelled")
+            # Pump keeps bar/%/ETA alive through the one long blocking call
+            # (previously frozen at 20% until the whole file finished).
+            _pump = ProgressPump(prog, 0.20, 0.70,
+                                 max(10.0, duration * max(0.2, eta.factor)),
+                                 "Whisper transcribing").start()
             try:
                 # Prefer word stamps (exact placement incl. one-word cues);
                 # older engines without transcribe_file_words fall back to
@@ -993,6 +1076,8 @@ def run_srt_job(src_path: str, out_dir: str, engine_kind: str,
             except Exception as ex:
                 log(f"  native pass failed, falling back to chunks: {ex}")
                 native = []
+            finally:
+                _pump.stop()
             refined: List[Tuple[float, float, str]] = []
             if native:
                 # Whisper boundaries are approximate (often early / spanning

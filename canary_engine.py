@@ -98,6 +98,7 @@ class CanaryEngine:
         self._loading = False
         self._last_error: Optional[str] = None
         self._model_name = "nvidia/canary-1b"
+        self._device_used = "cpu"
         # Populated at load() by probing model.tokenizer.special_tokens.
         # None = unknown (not loaded, or detection failed) -> skip validation.
         self.supported_source_langs = None
@@ -105,6 +106,13 @@ class CanaryEngine:
     @property
     def is_ready(self) -> bool:
         return self._ready
+
+    @property
+    def device_info(self) -> str:
+        try:
+            return str(self._device_used or "cpu")
+        except Exception:
+            return "cpu"
 
     @property
     def current_arch_name(self) -> str:
@@ -146,10 +154,28 @@ class CanaryEngine:
                         self._model = nemo_asr.models.ASRModel.from_pretrained(
                             model_name=self._model_name
                         )
-                    # Move to CPU and eval
+                    # Eval first; GPU only with ample free VRAM (fp32-hungry:
+                    # the old blind .cuda() OOM-crashed small cards mid-load).
                     self._model.eval()
-                    if torch.cuda.is_available():
-                        self._model.cuda()
+                    try:
+                        import gpu as _gpumod
+                        _use_cuda, _reason = _gpumod.recommend_canary()
+                    except Exception:
+                        _use_cuda, _reason = False, "no gpu probe"
+                    try:
+                        _has_cuda = bool(torch.cuda.is_available())
+                    except Exception:
+                        _has_cuda = False
+                    self._device_used = "cpu"
+                    if _use_cuda and _has_cuda:
+                        try:
+                            self._model.cuda()
+                            self._device_used = "cuda"
+                            print(f"[Canary] using CUDA ({_reason})")
+                        except Exception as e_cuda:
+                            print(f"[Canary] cuda() failed ({e_cuda}) - staying on CPU")
+                    else:
+                        print(f"[Canary] using CPU ({_reason})")
                 except Exception as e_nemo:
                     # Fallback: try transformers pipeline for canary (if nemo not installed)
                     # This keeps offline working if nemo wheels not yet installed but transformers is

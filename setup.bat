@@ -62,6 +62,20 @@ if not errorlevel 1 goto CACHE_WHEELS
 echo Online Whisper install failed, trying offline wheels...
 "%~dp0venv\Scripts\python.exe" -m pip install --no-index --find-links="%~dp0wheels" -r requirements-whisper.txt
 if errorlevel 1 echo Warning: Whisper deps failed. Moonshine still works.
+goto GPU_TORCH
+:GPU_TORCH
+rem NVIDIA dGPU present but torch blind to it -> install the CUDA build once.
+where nvidia-smi >nul 2>&1
+if errorlevel 1 goto CACHE_WHEELS
+"%~dp0venv\Scripts\python.exe" -c "import torch,sys; sys.exit(0 if torch.cuda.is_available() else 1)" >nul 2>&1
+if not errorlevel 1 goto CACHE_WHEELS
+echo NVIDIA GPU found but torch is CPU-only - installing CUDA build (~2.5GB)...
+"%~dp0venv\Scripts\python.exe" -m pip install -U torch --index-url https://download.pytorch.org/whl/cu126
+if errorlevel 1 (
+    echo Online CUDA torch failed, trying default index...
+    "%~dp0venv\Scripts\python.exe" -m pip install -U torch
+)
+if errorlevel 1 echo Warning: GPU torch install failed - CPU remains fully working.
 goto CACHE_WHEELS
 :INSTALL_OK
 echo Dependencies installed.

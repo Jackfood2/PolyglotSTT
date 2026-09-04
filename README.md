@@ -26,6 +26,26 @@ Canary-1B likewise only carries `de/en/es/fr` language tokens — anything
 else fails fast with a message pointing at Whisper. The GUI only offers
 each engine the languages it can actually do.
 
+## GPU acceleration (automatic)
+
+CPU is the default and always works. When an NVIDIA dedicated GPU is
+present, the app detects it (model, driver, free VRAM) and uses **both**:
+inference moves to the GPU while audio prep, VAD, cue packing, ffmpeg and
+Moonshine stay on CPU.
+
+- **Whisper** → CUDA `float16` on cards with room, `int8` on smaller ones,
+  CPU otherwise. Override in `moonshine_config.json` with
+  `"whisper_device": "cpu"` (or `"cuda"` to force it — falls back to CPU
+  with a log line when unusable, never crashes).
+- **Canary-1B** → CUDA only with ~10 GB+ free VRAM (fp32-hungry; small
+  cards stay on CPU instead of OOM-crashing mid-load).
+- The SRT log states the chosen device per job, e.g.
+  `Transcribing … (translate ja->en, cuda float16, native timestamps)`.
+- `setup.bat` installs a CUDA torch build automatically when an NVIDIA
+  GPU is found but torch is CPU-only; `run.bat` only warns in that case
+  (never a surprise 2.5 GB download on launch). Faster-Whisper's bundled
+  CTranslate2 already ships CUDA kernels — no extra install for it.
+
 ## Features
 
 - **Live tab** — hold `F2` to record, release to transcribe; text is typed
@@ -111,7 +131,9 @@ English), tune CPU threads, then *Generate SRT*. The engine label (e.g.
 `Whisper Large v3 (translate Japanese->English)`) always shows exactly
 what the job will do. The status line counts down remaining time, learned
 from your past jobs on this machine (`srt_eta.json`) and self-correcting
-as the job runs.
+as the job runs. The bar keeps moving even through Whisper's long single
+pass and slow Canary chunks (it eases toward the estimate, then snaps to
+the true value on completion).
 
 **Burn-in** — with SRTs generated, *Burn SRT into MP4* hardcodes each
 queued video's subtitles into a size-matched `.burned.mp4` next to it

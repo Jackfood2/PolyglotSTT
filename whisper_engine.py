@@ -171,11 +171,19 @@ def delete_whisper_model(models_root=None, model_id: str = "large-v3"):
 class WhisperEngine:
     def __init__(self, task: str = "translate", source_lang: str = "ja",
                  target_lang: str = "en", model_id: str = WHISPER_MODEL_ID,
+                 device: str = "auto",
                  on_ready: Optional[Callable] = None):
         self.task = task if task in WHISPER_TASKS else "transcribe"
         self.source_lang = source_lang if source_lang else "auto"
         self.target_lang = "en" if self.task == "translate" else (target_lang or "en")
         self.model_id = model_id or WHISPER_MODEL_ID
+        # "auto" = CUDA when a capable dGPU is present, else CPU.
+        # Explicit "cpu"/"cuda" override (cuda falls back to CPU with a log
+        # when unusable - never crashes).
+        self.device = (device or "auto").strip().lower() or "auto"
+        self._device_used = "cpu"
+        self._compute_used = "int8"
+        self._device_reason = ""
         self._model = None
         self._ready = False
         self._on_ready = on_ready
@@ -192,6 +200,38 @@ class WhisperEngine:
     @property
     def current_arch_name(self) -> str:
         return f"whisper-{self.model_id} ({self.task} {self.source_lang}->{self.target_lang})"
+
+    @property
+    def device_info(self) -> str:
+        try:
+            return f"{self._device_used} {self._compute_used}".strip()
+        except Exception:
+            return "cpu"
+
+    def _resolve_device(self):
+        """(device, compute_type, reason) honoring self.device override."""
+        try:
+            import gpu as _gpumod
+        except Exception:
+            _gpumod = None
+        if self.device == "cpu" or _gpumod is None:
+            return "cpu", "int8", ("forced" if self.device == "cpu"
+                                   else "no gpu probe")
+        if self.device == "cuda":
+            if _gpumod is None:
+                return "cpu", "int8", "no gpu probe"
+            try:
+                dev, comp, reason = _gpumod.recommend_whisper(self.model_id)
+            except Exception:
+                return "cpu", "int8", "probe failed"
+            if dev == "cuda":
+                return dev, comp, "forced (" + reason + ")"
+            print(f"[Whisper] forced cuda unusable ({reason}) - using CPU")
+            return "cpu", "int8", reason
+        try:
+            return _gpumod.recommend_whisper(self.model_id)
+        except Exception:
+            return "cpu", "int8", "probe failed"
 
     def _ensure_dirs(self):
         for p in [WHISPER_MODELS_ROOT, HF_CACHE]:
@@ -238,6 +278,8 @@ class WhisperEngine:
                 self._ensure_dirs()
                 from faster_whisper import WhisperModel
                 cpu_threads = self._cpu_threads()
+                device, compute, reason = self._resolve_device()
+                print(f"[Whisper] device={device} compute={compute} ({reason})")
                 # Offline-first: try cached only, fallback to download when online.
                 # (local_files_only=False would hit network for a version check
                 # and stall/fail on the offline PC.)
@@ -246,14 +288,32 @@ class WhisperEngine:
                     try:
                         model = WhisperModel(
                             self.model_id,
-                            device="cpu",
-                            compute_type="int8",
+                            device=device,
+                            compute_type=compute,
                             cpu_threads=cpu_threads,
                             download_root=str(WHISPER_MODELS_ROOT),
                             local_files_only=local_only,
                         )
                         break
                     except Exception as e:
+                        # A forced/failing CUDA load falls back to CPU once
+                        # instead of failing the whole engine.
+                        if device == "cuda" and local_only:
+                            print(f"[Whisper] cuda load failed ({e}) - retrying on CPU")
+                            try:
+                                model = WhisperModel(
+                                    self.model_id,
+                                    device="cpu",
+                                    compute_type="int8",
+                                    cpu_threads=cpu_threads,
+                                    download_root=str(WHISPER_MODELS_ROOT),
+                                    local_files_only=True,
+                                )
+                                device, compute = "cpu", "int8"
+                                break
+                            except Exception as e2:
+                                last_err = e2
+                                continue
                         last_err = e
                         continue
                 else:
@@ -263,6 +323,9 @@ class WhisperEngine:
                     self._ready = True
                     self._last_error = None
                     self._loading = False
+                    self._device_used = device
+                    self._compute_used = compute
+                    self._device_reason = reason
                     switch_cb, self._switch_cb = self._switch_cb, None
                 if self._on_ready:
                     self._on_ready(True, None)

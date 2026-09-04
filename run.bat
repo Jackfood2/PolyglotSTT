@@ -63,6 +63,13 @@ if not errorlevel 1 goto RUN_APP
 echo Installing Whisper Large v3 dependencies (faster-whisper, offline)...
 "%~dp0venv\Scripts\python.exe" -m pip install --no-index --find-links="%~dp0wheels" -r requirements-whisper.txt
 if errorlevel 1 echo Warning: Whisper deps not installed. Moonshine engine still works.
+:GPU_NOTE
+rem Warning only here (never a surprise 2.5GB download on launch).
+where nvidia-smi >nul 2>&1
+if errorlevel 1 goto RUN_APP
+"%~dp0venv\Scripts\python.exe" -c "import torch,sys; sys.exit(0 if torch.cuda.is_available() else 1)" >nul 2>&1
+if not errorlevel 1 goto RUN_APP
+echo Note: NVIDIA GPU found but torch is CPU-only. Run setup.bat once for GPU support.
 :RUN_APP
 if not exist "models_cache\download.moonshine.ai" echo Warning: models_cache not found. Will try APPDATA cache.
 "%~dp0venv\Scripts\python.exe" moonshine_stt.py %*
