@@ -214,12 +214,16 @@ class WhisperEngine:
             import gpu as _gpumod
         except Exception:
             _gpumod = None
-        if self.device == "cpu" or _gpumod is None:
-            return "cpu", "int8", ("forced" if self.device == "cpu"
+        try:
+            d = (self.device or "auto").strip().lower() or "auto"
+        except Exception:
+            d = "auto"
+        if d == "gpu":
+            d = "cuda"  # GUI/config naming vs engine naming
+        if d == "cpu" or _gpumod is None:
+            return "cpu", "int8", ("forced" if d == "cpu"
                                    else "no gpu probe")
-        if self.device == "cuda":
-            if _gpumod is None:
-                return "cpu", "int8", "no gpu probe"
+        if d == "cuda":
             try:
                 dev, comp, reason = _gpumod.recommend_whisper(self.model_id)
             except Exception:
@@ -296,9 +300,9 @@ class WhisperEngine:
                         )
                         break
                     except Exception as e:
-                        # A forced/failing CUDA load falls back to CPU once
-                        # instead of failing the whole engine.
-                        if device == "cuda" and local_only:
+                        # A failing CUDA load retries on CPU (same
+                        # cached/online mode) instead of failing the engine.
+                        if device == "cuda":
                             print(f"[Whisper] cuda load failed ({e}) - retrying on CPU")
                             try:
                                 model = WhisperModel(
@@ -307,9 +311,10 @@ class WhisperEngine:
                                     compute_type="int8",
                                     cpu_threads=cpu_threads,
                                     download_root=str(WHISPER_MODELS_ROOT),
-                                    local_files_only=True,
+                                    local_files_only=local_only,
                                 )
                                 device, compute = "cpu", "int8"
+                                reason = f"cuda failed, CPU fallback ({reason})"
                                 break
                             except Exception as e2:
                                 last_err = e2

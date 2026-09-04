@@ -59,6 +59,7 @@ BURN_SPEED_HELP = {
     "Fast (1-pass x264)": "About half the time, size within ~±10%.",
     "Fastest (ultrafast 1-pass)": "Several times faster, visibly softer. For quick checks, not keeps.",
     "Draft (NVENC fast 1-pass)": "Needs NVIDIA GPU. Fastest encode, size approximate (~±10%).",
+    "Turbo (NVENC ultra-fast 1-pass)": "Needs NVIDIA GPU. Lowest-latency tune, a touch softer than Draft.",
     "Balanced (NVENC 2-pass)": "Needs NVIDIA GPU. GPU two-pass, closer size (~±5–10%).",
 }
 
@@ -310,7 +311,9 @@ class MoonshineGUI(ctk.CTk):
                                    segmented_button_fg_color=BG_CARD,
                                    segmented_button_selected_color=ACCENT,
                                    segmented_button_unselected_color=BG_CARD,
-                                   text_color=FG_PRIMARY)
+                                   text_color=FG_PRIMARY,
+                                   command=self._on_tab_changed)
+        self._tab_callback = None
         self.tabs.grid(row=2, column=0, sticky="nsew", padx=8, pady=(0, 4))
         live = self.tabs.add("Live")
         srt_tab = self.tabs.add("SRT File")
@@ -572,6 +575,32 @@ class MoonshineGUI(ctk.CTk):
         self.srt_cpu_value = ctk.CTkLabel(perf_card, text=f"{def_cpu} threads",
                                           font=("Segoe UI", 11, "bold"), text_color=FG_PRIMARY)
         self.srt_cpu_value.grid(row=2, column=2, sticky="e", padx=(4, 12), pady=(2, 10))
+        # Compute device for Whisper/Canary inference (Moonshine is CPU-only).
+        # Greyed to "CPU only" when no NVIDIA dGPU is present.
+        ctk.CTkLabel(perf_card, text="Compute:", font=("Segoe UI", 10, "bold"),
+                     text_color=FG_DIM).grid(row=3, column=0, sticky="w", padx=(12, 4), pady=(2, 10))
+        try:
+            import gpu as _gpumod2
+            _has_dgpu = _gpumod2.best_gpu() is not None
+        except Exception:
+            _has_dgpu = False
+        _compute_vals = ["Auto", "CPU", "GPU"] if _has_dgpu else ["CPU only"]
+        self.compute_var = ctk.StringVar(value=_compute_vals[0])
+        self.compute_menu = ctk.CTkOptionMenu(
+            perf_card, variable=self.compute_var,
+            values=_compute_vals, width=110,
+            fg_color=BG_INPUT, button_color=ACCENT,
+            command=self._on_compute_changed)
+        self.compute_menu.grid(row=3, column=1, sticky="w", padx=4, pady=(2, 10))
+        if not _has_dgpu:
+            try:
+                self.compute_menu.configure(state="disabled")
+            except Exception:
+                pass
+        ctk.CTkLabel(perf_card, text="(Whisper/Canary)",
+                     font=("Segoe UI", 9), text_color=FG_DIM
+                     ).grid(row=3, column=2, sticky="e", padx=(4, 12), pady=(2, 10))
+        self._compute_callback = None
 
         # Language card (SRT input/output - only for engines with language choice)
         lang_card = ctk.CTkFrame(scroll, fg_color=BG_CARD, corner_radius=12)
@@ -641,7 +670,7 @@ class MoonshineGUI(ctk.CTk):
         ctk.CTkLabel(style_card,
                      text="Preview burns one frame with the current size - instant check before the full encode." + _ghint,
                      font=("Segoe UI", 9), text_color=FG_DIM, wraplength=420,
-                     justify="left").grid(row=4, column=0, columnspan=4,
+                     justify="left").grid(row=5, column=0, columnspan=4,
                                           sticky="w", padx=12, pady=(2, 10))
         self._srt_preview_cb = None
         self._preview_running = False
@@ -673,7 +702,7 @@ class MoonshineGUI(ctk.CTk):
             from srt import BURN_SPEED_LABELS as _BSL
             _speed_vals = [BURN_SPEED_LABELS[k] for k in
                            ("match", "fast", "fastest",
-                            "nvenc_draft", "nvenc_balanced")
+                            "nvenc_draft", "nvenc_turbo", "nvenc_balanced")
                            if k in BURN_SPEED_LABELS]
         except Exception:
             _speed_vals = ["Match size (2-pass x264)", "Fast (1-pass x264)",
@@ -691,9 +720,36 @@ class MoonshineGUI(ctk.CTk):
         self.burn_speed_desc = ctk.CTkLabel(
             style_card, text="", font=("Segoe UI", 10),
             text_color=ACCENT_GLOW, wraplength=420, justify="left")
-        self.burn_speed_desc.grid(row=3, column=0, columnspan=4,
+        self.burn_speed_desc.grid(row=4, column=0, columnspan=4,
                                   sticky="w", padx=12, pady=(0, 2))
         self._refresh_burn_speed_desc()
+        # Manual video bitrate: Auto (size-match budget) or a fixed kbps.
+        # Manual trades the size guarantee for control - the log reports the
+        # expected total so the trade is explicit before encoding.
+        ctk.CTkLabel(style_card, text="Video bitrate:",
+                     font=("Segoe UI", 10), text_color=FG_DIM
+                     ).grid(row=3, column=0, sticky="w", padx=(12, 4), pady=(2, 2))
+        self.burn_vbr_var = ctk.IntVar(value=2000)
+        self.burn_vbr_slider = ctk.CTkSlider(
+            style_card, from_=300, to=10000, number_of_steps=97,
+            button_color=ACCENT, progress_color=ACCENT,
+            command=self._on_burn_vbr_changed)
+        self.burn_vbr_slider.grid(row=3, column=1, sticky="ew", padx=4, pady=(2, 2))
+        self.burn_vbr_slider.set(2000)
+        self.burn_vbr_value = ctk.CTkLabel(style_card, text="auto",
+                                           font=("Segoe UI", 11, "bold"),
+                                           text_color=FG_PRIMARY)
+        self.burn_vbr_value.grid(row=3, column=2, sticky="e", padx=(4, 6), pady=(2, 2))
+        self.burn_vbr_auto_var = ctk.BooleanVar(value=True)
+        self.burn_vbr_check = ctk.CTkCheckBox(
+            style_card, text="Auto", variable=self.burn_vbr_auto_var,
+            font=("Segoe UI", 10), text_color=FG_DIM, fg_color=ACCENT,
+            command=self._on_burn_vbr_toggled)
+        self.burn_vbr_check.grid(row=3, column=3, sticky="e", padx=(6, 12), pady=(2, 2))
+        try:
+            self.burn_vbr_slider.configure(state="disabled")
+        except Exception:
+            pass
 
         # Progress card
         prog_card = ctk.CTkFrame(scroll, fg_color=BG_CARD, corner_radius=12)
@@ -748,6 +804,29 @@ class MoonshineGUI(ctk.CTk):
                       command=self._on_srt_open_folder
                       ).grid(row=1, column=1, padx=(4, 0), pady=(8, 0), sticky="ew")
         self._srt_burn_cb = None
+
+    def _on_tab_changed(self, value=None):
+        # CTkTabview calls command() without args on some versions, with the
+        # tab name on others - resolve via get() either way.
+        try:
+            name = self.tabs.get()
+        except Exception:
+            name = value
+        if self._tab_callback and name in ("Live", "SRT File"):
+            try:
+                self._tab_callback(name)
+            except Exception:
+                pass
+
+    def set_tab_callback(self, cb: Callable):
+        self._tab_callback = cb if callable(cb) else None
+
+    def set_active_tab(self, name: str):
+        try:
+            if name in ("Live", "SRT File"):
+                self.tabs.set(name)
+        except Exception:
+            pass
 
     def _toggle_record(self):
         if self._is_recording:
@@ -881,8 +960,8 @@ class MoonshineGUI(ctk.CTk):
             self._canary_lang_callback(value)
 
     def set_settings(self, method: str, suffix: str, method_cb: Callable, suffix_cb: Callable):
-        self._method_callback = method_cb
-        self._suffix_callback = suffix_cb
+        self._method_callback = method_cb if callable(method_cb) else None
+        self._suffix_callback = suffix_cb if callable(suffix_cb) else None
         self.method_var.set(method if method in ["clipboard", "unicode"] else "clipboard")
         self.suffix_var.set(suffix if suffix in ["none", "space", "newline", "period_space"] else "none")
 
@@ -905,7 +984,7 @@ class MoonshineGUI(ctk.CTk):
         Canary fixed label) and select `current`. status_fn(base_label) may
         return a badge ("✓" downloaded / "↓" needs download); the app
         callback always receives the BASE label back."""
-        self._model_callback = callback
+        self._model_callback = callback if callable(callback) else None
         displays, mapping = apply_badge_map(list(values or []), status_fn)
         self._model_value_map = mapping
         try:
@@ -929,7 +1008,7 @@ class MoonshineGUI(ctk.CTk):
             pass
 
     def set_model_manage_callback(self, cb: Callable):
-        self._model_manage_cb = cb
+        self._model_manage_cb = cb if callable(cb) else None
 
     def _on_model_manage(self):
         if self._model_manage_cb:
@@ -950,7 +1029,23 @@ class MoonshineGUI(ctk.CTk):
             from tkinter import messagebox as _mb
         except Exception:
             _mb = None
+        try:
+            _old = getattr(self, "_model_manager_win", None)
+            if _old is not None:
+                try:
+                    if _old.winfo_exists():
+                        _old.lift()
+                        try:
+                            _old.focus_force()
+                        except Exception:
+                            pass
+                        return
+                except Exception:
+                    pass
+        except Exception:
+            pass
         win = ctk.CTkToplevel(self)
+        self._model_manager_win = win
         try:
             win.title("Model storage")
             win.geometry("540x480")
@@ -1137,9 +1232,9 @@ class MoonshineGUI(ctk.CTk):
             pass
 
     def set_engine(self, engine: str, task: str, src_lang: str, engine_cb: Callable, task_cb: Callable, lang_cb: Callable):
-        self._engine_callback = engine_cb
-        self._canary_task_callback = task_cb
-        self._canary_lang_callback = lang_cb
+        self._engine_callback = engine_cb if callable(engine_cb) else None
+        self._canary_task_callback = task_cb if callable(task_cb) else None
+        self._canary_lang_callback = lang_cb if callable(lang_cb) else None
         self.engine_var.set(engine if engine in ENGINE_CHOICES else "Moonshine v2")
         # Shared Task/Src widgets serve Canary + Whisper (both use transcribe/translate)
         self.canary_task_var.set(task if task in CANARY_TASKS else "transcribe")
@@ -1164,8 +1259,8 @@ class MoonshineGUI(ctk.CTk):
         self.set_status(text, color)
 
     def set_record_callback(self, on_start: Callable, on_stop: Callable):
-        self._on_record_start = on_start
-        self._on_record_stop = on_stop
+        self._on_record_start = on_start if callable(on_start) else None
+        self._on_record_stop = on_stop if callable(on_stop) else None
 
     # ---------------- SRT tab helpers ----------------
     def _enable_drop(self, widget) -> bool:
@@ -1259,6 +1354,10 @@ class MoonshineGUI(ctk.CTk):
                     pass
         except Exception:
             pass
+        try:
+            self.update_action_states()
+        except Exception:
+            pass
         return added
 
     def _refresh_srt_list(self):
@@ -1288,6 +1387,80 @@ class MoonshineGUI(ctk.CTk):
     def get_srt_input_paths(self) -> list:
         return [p for p in list(self._srt_input_paths or []) if p]
 
+    def _srt_out_dir(self) -> str:
+        try:
+            return self.srt_out_entry.get().strip()
+        except Exception:
+            return ""
+
+    @staticmethod
+    def _safe_exists(fn, path_obj, out_dir) -> bool:
+        try:
+            return bool(fn(path_obj, out_dir).exists())
+        except Exception:
+            return False
+
+    def _srt_existing_outputs(self, kind: str):
+        """{queue_index: out_path} for files whose SRT (kind='srt') or burned
+        MP4 (kind='burn') already exists. Pure check, no side effects."""
+        found = {}
+        try:
+            from pathlib import Path as _P
+            if kind == "burn":
+                from srt import default_burn_path as _fn
+            else:
+                from srt import default_out_path as _fn
+            out_dir = self._srt_out_dir()
+            for i, p in enumerate(list(self._srt_input_paths or [])):
+                try:
+                    if _fn(_P(p), out_dir).exists():
+                        found[i] = str(_fn(_P(p), out_dir))
+                except Exception:
+                    continue
+        except Exception:
+            pass
+        return found
+
+    def update_action_states(self, touch_progress: bool = True):
+        """Grey rules (only when idle - set_srt_running owns states mid-run):
+        Generate OFF when the queue is non-empty and every file already has
+        an SRT; Burn OFF when no queued file has one."""
+        if getattr(self, "_srt_running", False):
+            return
+        try:
+            paths = self.get_srt_input_paths()
+            if not paths:
+                try:
+                    self.srt_start_btn.configure(state="normal")
+                    self.srt_burn_btn.configure(state="normal")
+                except Exception:
+                    pass
+                return
+            existing = self._srt_existing_outputs("srt")
+            all_done = len(existing) >= len(paths)
+            any_done = len(existing) > 0
+            try:
+                self.srt_start_btn.configure(
+                    state="disabled" if all_done else "normal")
+                self.srt_burn_btn.configure(
+                    state="normal" if any_done else "disabled")
+            except Exception:
+                pass
+            if not touch_progress:
+                return
+            if all_done:
+                self.set_srt_progress(
+                    0, "All queued files already have SRTs - Clear or add more")
+            elif not any_done:
+                try:
+                    cur = self.srt_status.cget("text")
+                except Exception:
+                    cur = ""
+                if "already have SRTs" in (cur or ""):
+                    self.set_srt_progress(0, "Ready - Generate SRT first")
+        except Exception:
+            pass
+
     def set_srt_file_status(self, index: int, status: str):
         """Update one queue row's status text (safe from any thread via
         the app's after() pump - but defensive try/except anyway)."""
@@ -1307,6 +1480,10 @@ class MoonshineGUI(ctk.CTk):
         self._srt_input_paths = []
         self._srt_file_status = {}
         self._refresh_srt_list()
+        try:
+            self.update_action_states()
+        except Exception:
+            pass
 
     def _srt_browse_outdir(self):
         try:
@@ -1315,6 +1492,35 @@ class MoonshineGUI(ctk.CTk):
             if d:
                 self.srt_out_entry.delete(0, "end")
                 self.srt_out_entry.insert(0, d)
+                # Existence of SRTs depends on the folder - re-evaluate.
+                try:
+                    self.update_action_states()
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+    def _on_compute_changed(self, value):
+        if self._compute_callback:
+            try:
+                self._compute_callback(value)
+            except Exception:
+                pass
+
+    def set_compute(self, code: str, callback: Callable):
+        """code in auto/cpu/gpu. On boxes without dGPU the menu is a locked
+        'CPU only' row and any code maps to it."""
+        self._compute_callback = callback if callable(callback) else None
+        try:
+            vals = list(self.compute_menu.cget("values"))
+        except Exception:
+            vals = ["Auto", "CPU", "GPU"]
+        inv = {"auto": "Auto", "cpu": "CPU", "gpu": "GPU"}
+        want = inv.get((code or "auto").strip().lower(), "Auto")
+        if want not in vals:
+            want = vals[0] if vals else "Auto"
+        try:
+            self.compute_var.set(want)
         except Exception:
             pass
 
@@ -1335,6 +1541,44 @@ class MoonshineGUI(ctk.CTk):
             self.burn_font_value.configure(text=f"{n}")
         except Exception:
             pass
+
+    def _on_burn_vbr_changed(self, value):
+        try:
+            n = max(300, min(10000, int(round(float(value) / 100.0)) * 100))
+        except Exception:
+            n = 2000
+        try:
+            self.burn_vbr_value.configure(text=f"{n}k")
+        except Exception:
+            pass
+
+    def _on_burn_vbr_toggled(self):
+        try:
+            auto = bool(self.burn_vbr_auto_var.get())
+        except Exception:
+            auto = True
+        try:
+            self.burn_vbr_slider.configure(state="disabled" if auto else "normal")
+            if auto:
+                self.burn_vbr_value.configure(text="auto")
+            else:
+                self._on_burn_vbr_changed(self.burn_vbr_slider.get())
+        except Exception:
+            pass
+
+    def get_burn_vbr(self):
+        """(auto_bool, kbps) manual video-bitrate snapshot."""
+        try:
+            auto = bool(self.burn_vbr_auto_var.get())
+        except Exception:
+            auto = True
+        if auto:
+            return True, 0
+        try:
+            n = max(300, min(10000, int(round(float(self.burn_vbr_slider.get()) / 100.0)) * 100))
+        except Exception:
+            return True, 0
+        return False, n
 
     def _refresh_burn_speed_desc(self):
         """One-line trade-off note for the selected burn speed. NVENC rows
@@ -1384,7 +1628,7 @@ class MoonshineGUI(ctk.CTk):
             sid = _BSI.get((value or "").strip(), "match")
         except Exception:
             return
-        if sid not in ("nvenc_draft", "nvenc_balanced"):
+        if sid not in ("nvenc_draft", "nvenc_turbo", "nvenc_balanced"):
             return
         ok = False
         try:
@@ -1435,7 +1679,7 @@ class MoonshineGUI(ctk.CTk):
         return start_text, length
 
     def set_srt_preview_callback(self, cb: Callable):
-        self._srt_preview_cb = cb
+        self._srt_preview_cb = cb if callable(cb) else None
 
     def _on_srt_preview(self):
         if getattr(self, "_preview_running", False):
@@ -1473,6 +1717,51 @@ class MoonshineGUI(ctk.CTk):
         if not paths:
             self.set_srt_progress(0, "Add video/audio files first")
             return
+        # Overwrite guard: existing SRTs ask first (all / per-file / abort).
+        # Skipped rows are marked and EXCLUDED via the order map - the queue
+        # itself is never mutated, so list rows stay truthful.
+        order = list(range(len(paths)))
+        try:
+            from tkinter import messagebox as _mb
+            from pathlib import Path as _P
+            from srt import default_out_path as _fn
+            out_dir = self._srt_out_dir()
+            existing = [i for i, p in enumerate(paths)
+                        if self._safe_exists(_fn, _P(p), out_dir)]
+            if existing:
+                if len(existing) >= len(paths):
+                    self.set_srt_progress(
+                        0, "All queued files already have SRTs - Clear or add more")
+                    return
+                r = _mb.askyesnocancel(
+                    "SRTs already exist",
+                    f"{len(existing)} of {len(paths)} file(s) already have SRTs.\n"
+                    f"Yes = overwrite them all\nNo = choose per file\nCancel = abort")
+                if r is None:
+                    return
+                if r is False:
+                    keep = []
+                    for i, p in enumerate(paths):
+                        if i not in existing:
+                            keep.append(i)
+                            continue
+                        try:
+                            name = _P(p).name
+                        except Exception:
+                            name = p
+                        if _mb.askyesno("Overwrite SRT?",
+                                        f"Overwrite the SRT for:\n{name}"):
+                            keep.append(i)
+                        else:
+                            self.set_srt_file_status(i, "– skipped")
+                    if not keep:
+                        self.set_srt_progress(0, "All skipped - nothing to do")
+                        return
+                    order = keep
+        except Exception:
+            pass
+        for i in order:
+            self.set_srt_file_status(i, "queued")
         if self._srt_start_cb:
             # Snapshot ALL Tk state here on the GUI thread. The callback
             # runs on a worker thread where any widget access risks
@@ -1500,7 +1789,8 @@ class MoonshineGUI(ctk.CTk):
             if srt_task not in ("transcribe", "translate"):
                 srt_task = ""
             threading.Thread(target=self._srt_start_cb,
-                             args=(paths, out_dir, cpu,
+                             args=([paths[i] for i in order], order,
+                                   out_dir, cpu,
                                    srt_in, srt_out, srt_task),
                              daemon=True).start()
 
@@ -1518,6 +1808,60 @@ class MoonshineGUI(ctk.CTk):
         if not paths:
             self.set_srt_progress(0, "Add video files first (burn needs the queue)")
             return
+        # Burn pre-checks on the GUI thread: files without SRT cannot burn
+        # (marked, excluded); existing burned outputs ask first.
+        order = list(range(len(paths)))
+        try:
+            from tkinter import messagebox as _mb
+            from pathlib import Path as _P
+            from srt import default_out_path as _srtfn
+            from srt import default_burn_path as _bfn
+            out_dir = self._srt_out_dir()
+            runnable = []
+            for i, p in enumerate(paths):
+                if not self._safe_exists(_srtfn, _P(p), out_dir):
+                    self.set_srt_file_status(i, "– no SRT")
+                else:
+                    runnable.append(i)
+            if not runnable:
+                self.set_srt_progress(0, "Generate SRT first - nothing burnable queued")
+                return
+            existing = [i for i in runnable
+                        if self._safe_exists(_bfn, _P(paths[i]), out_dir)]
+            if existing:
+                r = _mb.askyesnocancel(
+                    "Burned videos already exist",
+                    f"{len(existing)} of {len(runnable)} file(s) already have burned MP4s.\n"
+                    f"Yes = overwrite them all\nNo = choose per file\nCancel = abort")
+                if r is None:
+                    return
+                if r is True:
+                    order = runnable
+                else:
+                    keep = []
+                    for i in runnable:
+                        if i not in existing:
+                            keep.append(i)
+                            continue
+                        try:
+                            name = _P(paths[i]).name
+                        except Exception:
+                            name = paths[i]
+                        if _mb.askyesno("Overwrite burned MP4?",
+                                        f"Overwrite the burned video for:\n{name}"):
+                            keep.append(i)
+                        else:
+                            self.set_srt_file_status(i, "– skipped")
+                    if not keep:
+                        self.set_srt_progress(0, "All skipped - nothing to do")
+                        return
+                    order = keep
+            else:
+                order = runnable
+        except Exception:
+            pass
+        for i in order:
+            self.set_srt_file_status(i, "queued")
         if self._srt_burn_cb:
             # Same GUI-thread snapshot discipline as Generate: the worker
             # thread must never touch Tk widgets.
@@ -1534,9 +1878,14 @@ class MoonshineGUI(ctk.CTk):
                 speed = _BSI.get((self.burn_speed_var.get() or "").strip(), "match")
             except Exception:
                 speed = "match"
+            try:
+                vbr_auto, vbr_kbps = self.get_burn_vbr()
+            except Exception:
+                vbr_auto, vbr_kbps = True, 2000
             threading.Thread(target=self._srt_burn_cb,
-                             args=(paths, out_dir, cpu,
-                                   self.get_burn_font_size(), speed),
+                             args=([paths[i] for i in order], order, out_dir, cpu,
+                                   self.get_burn_font_size(), speed,
+                                   vbr_auto, vbr_kbps),
                              daemon=True).start()
 
     def _on_srt_open_folder(self):
@@ -1574,9 +1923,12 @@ class MoonshineGUI(ctk.CTk):
 
     def set_srt_callbacks(self, on_start: Callable, on_cancel: Callable,
                           on_burn: Optional[Callable] = None):
-        self._srt_start_cb = on_start
-        self._srt_cancel_cb = on_cancel
-        self._srt_burn_cb = on_burn
+        # Coerce non-callables (e.g. a threading.Event wired by mistake -
+        # that once crashed Cancel threads with "Event object is not
+        # callable" while the event itself never got set).
+        self._srt_start_cb = on_start if callable(on_start) else None
+        self._srt_cancel_cb = on_cancel if callable(on_cancel) else None
+        self._srt_burn_cb = on_burn if callable(on_burn) else None
 
     def set_srt_engine_label(self, text: str):
         try:
@@ -1608,6 +1960,13 @@ class MoonshineGUI(ctk.CTk):
             if running:
                 self.srt_bar.set(0)
                 self.srt_pct.configure(text="0%")
+            else:
+                # Job ended: outputs changed on disk - re-apply grey rules
+                # (buttons only; srt_done() owns the final message + bar).
+                try:
+                    self.update_action_states(touch_progress=False)
+                except Exception:
+                    pass
         except Exception:
             pass
 

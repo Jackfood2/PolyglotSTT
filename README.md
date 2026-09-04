@@ -144,15 +144,20 @@ with a notice. *Burn speed* offers **Match size (2-pass x264)** — exact
 (±1–3%, slow, two full encodes), **Fast (1-pass x264)** — ~half the time
 at ~±10% size drift, **Fastest (ultrafast 1-pass)** — several times
 faster but visibly softer (fine for a quick check, not for keeps), plus
-**Draft / Balanced (NVENC)** GPU modes when an NVIDIA card is detected
-(fastest encodes, approximate size; the menu explains each mode, and
-unavailable NVENC entries revert with a reason). CPU threads come from
+**Draft / Turbo / Balanced (NVENC)** GPU modes when an NVIDIA card is
+detected (fastest encodes, approximate size; each menu entry explains
+itself, and unavailable NVENC entries revert with a reason). *Video
+bitrate* stays on Auto (size-match) or takes a manual 300–10000 kbps
+(the log states the expected total, size-match explicitly off).
+*Compute* (Auto/CPU/GPU, greyed without NVIDIA) picks Whisper/Canary
+inference device with hot-reload. CPU threads come from
 the slider. Drag *Subtitle size*, hit *Preview Frame*
 to see one burned frame instantly (also needs that file's SRT), then run
 the full encode. No SRT yet? Preview auto-transcribes just the
 *Sample from / Sample len* slice (e.g. 15s @ 0:30) with the current live
 engine settings and previews from that instead — a quick look before
-committing to a full transcription.
+committing to a full transcription. Existing outputs ask before
+overwriting (all / per-file / abort); the app remembers your last tab.
 
 ## Project structure
 

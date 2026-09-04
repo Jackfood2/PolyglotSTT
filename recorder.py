@@ -33,9 +33,10 @@ class AudioRecorder:
             # Never raise out of here: an exception kills the PortAudio
             # thread and the mic goes silently dead.
             try:
-                if not self._recording:
-                    return
-                self._frames.append(indata.copy())
+                with self._lock:
+                    if not self._recording:
+                        return
+                    self._frames.append(indata.copy())
                 if self._on_level:
                     # NOTE: indata is int16 - must cast before squaring,
                     # otherwise (int16**2) overflows and levels are garbage.
@@ -70,10 +71,17 @@ class AudioRecorder:
             self._stream.stop()
             self._stream.close()
             self._stream = None
+        # Swap the list out under the lock, concatenate outside it: the
+        # PortAudio thread only ever blocks for a list-append (µs), while
+        # the big copy runs lock-free. No torn reads, no dropouts.
         with self._lock:
-            if not self._frames:
-                return None
-            return np.concatenate(self._frames, axis=0)
+            frames, self._frames = self._frames, []
+        if not frames:
+            return None
+        try:
+            return np.concatenate(frames, axis=0)
+        except Exception:
+            return None
 
     def get_level(self) -> float:
         if not self._recording or not self._frames:

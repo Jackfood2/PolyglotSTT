@@ -84,10 +84,17 @@ def delete_canary_model() -> int:
     return freed
 
 class CanaryEngine:
-    def __init__(self, task: str = "transcribe", source_lang: str = "ja", target_lang: str = "en", on_ready: Optional[Callable] = None):
+    def __init__(self, task: str = "transcribe", source_lang: str = "ja", target_lang: str = "en", device: str = "auto", on_ready: Optional[Callable] = None):
         self.task = task if task in CANARY_TASKS else "transcribe"
         self.source_lang = source_lang
         self.target_lang = target_lang
+        # "auto" = VRAM-gated CUDA, "cpu" = never, "cuda" = try (explicit
+        # choice; OOM still fails cleanly instead of hanging).
+        self.device = (device or "auto").strip().lower() or "auto"
+        if self.device == "gpu":
+            self.device = "cuda"  # GUI/config naming vs engine naming
+        if self.device not in ("auto", "cpu", "cuda"):
+            self.device = "auto"
         self._model = None
         self._ready = False
         self._on_ready = on_ready
@@ -154,12 +161,28 @@ class CanaryEngine:
                         self._model = nemo_asr.models.ASRModel.from_pretrained(
                             model_name=self._model_name
                         )
-                    # Eval first; GPU only with ample free VRAM (fp32-hungry:
-                    # the old blind .cuda() OOM-crashed small cards mid-load).
+                    # Eval first; device policy: explicit cpu never touches
+                    # CUDA; explicit cuda tries it (guarded); auto uses the
+                    # VRAM gate (fp32-hungry: blind .cuda() OOM-crashes
+                    # small cards mid-load).
                     self._model.eval()
+                    _want = (getattr(self, "device", "auto") or "auto")
                     try:
                         import gpu as _gpumod
-                        _use_cuda, _reason = _gpumod.recommend_canary()
+                        if _want == "cuda":
+                            _use_cuda = True
+                            _reason = "forced by compute setting"
+                            try:
+                                _tc = _gpumod.torch_cuda()
+                                if not _tc.get("ok"):
+                                    _use_cuda = False
+                                    _reason = f"forced cuda unusable ({_tc.get('reason', '?')})"
+                            except Exception:
+                                _use_cuda, _reason = False, "probe failed"
+                        elif _want == "cpu":
+                            _use_cuda, _reason = False, "forced by compute setting"
+                        else:
+                            _use_cuda, _reason = _gpumod.recommend_canary()
                     except Exception:
                         _use_cuda, _reason = False, "no gpu probe"
                     try:
@@ -307,6 +330,8 @@ class CanaryEngine:
 
         # Fail before touching NeMo: unsupported langs crash it with
         # KeyError: '<|xx|>' plus a Windows temp-file cleanup cascade.
+        # Single snapshot used for BOTH validation and the call below, so a
+        # GUI switch mid-call cannot slip an unvalidated combo through.
         eff_task, eff_src, eff_tgt = self._snapshot_opts()
         err = self._check_lang_support(supported, eff_task, eff_src, eff_tgt)
         if err:
@@ -314,7 +339,7 @@ class CanaryEngine:
 
         try:
             # Normalize to float32 [-1,1] like Moonshine
-            arr = audio_data.flatten()
+            arr = np.asarray(audio_data).flatten()
             if arr.dtype == np.int16:
                 audio_float = arr.astype(np.float32) / 32768.0
             elif arr.dtype == np.int32:
@@ -334,14 +359,16 @@ class CanaryEngine:
                 # Call nemo transcribe
                 # Canary API: model.transcribe([path], source_lang, target_lang, task, batch_size)
                 # For translate, task='ast' or 'translate' depending on version.
-                # Atomic snapshot: a GUI switch mid-call can't tear these.
-                eff_task, eff_src, eff_tgt = self._snapshot_opts()
+                # Uses the validated snapshot above (not a fresh read).
                 task_arg = "ast" if eff_task == "translate" else "asr"
                 # Older nemo uses pnc for source_lang auto
                 src = eff_src if eff_src != "auto" else None
                 tgt = eff_tgt
                 with self._lock:
                     model = self._model
+                if model is None:
+                    # Unloaded (engine switch) between check and call.
+                    return ""
                 # Try new API first (serialized: see _infer_lock)
                 try:
                     # NeMo Canary 1.1B API (verbose=False keeps the per-chunk
@@ -411,6 +438,11 @@ class CanaryEngine:
             task_arg = "ast" if eff_task == "translate" else "asr"
             src = eff_src if eff_src != "auto" else None
             tgt = eff_tgt
+            with self._lock:
+                # Re-check liveness: unload() may have run since entry.
+                if not self._ready or self._model is None:
+                    return ""
+                model = self._model
             try:
                 with self._infer_lock:
                     results = model.transcribe(

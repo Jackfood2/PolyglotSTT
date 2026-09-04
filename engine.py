@@ -208,7 +208,30 @@ class TranscriptionEngine:
                     self._last_error = None
                     one_shot = self._switch_cb
                     self._switch_cb = None
+                    try:
+                        loaded_val = self._model_arch.value
+                    except Exception:
+                        try:
+                            loaded_val = int(self._model_arch)
+                        except Exception:
+                            loaded_val = None
+                    wanted_now = self._wanted_arch
                 self._loading = False
+                # A newer switch_model() may have landed mid-load (load()
+                # early-returns while _loading): chain one more load so we end
+                # on the WANTED arch instead of reporting the stale one ready.
+                # Terminates: each chain consumes the newest request.
+                try:
+                    stale = (wanted_now is not None and loaded_val is not None
+                             and int(wanted_now) != int(loaded_val))
+                except Exception:
+                    stale = False
+                if stale:
+                    with self._lock:
+                        if self._switch_cb is None:
+                            self._switch_cb = one_shot
+                            one_shot = None
+                    self.load()
                 if self._base_ready:
                     self._base_ready(True, None)
                 if one_shot:
@@ -246,7 +269,7 @@ class TranscriptionEngine:
             tr = self._transcriber  # local ref: switch_model closes under _tx_lock
 
         try:
-            arr = audio_data.flatten()
+            arr = np.asarray(audio_data).flatten()
             if arr.dtype == np.int16:
                 audio_float = arr.astype(np.float32) / 32768.0
             elif arr.dtype == np.int32:

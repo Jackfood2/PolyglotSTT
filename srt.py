@@ -97,7 +97,7 @@ def _eta_factor(key: str, duration=None) -> float:
         return 1.0
 
 
-def record_srt_job(key: str, audio_s: float, proc_s: float):
+def record_eta_sample(key: str, audio_s: float, proc_s: float):
     """Fold one successful job into the aggregated baseline (atomic write),
     updating both its length bucket and the engine-wide aggregate."""
     try:
@@ -877,6 +877,36 @@ def default_out_path(src: Path, out_dir: Optional[str]) -> Path:
     return src.parent / (src.stem + ".srt")
 
 
+def _reserve_names(pairs, base_fn) -> dict:
+    """{index: Path} with same-stem batch siblings suffixed " (2)"/" (3)".
+    Only batch-internal collisions rename - pre-existing files still
+    overwrite on re-runs (desired), so the filesystem is NOT consulted."""
+    seen = set()
+    out = {}
+    for i, (src_path, out_dir) in enumerate(pairs or []):
+        try:
+            base = base_fn(Path(src_path), out_dir)
+        except Exception:
+            continue
+        cand, n = base, 2
+        while cand.name.lower() in seen:
+            cand = base.with_name(f"{base.stem} ({n}){base.suffix}")
+            n += 1
+        seen.add(cand.name.lower())
+        out[i] = cand
+    return out
+
+
+def reserve_batch_names(pairs) -> dict:
+    """Disambiguated .srt outputs for a batch (see _reserve_names)."""
+    return _reserve_names(pairs, default_out_path)
+
+
+def reserve_burn_names(pairs) -> dict:
+    """Disambiguated .burned.mp4 outputs for a batch (see _reserve_names)."""
+    return _reserve_names(pairs, default_burn_path)
+
+
 def transcribe_chunk_moonshine(transcriber, audio_f32: np.ndarray, sr: int,
                                chunk_start: float) -> List[Tuple[float, float, str]]:
     """Returns [(abs_start, abs_end, text)] using Moonshine line timestamps."""
@@ -909,7 +939,8 @@ def run_srt_job(src_path: str, out_dir: str, engine_kind: str,
                 whisper_task: str = "translate", whisper_src: str = "ja",
                 get_whisper_engine: Optional[Callable] = None,
                 srt_input_lang: str = "auto",
-                srt_output_lang: str = "en") -> str:
+                srt_output_lang: str = "en",
+                out_path: Optional[str] = None) -> str:
     """Blocking SRT job. progress_cb(fraction 0..1, message). Returns output .srt path."""
     eta = EtaTracker(_eta_key_for(engine_kind, moonshine_arch))
 
@@ -975,7 +1006,11 @@ def run_srt_job(src_path: str, out_dir: str, engine_kind: str,
         raise RuntimeError("ffmpeg not found. It ships in wheels\\ (imageio-ffmpeg) - run setup.bat once.")
     log(f"ffmpeg: {ffmpeg}")
 
-    out_path = default_out_path(src, out_dir)
+    out_path = Path(out_path) if out_path else default_out_path(src, out_dir)
+    try:
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+    except Exception:
+        pass
     log(f"Output: {out_path} (default: same folder as source)")
     tmp_wav = src.parent / (src.stem + ".srt_tmp16k.wav")
     if out_path.resolve() == tmp_wav.resolve():
@@ -1198,26 +1233,30 @@ def run_srt_job(src_path: str, out_dir: str, engine_kind: str,
             prog(0.16, "Loading Moonshine model for file...")
             transcriber, arch_name = get_moonshine_transcriber()
             log(f"Transcribing {len(spans)} chunks with Moonshine {arch_name}...")
-            for i, (s, e) in enumerate(spans):
-                if cancelled():
-                    raise InterruptedError("cancelled")
-                prog(0.15 + 0.75 * i / len(spans),
-                     f"Moonshine chunk {i + 1}/{len(spans)} ({s:.0f}s, {e - s:.1f}s audio)...")
-                s_i, e_i = int(s * sr), int(e * sr)
-                chunk = audio[s_i:e_i]
-                try:
-                    lines = transcribe_chunk_moonshine(transcriber, chunk, sr, s)
-                    segments.extend(lines)
-                except Exception as ex:
-                    log(f"  chunk {i + 1} error: {ex}")
-                    if first_engine_error is None:
-                        first_engine_error = "[Moonshine Error: %s]" % ex
-                prog(0.15 + 0.75 * (i + 1) / len(spans),
-                     f"Moonshine chunk {i + 1}/{len(spans)} done")
             try:
-                transcriber.close()
-            except Exception:
-                pass
+                for i, (s, e) in enumerate(spans):
+                    if cancelled():
+                        raise InterruptedError("cancelled")
+                    prog(0.15 + 0.75 * i / len(spans),
+                         f"Moonshine chunk {i + 1}/{len(spans)} ({s:.0f}s, {e - s:.1f}s audio)...")
+                    s_i, e_i = int(s * sr), int(e * sr)
+                    chunk = audio[s_i:e_i]
+                    try:
+                        lines = transcribe_chunk_moonshine(transcriber, chunk, sr, s)
+                        segments.extend(lines)
+                    except Exception as ex:
+                        log(f"  chunk {i + 1} error: {ex}")
+                        if first_engine_error is None:
+                            first_engine_error = "[Moonshine Error: %s]" % ex
+                    prog(0.15 + 0.75 * (i + 1) / len(spans),
+                         f"Moonshine chunk {i + 1}/{len(spans)} done")
+            finally:
+                # Always release native resources, notably on Cancel (the old
+                # code skipped close() on early exit, leaking per job).
+                try:
+                    transcriber.close()
+                except Exception:
+                    pass
 
         if cancelled():
             raise InterruptedError("cancelled")
@@ -1244,7 +1283,7 @@ def run_srt_job(src_path: str, out_dir: str, engine_kind: str,
         prog(1.0, f"Done: {out_path.name} ({len(cues)} cues)")
         log(f"Wrote {out_path}")
         try:
-            record_srt_job(eta.key, duration, eta.elapsed())
+            record_eta_sample(eta.key, duration, eta.elapsed())
         except Exception:
             pass
         return str(out_path)
@@ -1386,8 +1425,13 @@ BURN_SPEEDS = {
     "fastest": {"encoder": "cpu", "preset": "ultrafast", "passes": 1,
                 "label": "Fastest (ultrafast 1-pass)"},
     "nvenc_draft": {"encoder": "nvenc", "preset": "p1", "passes": 1,
+                    "tune": "hq",
                     "label": "Draft (NVENC fast 1-pass)"},
+    "nvenc_turbo": {"encoder": "nvenc", "preset": "p1", "passes": 1,
+                    "tune": "ull",
+                    "label": "Turbo (NVENC ultra-fast 1-pass)"},
     "nvenc_balanced": {"encoder": "nvenc", "preset": "p4", "passes": 2,
+                       "tune": "hq",
                        "label": "Balanced (NVENC 2-pass)"},
 }
 BURN_SPEED_LABELS = {k: v["label"] for k, v in BURN_SPEEDS.items()}
@@ -1817,6 +1861,7 @@ def burn_subtitles(src_path: str, srt_path: str, out_path: str, ffmpeg: str,
         raise RuntimeError(f"no video stream to burn into: {src.name}")
     _spd = resolve_burn_speed(speed)
     preset, passes = _spd["preset"], _spd["passes"]
+    _tune = _spd.get("tune") or "hq"
     use_nvenc = (_spd.get("encoder") == "nvenc")
     if use_nvenc:
         # Defensive at the library layer too (the app pre-checks and the
@@ -1842,6 +1887,10 @@ def burn_subtitles(src_path: str, srt_path: str, out_path: str, ffmpeg: str,
 
     total_frames = max(1, int(info["duration"] * (info["fps"] or 30.0)))
     in_bytes = info["size"]
+    try:
+        _burn_wall0 = time.time()
+    except Exception:
+        _burn_wall0 = 0.0
     # NOTE on fonts: see stage_subtitles_filter - Arial+full-style for
     # Latin, MS Gothic minimal for CJK. Anything else renders blank here.
     tmpd = Path(_tf.mkdtemp(prefix="burn_"))
@@ -1856,7 +1905,7 @@ def burn_subtitles(src_path: str, srt_path: str, out_path: str, ffmpeg: str,
             # NVENC VBR with headroom caps (multipass flag added at run time
             # below for the 2-pass mode). -threads is x264-only; NVENC
             # scales internally.
-            base += ["-c:v", "h264_nvenc", "-preset", preset, "-tune", "hq",
+            base += ["-c:v", "h264_nvenc", "-preset", preset, "-tune", _tune,
                      "-b:v", f"{vbps}k",
                      "-maxrate", f"{int(vbps * 1.5)}k",
                      "-bufsize", f"{int(vbps * 2)}k",
@@ -1937,10 +1986,20 @@ def burn_subtitles(src_path: str, srt_path: str, out_path: str, ffmpeg: str,
         if out_bytes <= 0:
             raise RuntimeError("burn produced no output file")
         try:
-            record_srt_job("burn", info["duration"], beta.elapsed())
+            record_eta_sample("burn", info["duration"], beta.elapsed())
         except Exception:
             pass
         return str(out), in_bytes, out_bytes
+    except BaseException:
+        # Never leave a half-encoded file masquerading as finished
+        # (notably Cancel during pass 2) - but only remove files THIS call
+        # wrote (mtime check against call start), never a previous output.
+        try:
+            if out.exists() and out.stat().st_mtime >= _burn_wall0 - 5:
+                out.unlink()
+        except Exception:
+            pass
+        raise
     finally:
         try:
             shutil.rmtree(str(tmpd), ignore_errors=True)

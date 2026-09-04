@@ -48,7 +48,8 @@ DEFAULT_CONFIG = {
     "whisper_task": "translate",    # transcribe | translate (->en, Whisper only outputs EN on translate)
     "whisper_src_lang": "ja",       # auto + whisper langs (ja/zh/ko/en/...)
     "whisper_model": "large-v3",    # tiny | base | small | medium | large-v3 (downloaded on demand)
-    "whisper_device": "auto",       # auto | cpu | cuda (cuda falls back to CPU when unusable)
+    "whisper_device": "auto",       # legacy (use "compute" now; migrated once)
+    "compute": "auto",              # inference device for Whisper/Canary: auto | cpu | gpu
     "srt_cpu": 0,                   # 0 = auto (80% of cores), else thread count
     "srt_out_dir": "",              # "" = same folder as source file
     "srt_input_lang": "ja",         # SRT input language code (auto/en/ja/zh/ko/...)
@@ -56,7 +57,10 @@ DEFAULT_CONFIG = {
     "burn_font_size": 18,           # burned subtitle size (ASS units, 10-40)
     "burn_sample_start": "0:30",    # preview sample start (ss / mm:ss)
     "burn_sample_len": 15,          # preview sample length seconds (5-120)
-    "burn_speed": "match",          # match (2-pass) | fast (1-pass) | fastest (ultrafast 1-pass)
+    "burn_vbr_auto": True,          # burn bitrate: size-match budget when True
+    "burn_vbr_kbps": 2000,          # manual video kbps when burn_vbr_auto False
+    "burn_speed": "match",          # match (2-pass) | fast | fastest | nvenc_*
+    "srt_tab": "Live",              # last open tab (Live | SRT File)
 }
 
 def load_local_config():
@@ -161,6 +165,11 @@ class MoonshineSTTApp:
         if self.config.get("whisper_device") not in ("auto", "cpu", "cuda"):
             self.config["whisper_device"] = "auto"
             needs_save = True
+        # "compute" is the device selector going forward; the older
+        # whisper-only key is retained only so old files still validate.
+        if self.config.get("compute") not in ("auto", "cpu", "gpu"):
+            self.config["compute"] = "auto"
+            needs_save = True
         # Validate SRT language codes
         try:
             from gui import SRT_LANGS
@@ -196,9 +205,28 @@ class MoonshineSTTApp:
         if not isinstance(self.config.get("burn_sample_start"), str):
             self.config["burn_sample_start"] = "0:30"
             needs_save = True
+        if not isinstance(self.config.get("burn_vbr_auto"), bool):
+            try:
+                self.config["burn_vbr_auto"] = bool(int(self.config.get("burn_vbr_auto", 1)))
+            except Exception:
+                self.config["burn_vbr_auto"] = True
+            needs_save = True
+        try:
+            _vk = int(self.config.get("burn_vbr_kbps", 2000))
+        except Exception:
+            _vk = 2000
+        if _vk < 300 or _vk > 10000:
+            _vk = 2000
+            needs_save = True
+        if self.config.get("burn_vbr_kbps") != _vk:
+            self.config["burn_vbr_kbps"] = _vk
+            needs_save = True
         if self.config.get("burn_speed") not in ("match", "fast", "fastest",
                                                    "nvenc_draft", "nvenc_balanced"):
             self.config["burn_speed"] = "match"
+            needs_save = True
+        if self.config.get("srt_tab") not in ("Live", "SRT File"):
+            self.config["srt_tab"] = "Live"
             needs_save = True
         if needs_save:
             save_local_config(self.config)
@@ -250,6 +278,7 @@ class MoonshineSTTApp:
             try:
                 self.gui = MoonshineGUI()
                 self.gui.set_record_callback(self._gui_record_start, self._gui_record_stop)
+                self.gui.set_tab_callback(self._on_tab_changed)
                 self.gui.set_settings(
                     self.config.get("typing_method", "clipboard"),
                     self.config.get("suffix", "none"),
@@ -278,7 +307,7 @@ class MoonshineSTTApp:
                 except Exception:
                     pass
                 try:
-                    self.gui.set_srt_callbacks(self._srt_start, self._srt_cancel,
+                    self.gui.set_srt_callbacks(self._srt_start, self._cancel_srt_job,
                                                self._burn_start)
                     self.gui.set_srt_preview_callback(self._burn_preview)
                     try:
@@ -289,6 +318,16 @@ class MoonshineSTTApp:
                         _bfs = int(self.config.get("burn_font_size", 18))
                         self.gui.burn_font_slider.set(_bfs)
                         self.gui._on_burn_fontsize_changed(_bfs)
+                    except Exception:
+                        pass
+                    # Manual bitrate prefs (auto on by default).
+                    try:
+                        _auto = bool(self.config.get("burn_vbr_auto", True))
+                        _kbps = int(self.config.get("burn_vbr_kbps", 2000))
+                        _kbps = max(300, min(10000, _kbps))
+                        self.gui.burn_vbr_auto_var.set(_auto)
+                        self.gui.burn_vbr_slider.set(_kbps)
+                        self.gui._on_burn_vbr_toggled()
                     except Exception:
                         pass
                     try:
@@ -346,10 +385,25 @@ class MoonshineSTTApp:
                             self.gui._on_srt_cpu_changed(cpu)
                     except Exception:
                         pass
+                    try:
+                        self.gui.set_compute(self.config.get("compute", "auto"),
+                                             self._on_compute_changed)
+                    except Exception:
+                        pass
+                    try:
+                        self.gui.set_compute(self.config.get("compute", "auto"),
+                                             self._on_compute_changed)
+                    except Exception:
+                        pass
                 except Exception:
                     pass
                 self.gui.protocol("WM_DELETE_WINDOW", self._on_close)
                 self.gui.update_idletasks()
+                # Reopen on the previously selected tab.
+                try:
+                    self.gui.set_active_tab(self.config.get("srt_tab", "Live"))
+                except Exception:
+                    pass
                 try:
                     our_hwnd = int(self.gui.winfo_id())
                     self._our_root_hwnd = user32.GetAncestor(our_hwnd, GA_ROOT)
@@ -373,8 +427,9 @@ class MoonshineSTTApp:
                         from canary_engine import CanaryEngine
                         self.canary_engine = CanaryEngine(
                             task=self.config.get("canary_task", "transcribe"),
-                            source_lang=self.config.get("canary_src_lang", "ja"),
+                            source_lang=self.config.get("canary_src_lang", "auto"),
                             target_lang="en",
+                            device=self.config.get("compute", "auto"),
                             on_ready=self._model_ready,
                         )
                     except Exception as e:
@@ -391,6 +446,13 @@ class MoonshineSTTApp:
                 )
             except Exception:
                 pass
+            try:
+                _dev = self.config.get("compute", "auto")
+                if (_dev in ("auto", "cpu", "cuda") and self.canary_engine is not None
+                        and getattr(self.canary_engine, "device", "auto") != _dev):
+                    self.canary_engine.device = _dev
+            except Exception:
+                pass
         return self.canary_engine
 
     def _get_whisper_engine(self, apply_live_options: bool = True):
@@ -404,7 +466,7 @@ class MoonshineSTTApp:
                             source_lang=self.config.get("whisper_src_lang", "ja"),
                             target_lang="en",
                             model_id=self.config.get("whisper_model", "large-v3"),
-                            device=self.config.get("whisper_device", "auto"),
+                            device=self.config.get("compute", "auto"),
                             on_ready=self._model_ready,
                         )
                     except Exception as e:
@@ -419,7 +481,135 @@ class MoonshineSTTApp:
                 )
             except Exception:
                 pass
+            try:
+                _dev = self.config.get("compute", "auto")
+                if (_dev in ("auto", "cpu", "cuda") and self.whisper_engine is not None
+                        and getattr(self.whisper_engine, "device", "auto") != _dev):
+                    self.whisper_engine.device = _dev
+            except Exception:
+                pass
         return self.whisper_engine
+
+    def _on_tab_changed(self, name: str):
+        if name not in ("Live", "SRT File"):
+            return
+        with _CONFIG_LOCK:
+            self.config["srt_tab"] = name
+            save_local_config(self.config)
+
+    def _on_compute_changed(self, display: str):
+        code = {"Auto": "auto", "CPU": "cpu", "GPU": "cuda"}.get(
+            (display or "").strip(), "auto")
+        # "GPU" is only offered when a dGPU exists, but the card can vanish
+        # (eGPU unplugged) - re-verify instead of trusting the widget.
+        if code == "cuda":
+            try:
+                import gpu as _gpumod
+                if _gpumod.best_gpu() is None:
+                    raise RuntimeError("no dGPU")
+            except Exception:
+                self._log("No NVIDIA GPU found - staying on CPU")
+                if self.gui:
+                    try:
+                        self.gui.set_compute(self.config.get("compute", "auto"),
+                                             self._on_compute_changed)
+                    except Exception:
+                        pass
+                return
+        old = self.config.get("compute", "auto")
+        if code == old:
+            return
+        with _CONFIG_LOCK:
+            self.config["compute"] = code
+            save_local_config(self.config)
+        self._log(f"Compute -> {display} (applies on engine load)")
+        active = self.config.get("engine", "Moonshine v2")
+        target = None
+        if active == "Whisper Large v3" and self.whisper_engine is not None:
+            try:
+                self.whisper_engine.device = code
+            except Exception:
+                pass
+            target = self.whisper_engine
+        elif active == "Canary-1B" and self.canary_engine is not None:
+            try:
+                self.canary_engine.device = code
+            except Exception:
+                pass
+            target = self.canary_engine
+        else:
+            if self.gui:
+                self.gui.set_status(f"Compute: {display} (Moonshine is CPU-only)", SUCCESS)
+            return
+        # Skip pointless reloads for explicit choices already in effect
+        # (auto always re-resolves: VRAM conditions may have changed).
+        try:
+            if code in ("cpu", "cuda"):
+                want = "cuda" if code == "cuda" else "cpu"
+                if (getattr(target, "is_ready", False)
+                        and getattr(target, "_device_used", "") == want):
+                    self._log(f"Compute: already on {display}, no reload")
+                    if self.gui:
+                        self.gui.set_status(f"Ready \u2022 compute {display}", SUCCESS)
+                    return
+        except Exception:
+            pass
+        # Hot-reload the active heavy engine onto the new device, with the
+        # same switching UX as a model change (record locked meanwhile).
+        if self.gui:
+            self.gui.set_status(f"Switching compute to {display}...", WARNING)
+            try:
+                self.gui.record_btn.configure(state="disabled")
+            except Exception:
+                pass
+        self._model_switching = True
+
+        def _compute_switched(success, err):
+            def _ui():
+                self._model_switching = False
+                try:
+                    self.gui.record_btn.configure(state="normal")
+                except Exception:
+                    pass
+                if success:
+                    self.gui.set_status(f"Ready \u2022 compute {display}", SUCCESS)
+                else:
+                    self.gui.set_status(f"Compute error: {err}", DANGER)
+            if self.gui:
+                try:
+                    self.gui.after(0, _ui)
+                except Exception:
+                    self._model_switching = False
+            else:
+                self._model_switching = False
+
+        try:
+            target.load()
+            threading.Thread(target=self._watch_compute_load,
+                             args=(target, _compute_switched), daemon=True).start()
+        except Exception as e:
+            self._model_switching = False
+            _compute_switched(False, str(e))
+
+    def _watch_compute_load(self, eng, done_cb):
+        """Wait out a compute-switch reload, then fire done_cb(success, err).
+        Polls flags only - never touches Tk (done_cb marshals via after)."""
+        import time as _t
+        for _ in range(900):
+            try:
+                if getattr(eng, "is_ready", False):
+                    done_cb(True, None)
+                    return
+                if not getattr(eng, "_loading", True):
+                    done_cb(False, getattr(eng, "_last_error", None) or "load failed")
+                    return
+            except Exception:
+                pass
+            _t.sleep(1)
+        try:
+            done_cb(False, "timed out")
+        except Exception:
+            pass
 
     def _on_method_changed(self, value):
         self.config["typing_method"] = value
@@ -1016,6 +1206,17 @@ class MoonshineSTTApp:
         if now - getattr(self, "_last_level_t", 0.0) < 0.065:
             return
         self._last_level_t = now
+        # Max recording guard: a stuck-down F2 (or forgotten session) would
+        # otherwise grow one clip without bound (RAM + a giant transcribe).
+        # NOTE: this runs ON the PortAudio thread - never stop() the stream
+        # here (deadlock); hop to a fresh thread for the stop.
+        try:
+            if self._recording and now - getattr(self, "_rec_start_t", now) > 300:
+                self._gui_queue.put(("status", ("Auto-stopped (5 min max)", WARNING)))
+                threading.Thread(target=self._stop_recording, daemon=True).start()
+                return
+        except Exception:
+            pass
         if self.gui:
             try:
                 self.gui.after(0, lambda l=level: self.gui.update_level(l))
@@ -1046,9 +1247,17 @@ class MoonshineSTTApp:
     def _poll_queue(self):
         if not self.gui:
             return
-        try:
-            while True:
+        # NOTE: per-message guards - ONE malformed queue item must never kill
+        # this pump (the after() re-schedule below is the app's heartbeat;
+        # losing it freezes ALL gui updates permanently with no error shown).
+        while True:
+            try:
                 msg_type, payload = self._gui_queue.get_nowait()
+            except queue.Empty:
+                break
+            except Exception:
+                continue
+            try:
                 if msg_type == "transcription":
                     self.gui.set_transcription(payload)
                 elif msg_type == "status":
@@ -1064,9 +1273,16 @@ class MoonshineSTTApp:
                         self.gui.set_srt_file_status(payload[0], payload[1])
                     except Exception:
                         pass
-        except queue.Empty:
+            except Exception as e:
+                try:
+                    print(f"[MoonshineSTT] gui queue item failed: {e}")
+                except Exception:
+                    pass
+                continue
+        try:
+            self.gui.after(100, self._poll_queue)
+        except Exception:
             pass
-        self.gui.after(100, self._poll_queue)
 
     def _keyboard_listener(self):
         # NOTE: any exception escaping on_press/on_release kills this
@@ -1110,6 +1326,10 @@ class MoonshineSTTApp:
                 return
 
             self._recording = True
+            try:
+                self._rec_start_t = time.monotonic()
+            except Exception:
+                pass
         if self.gui:
             self.gui.after(0, lambda: self.gui.set_recording_state(True))
             self.gui.after(0, lambda: self.gui.set_status("Recording... F2 held", DANGER))
@@ -1269,7 +1489,8 @@ class MoonshineSTTApp:
             arch_name = str(arch)
         return tr, arch_name
 
-    def _srt_start(self, input_paths, out_dir: str, cpu_workers: int,
+    def _srt_start(self, input_paths, order=None, out_dir: str = "",
+                   cpu_workers: int = 1,
                    srt_in: str = "", srt_out: str = "", srt_task: str = ""):
         # Atomic check-and-set: two rapid Starts must not launch two jobs.
         # Self-heal: if a previous job thread died without clearing the flag
@@ -1301,6 +1522,14 @@ class MoonshineSTTApp:
             paths = [str(p).strip().strip('"') for p in paths if str(p or "").strip()]
             if not paths:
                 raise ValueError("queue is empty - add video/audio files first")
+            # Order map: batch positions back to GUI queue rows (the GUI may
+            # have excluded skipped files, so batch idx != queue idx).
+            try:
+                order = [int(i) for i in (order or [])]
+            except Exception:
+                order = []
+            if len(order) != len(paths):
+                order = list(range(len(paths)))
             from gui import SRT_LANGS as _SRT_LANGS
             srt_in = (srt_in or "").strip().lower() or None
             srt_out = (srt_out or "").strip().lower() or None
@@ -1330,13 +1559,14 @@ class MoonshineSTTApp:
                     "engine_kind": self.config.get("engine", "Moonshine v2"),
                     "moonshine_arch": int(self.config.get("model_arch", 5)),
                     "canary_task": self.config.get("canary_task", "transcribe"),
-                    "canary_src": self.config.get("canary_src_lang", "ja"),
+                    "canary_src": self.config.get("canary_src_lang", "auto"),
                     "whisper_task": self.config.get("whisper_task", "translate"),
                     "whisper_src": self.config.get("whisper_src_lang", "ja"),
                     "srt_input_lang": self.config.get("srt_input_lang", "auto"),
                     "srt_output_lang": self.config.get("srt_output_lang", "en"),
                     "cpu_workers": int(cpu_workers),
                     "src_paths": paths,
+                    "order": order,
                     "out_dir": out_dir,
                 }
             if job["engine_kind"] not in ("Moonshine v2", "Canary-1B", "Whisper Large v3"):
@@ -1357,8 +1587,24 @@ class MoonshineSTTApp:
             try:
                 import os as _os
                 import srt as srtmod
+                from collections import deque as _deque
+                # Reserve outputs up front: same-stem siblings (e.g. two
+                # trailer.mp4 from different folders into one out_dir) get
+                # " (2)" suffixes instead of overwriting each other.
+                # Re-runs still overwrite (only batch siblings disambiguate).
+                try:
+                    _reserved = srtmod.reserve_batch_names(
+                        [(p, job["out_dir"]) for p in job["src_paths"]])
+                    _by_path = {}
+                    for _idx in sorted(_reserved):
+                        _pp = job["src_paths"][_idx]
+                        _by_path.setdefault(_pp, _deque()).append(_reserved[_idx])
+                except Exception:
+                    _by_path = {}
                 # Frozen snapshot - immune to GUI changes mid-job.
                 def _run_one(path, progress_cb, log_cb):
+                    _q = _by_path.get(path)
+                    _out = _q.popleft() if _q else None
                     return srtmod.run_srt_job(
                         src_path=path,
                         out_dir=job["out_dir"],
@@ -1376,16 +1622,25 @@ class MoonshineSTTApp:
                         cancel_event=self._srt_cancel,
                         whisper_task=job["whisper_task"],
                         whisper_src=job["whisper_src"],
-                        get_whisper_engine=lambda: self._get_whisper_engine(False),
-                        srt_input_lang=job["srt_input_lang"],
-                        srt_output_lang=job["srt_output_lang"],
-                    )
+                    get_whisper_engine=lambda: self._get_whisper_engine(False),
+                    srt_input_lang=job["srt_input_lang"],
+                    srt_output_lang=job["srt_output_lang"],
+                    out_path=str(_out) if _out is not None else None,
+                )
 
                 def _file_cb(kind, path, info):
+                    # Batch positions -> GUI queue rows via the order map
+                    # (the GUI may have excluded skipped files).
                     try:
                         idx = int((info or {}).get("index", -1))
+                        _order = job.get("order") or []
+                        if 0 <= idx < len(_order):
+                            idx = int(_order[idx])
                     except Exception:
-                        idx = -1
+                        try:
+                            idx = int((info or {}).get("index", -1))
+                        except Exception:
+                            idx = -1
                     total = len(job["src_paths"])
                     if kind == "start":
                         self._gui_queue.put(
@@ -1450,8 +1705,15 @@ class MoonshineSTTApp:
             self._srt_thread = _t
         _t.start()
 
-    def _srt_cancel(self):
-        self._srt_cancel.set()
+    def _cancel_srt_job(self):
+        # NOTE: named to avoid colliding with the self._srt_cancel EVENT
+        # (an instance attribute shadows any same-named method - wiring the
+        # event as the Cancel callback crashed threads with
+        # "TypeError: 'Event' object is not callable" and cancel never fired).
+        try:
+            self._srt_cancel.set()
+        except Exception:
+            pass
         self._gui_queue.put(("srt_log", "Cancelling..."))
 
     @staticmethod
@@ -1466,8 +1728,10 @@ class MoonshineSTTApp:
             return f"{v / 1e6:.0f}MB"
         return f"{int(v)}B"
 
-    def _burn_start(self, input_paths, out_dir: str, cpu_workers: int,
-                    font_size: int = 0, speed: str = "match"):
+    def _burn_start(self, input_paths, order=None, out_dir: str = "",
+                    cpu_workers: int = 1, font_size: int = 0,
+                    speed: str = "match", vbr_auto: bool = True,
+                    vbr_kbps: int = 2000):
         # Same single-flight machinery as SRT: one heavy job at a time, same
         # Cancel button/event, same running UI state.
         with self._srt_lock:
@@ -1491,6 +1755,12 @@ class MoonshineSTTApp:
             paths = [str(p).strip().strip('"') for p in paths if str(p or "").strip()]
             if not paths:
                 raise ValueError("queue is empty - add video files first")
+            try:
+                order = [int(i) for i in (order or [])]
+            except Exception:
+                order = []
+            if len(order) != len(paths):
+                order = list(range(len(paths)))
             with _CONFIG_LOCK:
                 self.config["srt_out_dir"] = out_dir or ""
                 try:
@@ -1506,13 +1776,21 @@ class MoonshineSTTApp:
                 self.config["burn_font_size"] = _fs
                 _spd = str(speed or "").strip().lower()
                 if _spd not in ("match", "fast", "fastest",
-                                "nvenc_draft", "nvenc_balanced"):
+                                "nvenc_draft", "nvenc_turbo", "nvenc_balanced"):
                     _spd = "match"
                 self.config["burn_speed"] = _spd
+                try:
+                    _vauto = bool(vbr_auto) if vbr_auto is not None else True
+                    _vkbps = max(300, min(10000, int(vbr_kbps or 2000)))
+                except Exception:
+                    _vauto, _vkbps = True, 2000
+                self.config["burn_vbr_auto"] = _vauto
+                self.config["burn_vbr_kbps"] = _vkbps
                 save_local_config(self.config)
                 job = {"paths": paths, "out_dir": out_dir,
                        "cpu_workers": int(cpu_workers), "font_size": _fs,
-                       "speed": _spd}
+                       "speed": _spd, "order": order,
+                       "vbr_auto": _vauto, "vbr_kbps": _vkbps}
             self._srt_cancel.clear()
             if self.gui:
                 self.gui.after(0, lambda: self.gui.set_srt_running(True))
@@ -1546,6 +1824,16 @@ class MoonshineSTTApp:
                         raise RuntimeError(
                             "NVENC burn needs an NVIDIA GPU + h264_nvenc encoder - "
                             "none detected. Pick a CPU burn speed instead.")
+                from collections import deque as _deque2
+                try:
+                    _bres = srtmod.reserve_burn_names(
+                        [(p, job["out_dir"]) for p in job["paths"]])
+                    _bby_path = {}
+                    for _idx in sorted(_bres):
+                        _pp = job["paths"][_idx]
+                        _bby_path.setdefault(_pp, _deque2()).append(_bres[_idx])
+                except Exception:
+                    _bby_path = {}
 
                 def _run_one(path, progress_cb, log_cb):
                     from pathlib import Path as _P
@@ -1555,15 +1843,31 @@ class MoonshineSTTApp:
                         raise FileNotFoundError(
                             f"no SRT for {src.name} - Generate SRT first")
                     info = srtmod.probe_media(src, ffmpeg)
-                    vbps, abps, acopy = srtmod.plan_burn_bitrates(info)
+                    _vbps_auto, abps, acopy = srtmod.plan_burn_bitrates(info)
                     try:
                         in_gb = self._fmt_gb(info["size"])
                     except Exception:
                         in_gb = "?"
+                    if job.get("vbr_auto", True):
+                        vbps = _vbps_auto
+                        budget_note = f"(in {in_gb}, target match)"
+                    else:
+                        vbps = max(100000, int(job.get("vbr_kbps", 2000)) * 1000)
+                        try:
+                            _est = (vbps + (abps if info.get("has_audio") else 0)) \
+                                * max(1.0, float(info.get("duration") or 0)) / 8
+                            est_note = f"est. ~{self._fmt_gb(_est)}, size-match OFF"
+                        except Exception:
+                            est_note = "size-match OFF"
+                        budget_note = f"(in {in_gb}, manual {vbps // 1000} kbps, {est_note})"
                     log_cb(f"budget: video {vbps // 1000} kbps, "
                            f"audio {'copy' if acopy else f'AAC {abps // 1000} kbps'} "
-                           f"(in {in_gb}, target match)")
-                    out_path = srtmod.default_burn_path(src, job["out_dir"])
+                           f"{budget_note}")
+                    _bq = _bby_path.get(path)
+                    if _bq:
+                        out_path = _bq.popleft()
+                    else:
+                        out_path = srtmod.default_burn_path(src, job["out_dir"])
                     return srtmod.burn_subtitles(
                         str(src), str(srt_path), str(out_path), ffmpeg,
                         vbps // 1000, (abps // 1000) if not acopy else 128,
@@ -1573,10 +1877,17 @@ class MoonshineSTTApp:
                         cancel_event=self._srt_cancel)
 
                 def _file_cb(kind, path, info):
+                    # Batch positions -> GUI queue rows via the order map.
                     try:
                         idx = int((info or {}).get("index", -1))
+                        _order = job.get("order") or []
+                        if 0 <= idx < len(_order):
+                            idx = int(_order[idx])
                     except Exception:
-                        idx = -1
+                        try:
+                            idx = int((info or {}).get("index", -1))
+                        except Exception:
+                            idx = -1
                     if kind == "start":
                         self._gui_queue.put(("srt_file_status", (idx, "burning…")))
                     elif kind == "done":
