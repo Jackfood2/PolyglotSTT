@@ -63,6 +63,111 @@ WHISPER_MODEL_CHOICES = {
 WHISPER_MODEL_CHOICES_REV = {v: k for k, v in WHISPER_MODEL_CHOICES.items()}
 
 
+def _whisper_dir_size(path) -> int:
+    import os as _os
+    try:
+        total = 0
+        for root, _dirs, files in _os.walk(str(path)):
+            for fn in files:
+                try:
+                    total += _os.path.getsize(_os.path.join(root, fn))
+                except Exception:
+                    pass
+        return total
+    except Exception:
+        return 0
+
+
+def whisper_repo_for(model_id: str) -> str:
+    """faster-whisper repo for an id (alias table first, Systran fallback).
+    Note: 'large' and 'large-v3' intentionally share one repo."""
+    try:
+        from faster_whisper.utils import _MODELS
+        repo = (_MODELS or {}).get(model_id)
+        if repo:
+            return repo
+    except Exception:
+        pass
+    fallback = {
+        "tiny": "Systran/faster-whisper-tiny",
+        "base": "Systran/faster-whisper-base",
+        "small": "Systran/faster-whisper-small",
+        "medium": "Systran/faster-whisper-medium",
+        "large": "Systran/faster-whisper-large-v3",
+        "large-v1": "Systran/faster-whisper-large-v1",
+        "large-v2": "Systran/faster-whisper-large-v2",
+        "large-v3": "Systran/faster-whisper-large-v3",
+    }
+    if model_id in fallback:
+        return fallback[model_id]
+    raise ValueError(f"unknown whisper model: {model_id}")
+
+
+def _whisper_cache_dir(models_root, repo: str) -> Path:
+    root = Path(models_root) if models_root else WHISPER_MODELS_ROOT
+    return root / ("models--" + repo.replace("/", "--"))
+
+
+def _whisper_repo_complete(repo_dir: Path) -> bool:
+    """A usable snapshot has model.bin of real size (tiny is the smallest
+    at ~75MB; anything far below is a partial/failed download)."""
+    try:
+        snap = repo_dir / "snapshots"
+        if not snap.exists():
+            return _whisper_dir_size(repo_dir) > 50_000_000
+        for sub in snap.iterdir():
+            try:
+                b = sub / "model.bin"
+                if b.exists() and b.stat().st_size > 50_000_000:
+                    return True
+            except Exception:
+                continue
+    except Exception:
+        pass
+    return False
+
+
+def whisper_downloaded_map(models_root=None) -> dict:
+    """{model_id: True} for fully downloaded ids (shared repos count once
+    for every id pointing at them, e.g. large + large-v3)."""
+    out = {}
+    for mid in WHISPER_MODEL_CHOICES.values():
+        try:
+            if _whisper_repo_complete(
+                    _whisper_cache_dir(models_root, whisper_repo_for(mid))):
+                out[mid] = True
+        except Exception:
+            pass
+    return out
+
+
+def whisper_cache_info(models_root=None) -> dict:
+    """{model_id: bytes on disk} (0 when absent; shared repos repeat)."""
+    out = {}
+    for mid in WHISPER_MODEL_CHOICES.values():
+        try:
+            d = _whisper_cache_dir(models_root, whisper_repo_for(mid))
+            out[mid] = _whisper_dir_size(d) if d.exists() else 0
+        except Exception:
+            out[mid] = 0
+    return out
+
+
+def delete_whisper_model(models_root=None, model_id: str = "large-v3"):
+    """Remove one id's repo dir. Returns (bytes_freed, [affected_ids]) -
+    ids sharing the repo (large + large-v3) go together, by necessity."""
+    import shutil
+    repo = whisper_repo_for(model_id)
+    d = _whisper_cache_dir(models_root, repo)
+    if not d.exists():
+        raise FileNotFoundError(f"not downloaded: {model_id}")
+    freed = _whisper_dir_size(d)
+    shutil.rmtree(str(d), ignore_errors=False)
+    affected = [mid for mid in WHISPER_MODEL_CHOICES.values()
+                if whisper_repo_for(mid) == repo]
+    return freed, affected
+
+
 class WhisperEngine:
     def __init__(self, task: str = "translate", source_lang: str = "ja",
                  target_lang: str = "en", model_id: str = WHISPER_MODEL_ID,

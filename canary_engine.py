@@ -34,6 +34,55 @@ CANARY_TARGET_LANGS = {
     "translate": ["en"],  # Canary-1B translates to en only
 }
 
+
+def _canary_dir_size(path) -> int:
+    import os as _os
+    try:
+        total = 0
+        for root, _dirs, files in _os.walk(str(path)):
+            for fn in files:
+                try:
+                    total += _os.path.getsize(_os.path.join(root, fn))
+                except Exception:
+                    pass
+        return total
+    except Exception:
+        return 0
+
+
+def canary_cache_info() -> dict:
+    """{"nemo": bytes} for the local canary-1b.nemo (>100MB counts as a real
+    model; the shared huggingface/torch caches are deliberately untouched -
+    Whisper uses them too)."""
+    try:
+        f = CANARY_CACHE / "canary-1b.nemo"
+        if f.exists() and f.stat().st_size > 100_000_000:
+            return {"nemo": f.stat().st_size}
+    except Exception:
+        pass
+    return {"nemo": 0}
+
+
+def delete_canary_model() -> int:
+    """Remove local canary-1b.nemo file(s). Returns bytes freed."""
+    import glob as _glob
+    freed = 0
+    try:
+        for pat in ("canary-1b.nemo", "*.nemo"):
+            for hit in _glob.glob(str(CANARY_CACHE / pat)):
+                try:
+                    freed += Path(hit).stat().st_size
+                    os.unlink(hit)
+                except Exception:
+                    pass
+            if freed:
+                break
+    except Exception:
+        pass
+    if not freed:
+        raise FileNotFoundError("no local canary-1b.nemo to delete")
+    return freed
+
 class CanaryEngine:
     def __init__(self, task: str = "transcribe", source_lang: str = "ja", target_lang: str = "en", on_ready: Optional[Callable] = None):
         self.task = task if task in CANARY_TASKS else "transcribe"

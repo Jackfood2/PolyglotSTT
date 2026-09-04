@@ -1,5 +1,6 @@
 """Moonshine v2 transcription engine wrapper - offline file API with model selection."""
 
+import os
 import threading
 import numpy as np
 from pathlib import Path
@@ -46,6 +47,64 @@ MODEL_ARCH_NAMES = {
     4: "small-streaming",
     5: "medium-streaming",
 }
+
+
+def _dir_size_bytes(path) -> int:
+    try:
+        total = 0
+        for root, _dirs, files in os.walk(str(path)):
+            for fn in files:
+                try:
+                    total += os.path.getsize(os.path.join(root, fn))
+                except Exception:
+                    pass
+        return total
+    except Exception:
+        return 0
+
+
+def moonshine_model_dir(cache_root=None, arch: int = 5):
+    """On-disk dir for one arch, e.g. models_cache/download.moonshine.ai/model/medium-streaming-en."""
+    from pathlib import Path as _P
+    root = _P(cache_root) if cache_root else PORTABLE_CACHE_ROOT
+    name = MODEL_ARCH_NAMES.get(int(arch), str(arch))
+    return root / "download.moonshine.ai" / "model" / f"{name}-en"
+
+
+def moonshine_downloaded_map(cache_root=None) -> dict:
+    """{arch: True} for archs actually cached (ignores stray dirs)."""
+    out = {}
+    for arch in MODEL_ARCH_NAMES:
+        try:
+            d = moonshine_model_dir(cache_root, arch)
+            if d.exists() and _dir_size_bytes(d) > 1_000_000:
+                out[int(arch)] = True
+        except Exception:
+            pass
+    return out
+
+
+def moonshine_cache_info(cache_root=None) -> dict:
+    """{arch: bytes} for cached archs (0 when absent)."""
+    out = {}
+    for arch in MODEL_ARCH_NAMES:
+        try:
+            d = moonshine_model_dir(cache_root, arch)
+            out[int(arch)] = _dir_size_bytes(d) if d.exists() else 0
+        except Exception:
+            out[int(arch)] = 0
+    return out
+
+
+def delete_moonshine_model(cache_root=None, arch: int = 5) -> int:
+    """Remove one cached arch dir. Returns bytes freed; raises when absent."""
+    import shutil
+    d = moonshine_model_dir(cache_root, arch)
+    if not d.exists():
+        raise FileNotFoundError(f"not downloaded: {d.name}")
+    freed = _dir_size_bytes(d)
+    shutil.rmtree(str(d), ignore_errors=False)
+    return freed
 
 class TranscriptionEngine:
     def __init__(self, language: str = "en", model_arch: Optional[int] = None, on_ready: Optional[Callable] = None):

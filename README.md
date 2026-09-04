@@ -83,7 +83,7 @@ connection — grab them manually:
 
 | Model | Size | Source | Cache location |
 |---|---|---|---|
-| Moonshine medium-streaming (default) + tiny-streaming | ~155 MB | fetched by `setup.bat` via `moonshine_voice.download` | `models_cache\download.moonshine.ai\` |
+| Moonshine (all 6 sizes: tiny → medium-streaming) | ~25–260 MB each | fetched on first pick via the *Model* row (`setup.bat` pre-fetches medium + tiny-streaming) | `models_cache\download.moonshine.ai\` |
 | `nvidia/canary-1b` | ~3.9 GB | <https://huggingface.co/nvidia/canary-1b> — or drop a `canary-1b.nemo` file at `models_cache\canary-1b\canary-1b.nemo` (>100 MB is picked up automatically, fully offline) | `models_cache\canary-1b\` (+ `models_cache\huggingface\`, `models_cache\torch\`) |
 | `Systran/faster-whisper-*` (tiny/base/small/medium/large/v1/v2/v3) | 75 MB – 3 GB | <https://huggingface.co/Systran/faster-whisper-large-v3> (auto-downloaded by Faster-Whisper) — pick the size in the Live tab *Model* row when the Whisper engine is active; each size downloads once on first selection. No Turbo offered: it cannot translate by training design; no distil/`.en` (English-only) | `models_cache\whisper-models\` |
 
@@ -95,8 +95,13 @@ system Python install), so zipping the folder makes a portable offline copy.
 
 **Live dictation** — pick an engine; for Canary/Whisper pick Task
 (`transcribe` keeps the source language, `translate` outputs English) and
-source language. Hold `F2`, speak, release. Typing method / suffix options
-are in the Live tab; settings persist in `moonshine_config.json`.
+source language. The *Model* row right underneath always belongs to the
+active engine (Moonshine sizes / downloadable Whisper sizes / fixed
+Canary), with ✓ = stored locally and ↓ = downloads on first pick; the
+*Manage…* button shows every model, its disk size, and lets you delete
+downloaded ones individually (or all at once) to save space. Hold `F2`,
+speak, release. Typing method / suffix options are in the Live tab;
+settings persist in `moonshine_config.json`.
 
 **SRT subtitles** — open the *SRT File* tab, drop video/audio files
 (mp4/mkv/avi/mov/ts/mp3/wav/m4a/… — multi-select for batch), optionally set

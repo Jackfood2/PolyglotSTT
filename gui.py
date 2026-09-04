@@ -52,6 +52,31 @@ except Exception:
     WHISPER_MODEL_CHOICES_REV = {v: k for k, v in WHISPER_MODEL_CHOICES.items()}
 CANARY_MODEL_LABEL = "Canary-1B (3.9GB, fixed)"
 
+
+def apply_badge_map(values, status_fn=None):
+    """Build (display_list, {display: base}) with ✓/↓ download badges.
+
+    Pure function (no widgets) so it is unit-testable. Display strings are
+    uniquified defensively; a failing status_fn degrades to no badges.
+    """
+    mapping = {}
+    displays = []
+    for v in (values or []):
+        mark = ""
+        if status_fn is not None:
+            try:
+                mark = (status_fn(v) or "").strip()
+            except Exception:
+                mark = ""
+        d = f"{v} {mark}" if mark else str(v)
+        k, n = d, 2
+        while k in mapping:
+            k = f"{d} ({n})"
+            n += 1
+        mapping[k] = v
+        displays.append(k)
+    return displays, mapping
+
 ENGINE_CHOICES = ["Moonshine v2", "Canary-1B", "Whisper Large v3"]
 CANARY_TASKS = ["transcribe", "translate"]
 # Union of Canary + Whisper src langs so one shared Src menu serves both engines.
@@ -366,7 +391,7 @@ class MoonshineGUI(ctk.CTk):
 
         # Settings row - ported from test.py typing method / suffix
         settings_frame = ctk.CTkFrame(live, fg_color=BG_CARD, corner_radius=10)
-        settings_frame.grid(row=5, column=0, sticky="ew", padx=8, pady=(0, 8))
+        settings_frame.grid(row=6, column=0, sticky="ew", padx=8, pady=(0, 8))
         ctk.CTkLabel(settings_frame, text="Insert via:", font=("Segoe UI", 10), text_color=FG_DIM).pack(side="left", padx=(12, 4), pady=8)
         self.method_var = ctk.StringVar(value="clipboard")
         self.method_menu = ctk.CTkOptionMenu(settings_frame, variable=self.method_var, values=["clipboard", "unicode"], width=110, fg_color=BG_INPUT, button_color=ACCENT, command=self._on_method_changed)
@@ -378,15 +403,26 @@ class MoonshineGUI(ctk.CTk):
         self._method_callback = None
         self._suffix_callback = None
 
-        # Model size selector - Moonshine only
+        # Model size selector - paired directly under Engine (same card flow):
+        # the options + title always belong to the active engine.
         model_frame = ctk.CTkFrame(live, fg_color=BG_CARD, corner_radius=10)
-        model_frame.grid(row=6, column=0, sticky="ew", padx=8, pady=(0, 8))
-        ctk.CTkLabel(model_frame, text="Model:", font=("Segoe UI", 10, "bold"), text_color=FG_DIM).pack(side="left", padx=(12, 4), pady=8)
+        model_frame.grid(row=5, column=0, sticky="ew", padx=8, pady=(0, 8))
+        self.model_title_label = ctk.CTkLabel(model_frame, text="Model:",
+                                              font=("Segoe UI", 10, "bold"), text_color=FG_DIM)
+        self.model_title_label.pack(side="left", padx=(12, 4), pady=8)
         self.model_var = ctk.StringVar(value="Medium Streaming (110MB, best)")
         self.model_menu = ctk.CTkOptionMenu(model_frame, variable=self.model_var, values=list(MODEL_CHOICES.keys()), width=260, fg_color=BG_INPUT, button_color=ACCENT, command=self._on_model_changed)
         self.model_menu.pack(side="left", padx=4, pady=8, fill="x", expand=True)
+        self.model_manage_btn = ctk.CTkButton(
+            model_frame, text="Manage…", width=80, font=("Segoe UI", 12),
+            fg_color="#2D3748", hover_color="#4A5568", height=32,
+            corner_radius=8, text_color=FG_SECONDARY,
+            command=self._on_model_manage)
+        self.model_manage_btn.pack(side="left", padx=4, pady=8)
         ctk.CTkLabel(model_frame, text="Restart not needed", font=("Segoe UI", 9), text_color=FG_DIM).pack(side="left", padx=(8, 12), pady=8)
         self._model_callback = None
+        self._model_manage_cb = None
+        self._model_value_map = {}
         self.model_frame = model_frame
         self.engine_frame = engine_frame
 
@@ -712,7 +748,13 @@ class MoonshineGUI(ctk.CTk):
         except Exception:
             pass
         if self._model_callback:
-            self._model_callback(value)
+            # Menu shows badged labels ("Large v3 (3GB, best) ✓"); the app
+            # always gets the BASE label back.
+            try:
+                base = (self._model_value_map or {}).get(value, value)
+            except Exception:
+                base = value
+            self._model_callback(base)
 
     def _refresh_srt_engine_label(self):
         try:
@@ -727,7 +769,12 @@ class MoonshineGUI(ctk.CTk):
                 _tgt = "en" if _t == "translate" else _o
                 self.set_srt_engine_label(f"{eng} ({_t} {_s}->{_tgt})")
             else:
-                self.set_srt_engine_label(f"Moonshine v2 ({self.model_var.get()})")
+                try:
+                    _mbase = (self._model_value_map or {}).get(
+                        self.model_var.get(), self.model_var.get())
+                except Exception:
+                    _mbase = self.model_var.get()
+                self.set_srt_engine_label(f"Moonshine v2 ({_mbase})")
         except Exception:
             pass
 
@@ -782,17 +829,239 @@ class MoonshineGUI(ctk.CTk):
         return ("normal" if engine_kind in ("Moonshine v2", "Whisper Large v3")
                 else "disabled")
 
-    def set_model_options(self, values, current: str, callback: Callable):
+    def set_model_options(self, values, current: str, callback: Callable,
+                          status_fn: Optional[Callable] = None):
         """Swap the Model row to another engine's choices (Whisper sizes /
-        Canary fixed label) and select `current`."""
+        Canary fixed label) and select `current`. status_fn(base_label) may
+        return a badge ("✓" downloaded / "↓" needs download); the app
+        callback always receives the BASE label back."""
         self._model_callback = callback
+        displays, mapping = apply_badge_map(list(values or []), status_fn)
+        self._model_value_map = mapping
         try:
-            self.model_menu.configure(values=list(values))
+            self.model_menu.configure(values=displays)
         except Exception:
             pass
         try:
-            vals = list(values)
-            self.model_var.set(current if current in vals else vals[0])
+            want = None
+            for d, b in mapping.items():
+                if b == current:
+                    want = d
+                    break
+            self.model_var.set(want if want is not None else (displays[0] if displays else ""))
+        except Exception:
+            pass
+
+    def set_model_title(self, engine_name: str):
+        try:
+            self.model_title_label.configure(text=f"Model ({engine_name}):")
+        except Exception:
+            pass
+
+    def set_model_manage_callback(self, cb: Callable):
+        self._model_manage_cb = cb
+
+    def _on_model_manage(self):
+        if self._model_manage_cb:
+            try:
+                self._model_manage_cb()
+            except Exception:
+                pass
+
+    def show_model_manager(self, get_data, on_delete, on_delete_all):
+        """Model storage dialog.
+
+        get_data() -> {"items": [{engine, kind, id, label, size (bytes|None),
+          downloaded, in_use}], "total": bytes}. on_delete(engine, kind, id)
+        -> (ok, msg); on_delete_all() -> (ok, msg). All guarded; the dialog
+        rebuilds its rows after every action.
+        """
+        try:
+            from tkinter import messagebox as _mb
+        except Exception:
+            _mb = None
+        win = ctk.CTkToplevel(self)
+        try:
+            win.title("Model storage")
+            win.geometry("540x480")
+            win.minsize(480, 380)
+            win.configure(fg_color=BG_DARK)
+            try:
+                win.transient(self)
+            except Exception:
+                pass
+        except Exception:
+            pass
+
+        header = ctk.CTkFrame(win, fg_color="transparent")
+        header.pack(fill="x", padx=16, pady=(14, 4))
+        ctk.CTkLabel(header, text="Downloaded models",
+                     font=("Segoe UI", 15, "bold"), text_color=FG_PRIMARY
+                     ).pack(side="left")
+        total_lbl = ctk.CTkLabel(header, text="", font=("Segoe UI", 11),
+                                 text_color=FG_DIM)
+        total_lbl.pack(side="right")
+        ctk.CTkLabel(win, text="✓ downloaded   ↓ downloads on first pick",
+                     font=("Segoe UI", 10), text_color=FG_DIM
+                     ).pack(anchor="w", padx=16)
+
+        body = ctk.CTkScrollableFrame(win, fg_color="transparent")
+        body.pack(fill="both", expand=True, padx=12, pady=4)
+        body.grid_columnconfigure(0, weight=1)
+
+        foot = ctk.CTkFrame(win, fg_color="transparent")
+        foot.pack(fill="x", padx=16, pady=(4, 14))
+        foot.grid_columnconfigure(0, weight=1)
+        foot.grid_columnconfigure(1, weight=1)
+
+        def _gb(n):
+            try:
+                v = float(n or 0)
+            except Exception:
+                return "—"
+            if v >= 1e9:
+                return f"{v / 1e9:.2f} GB"
+            if v >= 1e6:
+                return f"{v / 1e6:.0f} MB"
+            if v > 0:
+                return f"{int(v)} B"
+            return "—"
+
+        def _rebuild():
+            try:
+                for child in body.winfo_children():
+                    child.destroy()
+            except Exception:
+                pass
+            try:
+                data = get_data() or {}
+            except Exception:
+                data = {}
+            items = (data or {}).get("items", []) or []
+            try:
+                total_lbl.configure(
+                    text=f"on disk: {_gb((data or {}).get('total', 0))}")
+            except Exception:
+                pass
+            if not items:
+                ctk.CTkLabel(body, text="No downloadable models found.",
+                             font=("Segoe UI", 11), text_color=FG_DIM
+                             ).grid(row=0, column=0, sticky="w", padx=8, pady=8)
+                return
+            last_eng = None
+            row = 0
+            for it in items:
+                try:
+                    eng = it.get("engine", "")
+                    if eng != last_eng:
+                        last_eng = eng
+                        ctk.CTkLabel(body, text=eng,
+                                     font=("Segoe UI", 11, "bold"),
+                                     text_color=ACCENT_GLOW
+                                     ).grid(row=row, column=0, columnspan=3,
+                                            sticky="w", padx=8, pady=(10, 2))
+                        row += 1
+                    name = str(it.get("label", it.get("id", "?")))
+                    if it.get("downloaded"):
+                        sub = f"{_gb(it.get('size'))} downloaded"
+                    else:
+                        sub = "not downloaded"
+                    if it.get("in_use"):
+                        sub += " • in use"
+                    card = ctk.CTkFrame(body, fg_color=BG_CARD, corner_radius=8)
+                    card.grid(row=row, column=0, columnspan=3, sticky="ew",
+                              padx=4, pady=3)
+                    card.grid_columnconfigure(0, weight=1)
+                    ctk.CTkLabel(card, text=name, font=("Segoe UI", 11),
+                                 text_color=FG_PRIMARY
+                                 ).grid(row=0, column=0, sticky="w", padx=10, pady=(6, 0))
+                    ctk.CTkLabel(card, text=sub, font=("Segoe UI", 10),
+                                 text_color=FG_DIM
+                                 ).grid(row=1, column=0, sticky="w", padx=10, pady=(0, 6))
+                    can_del = bool(it.get("downloaded")) and not bool(it.get("in_use"))
+                    btn = ctk.CTkButton(
+                        card, text="Delete", width=80, height=30,
+                        font=("Segoe UI", 11), fg_color="#2D3748",
+                        hover_color="#4A5568" if can_del else "#2D3748",
+                        text_color=FG_SECONDARY if can_del else FG_DIM,
+                        state="normal" if can_del else "disabled",
+                        command=lambda e=eng, k=it.get("kind"),
+                                       i=it.get("id"), n=name,
+                                       s=it.get("size"): _ask_delete(e, k, i, n, s))
+                    btn.grid(row=0, column=1, rowspan=2, padx=10, pady=6, sticky="e")
+                    row += 1
+                except Exception:
+                    continue
+
+        def _ask_delete(eng, kind, ident, name, size):
+            if _mb is None:
+                return
+            try:
+                if not _mb.askyesno(
+                        "Delete model",
+                        f"Delete {name} ({_gb(size)}) from disk?\n"
+                        f"It re-downloads automatically next time you pick it."):
+                    return
+            except Exception:
+                return
+            try:
+                ok, msg = on_delete(eng, kind, ident)
+            except Exception as ex:
+                ok, msg = False, str(ex)
+            try:
+                if _mb is not None:
+                    if ok:
+                        _mb.showinfo("Model storage", msg or "Deleted.")
+                    else:
+                        _mb.showwarning("Model storage", msg or "Could not delete.")
+            except Exception:
+                pass
+            _rebuild()
+
+        def _ask_delete_all():
+            if _mb is None:
+                return
+            try:
+                data = get_data() or {}
+                n = sum(1 for it in (data.get("items") or [])
+                        if it.get("downloaded") and not it.get("in_use"))
+                if n <= 0:
+                    _mb.showinfo("Model storage", "Nothing deletable right now.")
+                    return
+                if not _mb.askyesno(
+                        "Delete all",
+                        f"Delete all {n} downloaded model(s) not in use?\n"
+                        f"They re-download automatically when picked again."):
+                    return
+            except Exception:
+                return
+            try:
+                ok, msg = on_delete_all()
+            except Exception as ex:
+                ok, msg = False, str(ex)
+            try:
+                if _mb is not None:
+                    if ok:
+                        _mb.showinfo("Model storage", msg or "Deleted.")
+                    else:
+                        _mb.showwarning("Model storage", msg or "Could not delete.")
+            except Exception:
+                pass
+            _rebuild()
+
+        ctk.CTkButton(foot, text="Delete all downloaded", font=("Segoe UI", 12),
+                      fg_color=DANGER, hover_color="#C0392B", height=38,
+                      corner_radius=8, command=_ask_delete_all
+                      ).grid(row=0, column=0, padx=(0, 4), sticky="ew")
+        ctk.CTkButton(foot, text="Close", font=("Segoe UI", 12),
+                      fg_color="#2D3748", hover_color="#4A5568", height=38,
+                      corner_radius=8, text_color=FG_SECONDARY,
+                      command=win.destroy
+                      ).grid(row=0, column=1, padx=(4, 0), sticky="ew")
+        _rebuild()
+        try:
+            win.lift()
+            win.focus_force()
         except Exception:
             pass
 

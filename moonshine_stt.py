@@ -251,6 +251,10 @@ class MoonshineSTTApp:
                                                self._burn_start)
                     self.gui.set_srt_preview_callback(self._burn_preview)
                     try:
+                        self.gui.set_model_manage_callback(self._open_model_manager)
+                    except Exception:
+                        pass
+                    try:
                         _bfs = int(self.config.get("burn_font_size", 18))
                         self.gui.burn_font_slider.set(_bfs)
                         self.gui._on_burn_fontsize_changed(_bfs)
@@ -375,29 +379,239 @@ class MoonshineSTTApp:
         save_local_config(self.config)
         self._log(f"Suffix -> {value}")
 
+    def _model_status_fn(self):
+        """Badge provider for the Model menu: '✓' downloaded, '↓' missing.
+        Computed once per refresh (dir walk, no model loads)."""
+        try:
+            eng = self.config.get("engine", "Moonshine v2")
+            if eng == "Whisper Large v3":
+                from whisper_engine import (WHISPER_MODEL_CHOICES,
+                                            whisper_downloaded_map)
+                try:
+                    dl = whisper_downloaded_map()
+                except Exception:
+                    dl = {}
+                rev = {v: k for k, v in WHISPER_MODEL_CHOICES.items()}
+
+                def _fn(base_label, _rev=rev, _dl=dl):
+                    try:
+                        mid = _rev.get(base_label)
+                        if not mid:
+                            return ""
+                        return "✓" if _dl.get(mid) else "↓"
+                    except Exception:
+                        return ""
+                return _fn
+            if eng == "Canary-1B":
+                return None
+            from gui import MODEL_CHOICES
+            from engine import moonshine_downloaded_map
+            try:
+                dl = moonshine_downloaded_map()
+            except Exception:
+                dl = {}
+            rev = {v: k for k, v in MODEL_CHOICES.items()}
+
+            def _fn2(base_label, _rev=rev, _dl=dl):
+                try:
+                    arch = _rev.get(base_label)
+                    if arch is None:
+                        return ""
+                    return "✓" if _dl.get(int(arch)) else "↓"
+                except Exception:
+                    return ""
+            return _fn2
+        except Exception:
+            return None
+
     def _refresh_model_row(self):
         """Show the active engine's choices in the shared Model row."""
         if not self.gui:
             return
         try:
             eng = self.config.get("engine", "Moonshine v2")
+            try:
+                self.gui.set_model_title(eng)
+            except Exception:
+                pass
+            fn = self._model_status_fn()
             if eng == "Whisper Large v3":
                 from gui import WHISPER_MODEL_CHOICES, WHISPER_MODEL_CHOICES_REV
                 cur = WHISPER_MODEL_CHOICES_REV.get(
                     self.config.get("whisper_model", "large-v3"),
                     "Large v3 (3GB, best)")
                 self.gui.set_model_options(list(WHISPER_MODEL_CHOICES.keys()),
-                                           cur, self._on_model_changed)
+                                           cur, self._on_model_changed, fn)
             elif eng == "Canary-1B":
                 from gui import CANARY_MODEL_LABEL
                 self.gui.set_model_options([CANARY_MODEL_LABEL], CANARY_MODEL_LABEL,
-                                           self._on_model_changed)
+                                           self._on_model_changed, None)
             else:
-                from gui import MODEL_CHOICES_REV
+                from gui import MODEL_CHOICES, MODEL_CHOICES_REV
                 cur_arch = int(self.config.get("model_arch", 5))
-                self.gui.set_model(cur_arch, self._on_model_changed)
+                cur_lbl = MODEL_CHOICES_REV.get(
+                    cur_arch, "Medium Streaming (110MB, best)")
+                self.gui.set_model_options(list(MODEL_CHOICES.keys()),
+                                           cur_lbl, self._on_model_changed, fn)
         except Exception:
             pass
+
+    def _open_model_manager(self):
+        if not self.gui:
+            return
+        try:
+            self.gui.show_model_manager(
+                self._model_manager_data,
+                self._model_manager_delete,
+                self._model_manager_delete_all)
+        except Exception as e:
+            print(f"model manager failed: {e}")
+
+    def _model_manager_data(self):
+        """Snapshot for the storage dialog (fast dir walks, no loads)."""
+        from gui import MODEL_CHOICES, WHISPER_MODEL_CHOICES
+        items = []
+        total = 0
+        try:
+            active = self.config.get("engine", "Moonshine v2")
+        except Exception:
+            active = "Moonshine v2"
+        # Moonshine archs
+        try:
+            from engine import moonshine_cache_info
+            minfo = moonshine_cache_info()
+        except Exception:
+            minfo = {}
+        try:
+            cur_arch = int(self.config.get("model_arch", 5))
+        except Exception:
+            cur_arch = 5
+        for label, arch in MODEL_CHOICES.items():
+            try:
+                size = int(minfo.get(int(arch), 0))
+            except Exception:
+                size = 0
+            dl = size > 1_000_000
+            if dl:
+                total += size
+            items.append({"engine": "Moonshine v2", "kind": "moonshine",
+                          "id": int(arch), "label": label,
+                          "size": size if dl else None,
+                          "downloaded": dl,
+                          "in_use": active == "Moonshine v2" and cur_arch == int(arch)})
+        # Whisper sizes (large + large-v3 share one repo dir)
+        try:
+            from whisper_engine import whisper_cache_info
+            winfo = whisper_cache_info()
+        except Exception:
+            winfo = {}
+        wmid = self.config.get("whisper_model", "large-v3")
+        for label, mid in WHISPER_MODEL_CHOICES.items():
+            try:
+                size = int(winfo.get(mid, 0))
+            except Exception:
+                size = 0
+            dl = size > 20_000_000
+            if dl:
+                total += size
+            items.append({"engine": "Whisper Large v3", "kind": "whisper",
+                          "id": mid, "label": label,
+                          "size": size if dl else None,
+                          "downloaded": dl,
+                          "in_use": active == "Whisper Large v3" and wmid == mid})
+        # Canary (single .nemo; shared HF/torch caches untouched)
+        try:
+            from canary_engine import canary_cache_info
+            csize = int((canary_cache_info() or {}).get("nemo", 0))
+        except Exception:
+            csize = 0
+        cdl = csize > 100_000_000
+        if cdl:
+            total += csize
+        items.append({"engine": "Canary-1B", "kind": "canary",
+                      "id": "canary-1b", "label": "Canary-1B (3.9GB)",
+                      "size": csize if cdl else None, "downloaded": cdl,
+                      "in_use": active == "Canary-1B"})
+        return {"items": items, "total": total}
+
+    def _model_manager_delete(self, engine, kind, ident, refresh=True):
+        """Delete one cached model. Returns (ok, msg)."""
+        if self._srt_busy:
+            return False, "Stop the running SRT/burn job first."
+        try:
+            if kind == "moonshine":
+                arch = int(ident)
+                if (self.config.get("engine") == "Moonshine v2"
+                        and int(self.config.get("model_arch", 5)) == arch):
+                    return False, "Switch to another model first."
+                from engine import delete_moonshine_model
+                freed = delete_moonshine_model(None, arch)
+            elif kind == "whisper":
+                if (self.config.get("engine") == "Whisper Large v3"
+                        and self.config.get("whisper_model") == ident):
+                    return False, "Switch to another model first."
+                from whisper_engine import delete_whisper_model
+                freed, affected = delete_whisper_model(None, ident)
+                extra = [a for a in (affected or []) if a != ident]
+                note = (f" (shared cache also removed: {', '.join(extra)})"
+                        if extra else "")
+                self._refresh_model_row()
+                return True, f"Deleted {ident} ({self._fmt_gb(freed)} freed).{note}"
+            elif kind == "canary":
+                if self.config.get("engine") == "Canary-1B":
+                    return False, "Switch to another engine first."
+                from canary_engine import delete_canary_model
+                freed = delete_canary_model()
+            else:
+                return False, "Unknown model kind."
+            if refresh:
+                try:
+                    self._refresh_model_row()
+                except Exception:
+                    pass
+            return True, f"Deleted ({self._fmt_gb(freed)} freed)."
+        except FileNotFoundError as e:
+            return False, str(e)
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            return False, f"Delete failed: {e}"
+
+    def _model_manager_delete_all(self):
+        """Delete every downloaded, non-active model. Returns (ok, msg)."""
+        if self._srt_busy:
+            return False, "Stop the running SRT/burn job first."
+        try:
+            data = self._model_manager_data() or {}
+        except Exception as e:
+            return False, str(e)
+        freed_total, removed, skipped = 0, [], []
+        for it in (data.get("items") or []):
+            if not it.get("downloaded") or it.get("in_use"):
+                if it.get("downloaded"):
+                    skipped.append(str(it.get("label", it.get("id"))))
+                continue
+            ok, _msg = self._model_manager_delete(
+                it.get("engine"), it.get("kind"), it.get("id"), refresh=False)
+            if ok:
+                removed.append(str(it.get("label", it.get("id"))))
+                try:
+                    freed_total += int(it.get("size") or 0)
+                except Exception:
+                    pass
+            else:
+                skipped.append(str(it.get("label", it.get("id"))))
+        try:
+            self._refresh_model_row()
+        except Exception:
+            pass
+        if not removed:
+            return False, "Nothing deletable right now."
+        msg = (f"Deleted {len(removed)} model(s), "
+               f"{self._fmt_gb(freed_total)} freed.")
+        if skipped:
+            msg += f" Skipped (in use): {', '.join(skipped[:3])}."
+        return True, msg
 
     def _on_model_changed(self, display_label: str):
         if self.config.get("engine") == "Whisper Large v3":
@@ -465,12 +679,10 @@ class MoonshineSTTApp:
             # The SRT/burn job shares this engine - switching mid-job would
             # blank its chunks. Revert the menu and say so.
             self._log("Stop the SRT/burn job before switching Whisper model")
-            if self.gui:
-                try:
-                    self.gui.model_var.set(
-                        WHISPER_MODEL_CHOICES_REV.get(old_id, display_label))
-                except Exception:
-                    pass
+            try:
+                self._refresh_model_row()
+            except Exception:
+                pass
             return
         self.config["whisper_model"] = new_id
         save_local_config(self.config)
