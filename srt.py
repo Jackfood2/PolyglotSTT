@@ -1475,22 +1475,6 @@ def _has_cjk(text: str) -> bool:
     return False
 
 
-def assert_burnable_text(srt_path):
-    """Refuse CJK SRTs loudly: this libass build resolves no CJK-capable
-    family (only Arial draws), so such burns would come out BLANK. Failing
-    fast beats a silently broken MP4."""
-    try:
-        data = Path(srt_path).read_text(encoding="utf-8", errors="ignore")
-    except Exception:
-        return
-    if _has_cjk(data):
-        raise RuntimeError(
-            "SRT contains Japanese/Chinese/Korean text, which cannot be "
-            "burned into video with the bundled renderer (subtitles would "
-            "come out blank). Tip: generate English subtitles first "
-            "(Task=translate), then burn those. Original video untouched.")
-
-
 def _esc_filter_path(p: str) -> str:
     return (str(p).replace("\\", "/").replace(":", "\\:").replace("'", "\\'"))
 
@@ -1498,22 +1482,34 @@ def _esc_filter_path(p: str) -> str:
 def stage_subtitles_filter(srt_path, font_size: int, dest_dir) -> str:
     """Copy the SRT under a plain-ASCII name into dest_dir and build the
     libass filter string. Returns the -vf value (caller keeps dest_dir
-    alive for the encode)."""
+    alive for the encode).
+
+    Font policy (all empirically verified against this exact libass
+    build - see commit history, it is picky):
+    - Latin-only SRTs -> Arial + full outline style (pixel-proven).
+    - Any CJK       -> MS Gothic, size only. Full outline styles and every
+      other CJK family render NOTHING here; MS Gothic minimal renders.
+    """
     try:
         size = max(10, min(40, int(font_size)))
     except Exception:
         size = 18
     safe_srt = Path(dest_dir) / "subs.srt"
     shutil.copy(str(srt_path), str(safe_srt))
-    # FontName=Arial is forced: it is the ONLY family this libass build
-    # resolves (every other forced family renders nothing - verified), and
-    # Arial is pixel-proven. CJK SRTs are rejected by the caller first.
-    return ("subtitles='%s':fontsdir='%s':force_style='FontName=Arial,"
-            "FontSize=%d,PrimaryColour=&H00FFFFFF,"
-            "OutlineColour=&H80000000,BorderStyle=1,Outline=1,"
-            "Shadow=0,MarginV=28'" % (
-                _esc_filter_path(str(safe_srt)),
-                _esc_filter_path("C:/Windows/Fonts"), size))
+    try:
+        cjk = _has_cjk(Path(srt_path).read_text(encoding="utf-8",
+                                                errors="ignore"))
+    except Exception:
+        cjk = False
+    if cjk:
+        style = "FontName=MS Gothic,FontSize=%d" % size
+    else:
+        style = ("FontName=Arial,FontSize=%d,PrimaryColour=&H00FFFFFF,"
+                 "OutlineColour=&H80000000,BorderStyle=1,Outline=1,"
+                 "Shadow=0,MarginV=28" % size)
+    return ("subtitles='%s':fontsdir='%s':force_style='%s'" % (
+        _esc_filter_path(str(safe_srt)),
+        _esc_filter_path("C:/Windows/Fonts"), style))
 
 
 def first_cue_at(srt_path, fallback_ratio: float = 0.25) -> float:
@@ -1780,7 +1776,6 @@ def burn_subtitles(src_path: str, srt_path: str, out_path: str, ffmpeg: str,
     src, srtp, out = Path(src_path), Path(srt_path), Path(out_path)
     if not srtp.exists():
         raise FileNotFoundError(f"SRT not found: {srtp} (Generate SRT first)")
-    assert_burnable_text(srtp)
     info = probe_media(src, ffmpeg)
     if not info.get("vcodec"):
         raise RuntimeError(f"no video stream to burn into: {src.name}")
@@ -1796,10 +1791,8 @@ def burn_subtitles(src_path: str, srt_path: str, out_path: str, ffmpeg: str,
 
     total_frames = max(1, int(info["duration"] * (info["fps"] or 30.0)))
     in_bytes = info["size"]
-    # NOTE on fonts: FontName=Arial is forced (see stage_subtitles_filter)
-    # because it is the ONLY family this libass build resolves - everything
-    # else renders nothing (verified). CJK SRTs are rejected earlier
-    # (assert_burnable_text) instead of burning blank video.
+    # NOTE on fonts: see stage_subtitles_filter - Arial+full-style for
+    # Latin, MS Gothic minimal for CJK. Anything else renders blank here.
     tmpd = Path(_tf.mkdtemp(prefix="burn_"))
     try:
         # Plain-ASCII temp SRT copy: sidesteps filter-escaping pitfalls

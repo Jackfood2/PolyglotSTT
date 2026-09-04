@@ -62,8 +62,9 @@ Moonshine stay on CPU.
   (`<name>.burned.mp4`, any input: mp4/mkv/ts/…) with x264 two-pass sized
   to match the original file (audio copied when possible, CPU threads from
   the slider). Subtitle size is adjustable (12–32) with an instant
-  single-frame **Preview** before the full encode. Latin subtitles only —
-  CJK burns are refused loudly instead of producing blank video.
+  single-frame **Preview** before the full encode. Latin burns use Arial
+  with outline; Japanese/Chinese/Korean burns automatically switch to
+  MS Gothic (the only CJK setup this renderer draws — verified).
 - **Live + jobs at once** — hold-to-talk dictation keeps working while an
   SRT/burn job runs (separate threads; engines serialize inference, so
   everything just shares CPU).
@@ -178,9 +179,9 @@ requirements*.txt  dependency pins (base / Canary / Whisper)
 - **Model download fails** — check internet, re-run `setup.bat`; Canary
   also accepts a manually placed `canary-1b.nemo`. Whisper sizes download
   when first selected (watch the log for progress on slow links).
-- **Burn says CJK cannot be burned** — by design: burned CJK subtitles
-  would come out blank with the bundled renderer. Generate English
-  subtitles (`translate`) and burn those instead.
+- **Burned CJK subtitles look plainer than Latin ones** — Japanese /
+  Chinese / Korean burns use MS Gothic without outline (the only CJK
+  setup this renderer draws); Latin burns use outlined Arial.
 - **Switching engines feels lighter the second time** — the idle heavy
   engine is unloaded to reclaim gigabytes of RAM; it reloads from cache
   when you switch back.
