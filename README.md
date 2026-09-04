@@ -46,6 +46,10 @@ Moonshine stay on CPU.
   (never a surprise 2.5 GB download on launch). Faster-Whisper's bundled
   CTranslate2 already ships CUDA kernels — no extra install for it.
 
+> **Note:** *Compute* (Auto/CPU/GPU) drives **inference only**. Burn
+> encoding always uses x264 (CPU) unless an NVENC burn speed is selected.
+> The SRT log notes this when Compute=GPU but a CPU burn speed is chosen.
+
 ## Features
 
 - **Live tab** — hold `F2` to record, release to transcribe; text is typed
@@ -65,6 +69,14 @@ Moonshine stay on CPU.
   single-frame **Preview** before the full encode. Latin burns use Arial
   with outline; Japanese/Chinese/Korean burns automatically switch to
   MS Gothic (the only CJK setup this renderer draws — verified).
+- **Burn speeds** — **Match size (2-pass x264)** exact ±1–3% size,
+  **Fast (1-pass x264)** ~half time at ~±10%, **Fastest (ultrafast 1-pass)**
+  several times faster but softer. NVIDIA-only: **Draft / Turbo / Balanced
+  (NVENC)** fastest encodes, approximate size. Each menu entry explains
+  itself; unavailable NVENC entries revert with a reason.
+- **Honest progress bar** — never shows 100% mid-encode; holds at 99%
+  through encode, goes to 100% only when the output file is verified
+  non-empty. Reports avg fps and flags VFR overshoots.
 - **Live + jobs at once** — hold-to-talk dictation keeps working while an
   SRT/burn job runs (separate threads; engines serialize inference, so
   everything just shares CPU).
@@ -106,7 +118,7 @@ connection — grab them manually:
 |---|---|---|---|
 | Moonshine (all 6 sizes: tiny → medium-streaming) | ~25–260 MB each | fetched on first pick via the *Model* row (`setup.bat` pre-fetches medium + tiny-streaming) | `models_cache\download.moonshine.ai\` |
 | `nvidia/canary-1b` | ~3.9 GB | <https://huggingface.co/nvidia/canary-1b> — or drop a `canary-1b.nemo` file at `models_cache\canary-1b\canary-1b.nemo` (>100 MB is picked up automatically, fully offline) | `models_cache\canary-1b\` (+ `models_cache\huggingface\`, `models_cache\torch\`) |
-| `Systran/faster-whisper-*` (tiny/base/small/medium/large/v1/v2/v3) | 75 MB – 3 GB | <https://huggingface.co/Systran/faster-whisper-large-v3> (auto-downloaded by Faster-Whisper) — pick the size in the Live tab *Model* row when the Whisper engine is active; each size downloads once on first selection. No Turbo offered: it cannot translate by training design; no distil/`.en` (English-only) | `models_cache\whisper-models\` |
+| `Systran/faster-whisper-large-v3` | ~3 GB | <https://huggingface.co/Systran/faster-whisper-large-v3> — auto-downloaded by Faster-Whisper; pick size in the Live tab *Model* row; each size downloads once on first selection. No Turbo offered: it cannot translate by design | `models_cache\whisper-models\` |
 
 `ffmpeg` ships via the `imageio-ffmpeg` wheel (no system install needed).
 Everything the app needs lives inside the project folder (except the
@@ -171,6 +183,7 @@ srt.py             SRT backend: ffmpeg extract, VAD, word-anchored cue packing,
                  timing refine, batch queue, size-matched burn-in, ETA tracking
 canary_engine.py   Canary-1B wrapper (NeMo, offline, language-validated)
 whisper_engine.py  Faster-Whisper large-v3 wrapper (per-call task/lang overrides)
+gpu.py             dGPU/VRAM/NVENC detection, device recommendation
 setup.bat          one-click setup (venv, deps, wheels cache, Moonshine model)
 run.bat            one-click launch (dependency self-check)
 requirements*.txt  dependency pins (base / Canary / Whisper)
@@ -194,9 +207,61 @@ requirements*.txt  dependency pins (base / Canary / Whisper)
 - **Burned CJK subtitles look plainer than Latin ones** — Japanese /
   Chinese / Korean burns use MS Gothic without outline (the only CJK
   setup this renderer draws); Latin burns use outlined Arial.
+- **Compute=GPU but burn is CPU** — Compute drives inference only; pick
+  an NVENC burn speed (Draft/Turbo/Balanced) for GPU burn encoding.
+- **Progress bar holds at 99%** — intentional; the bar reports honestly
+  during encode and only reaches 100% when the output file is verified.
 - **Switching engines feels lighter the second time** — the idle heavy
   engine is unloaded to reclaim gigabytes of RAM; it reloads from cache
   when you switch back.
+
+## Changelog
+
+### v1.0.7 (latest)
+
+- Fixed duplicate output-size check in burn path (srt.py)
+- NVENC Turbo burn speed now properly recognized in config validation
+- Honest 100%: progress bar only completes when output file verified non-empty
+- Speed label updated: "Match size (2-pass x264)" for clarity
+- Burn encode logs avg fps and flags VFR overshoots
+- Compute=GPU note: SRT log warns when CPU burn is used with GPU inference
+
+### v1.0.6
+
+- Cancel-crash fix: `Event` object shadowed method call → renamed to `_cancel_srt_job`
+- Overwrite guards: askyesnocancel all/per-file/abort for SRT and burn outputs
+- Tab memory: app remembers last used tab on restart
+- Burn kbps: manual bitrate slider (300–10000) with Auto default
+- Compute selector: Auto/CPU/GPU with hot-reload and model-safe switching
+- NVENC Turbo burn speed added between Draft and Balanced
+
+### v1.0.5
+
+- NVENC draft/balanced burn modes with contextual preset explanations
+
+### v1.0.4
+
+- Burn speed modes: match 2-pass, fast/fastest 1-pass
+
+### v1.0.3
+
+- Working CJK subtitles via MS Gothic minimal style (verified pixel-level)
+
+### v1.0.2
+
+- ETA: length-bucketed baseline, committed linear countdown to 99%
+
+### v1.0.1
+
+- GPU auto-detect (VRAM-gated CUDA/CPU) + live progress pump + GPU setup notes
+- Preview: auto-transcribe sample slice when no SRT + start/length controls
+- Model manager: red Delete buttons when deletable
+
+### v1.0.0
+
+- Initial release: Moonshine v2 + Canary-1B + Whisper Large v3
+- Live F2 dictation + SRT batch generation
+- Size-matched burn-in with x264 two-pass
 
 ## Credits & licenses
 

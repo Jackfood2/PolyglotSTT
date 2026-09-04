@@ -106,9 +106,9 @@ def apply_suffix(text: str, suffix: str) -> str:
 def _speed_label(speed_id: str) -> str:
     try:
         from srt import BURN_SPEED_LABELS
-        return BURN_SPEED_LABELS.get(speed_id, "Match size (2-pass)")
+        return BURN_SPEED_LABELS.get(speed_id, "Match size (2-pass x264)")
     except Exception:
-        return "Match size (2-pass)"
+        return "Match size (2-pass x264)"
 
 class MoonshineSTTApp:
     def __init__(self):
@@ -222,7 +222,8 @@ class MoonshineSTTApp:
             self.config["burn_vbr_kbps"] = _vk
             needs_save = True
         if self.config.get("burn_speed") not in ("match", "fast", "fastest",
-                                                   "nvenc_draft", "nvenc_balanced"):
+                                                   "nvenc_draft", "nvenc_turbo",
+                                                   "nvenc_balanced"):
             self.config["burn_speed"] = "match"
             needs_save = True
         if self.config.get("srt_tab") not in ("Live", "SRT File"):
@@ -1801,6 +1802,27 @@ class MoonshineSTTApp:
                 self._gui_queue.put(
                     ("srt_log", f"Burn: {_n} file(s), {_cpu} threads (x264 multi-core), "
                                 f"{_speed_label(job.get('speed', 'match'))}"))
+            # Head off the classic confusion (Compute=GPU but CPU burn):
+            # the Compute menu drives inference only; the encoder comes
+            # from Burn speed alone.
+            try:
+                _spd = job.get("speed", "match")
+                _cm = self.config.get("compute", "auto")
+                _cpu_burn = not str(_spd).startswith("nvenc_")
+                _gpu_wanted = (_cm == "gpu")
+                if not _gpu_wanted and _cm == "auto":
+                    try:
+                        import gpu as _gpumod2
+                        _gpu_wanted = _gpumod2.best_gpu() is not None
+                    except Exception:
+                        _gpu_wanted = False
+                if _cpu_burn and _gpu_wanted:
+                    self._gui_queue.put(
+                        ("srt_log", "note: Compute=GPU covers inference; this burn "
+                                    "encodes on CPU (x264) - pick an NVENC burn "
+                                    "speed for GPU encoding"))
+            except Exception:
+                pass
         except Exception as e:
             with self._srt_lock:
                 self._srt_busy = False
@@ -1814,7 +1836,8 @@ class MoonshineSTTApp:
                 ffmpeg = srtmod.get_ffmpeg_exe()
                 if not ffmpeg:
                     raise RuntimeError("ffmpeg not found - run setup.bat once.")
-                if job.get("speed", "match") in ("nvenc_draft", "nvenc_balanced"):
+                if job.get("speed", "match") in ("nvenc_draft", "nvenc_turbo",
+                                                   "nvenc_balanced"):
                     try:
                         import gpu as _gpumod
                         _nv_ok = bool(_gpumod.nvenc_available(ffmpeg))

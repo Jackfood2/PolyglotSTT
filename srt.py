@@ -1739,14 +1739,20 @@ def offset_srt_file(src_srt, offset_s: float, dst_srt):
 
 def _burn_popen_wait(proc, total_frames: int, base: float, span: float,
                      progress_cb=None, cancel_event=None, label: str = "",
-                     stall_s: float = 600.0):
+                     stall_s: float = 600.0, stats: Optional[dict] = None):
     """Drain stderr on a thread (ffmpeg status lines use \\r, not \\n),
     poll for cancel, report frame-based progress. Raises on failure.
 
+    Honesty rules: the bar NEVER claims 100% mid-encode. total_frames is
+    only a duration×fps estimate (VFR / mis-probed fps break it), so the
+    fraction is capped at 99% of span and only the caller's explicit
+    completion update may show 100%. When frames overshoot the estimate a
+    diagnostic flag lands in `stats` (caller logs it once).
     Two hang guards: the shared buffer is capped at 16KB (an hours-long
     encode would otherwise grow it unboundedly and re-scanning it each
     poll turns quadratic), and a stall detector kills ffmpeg when no new
     frame arrives for `stall_s` (corrupt input hanging x264 forever).
+    On success, stats (if given) gets frames/elapsed/avg_fps/exceeded.
     """
     buf = bytearray()
     lock = threading.Lock()
@@ -1768,6 +1774,7 @@ def _burn_popen_wait(proc, total_frames: int, base: float, span: float,
     t.start()
     last = 0
     last_change = time.monotonic()
+    t_start = time.monotonic()
     try:
         while proc.poll() is None:
             if cancel_event is not None and cancel_event.is_set():
@@ -1814,7 +1821,8 @@ def _burn_popen_wait(proc, total_frames: int, base: float, span: float,
                     f"{int(stall_s)}s) - input may be corrupt")
             if progress_cb and total_frames > 0:
                 try:
-                    frac = base + span * min(1.0, last / total_frames)
+                    denom = max(int(total_frames), last, 1)
+                    frac = base + span * min(0.99, last / denom)
                     progress_cb(max(0.0, min(1.0, frac)),
                                 f"{label}frame {last}/{total_frames}")
                 except Exception:
@@ -1836,6 +1844,15 @@ def _burn_popen_wait(proc, total_frames: int, base: float, span: float,
         pass
     if proc.returncode != 0:
         raise RuntimeError(f"ffmpeg burn {label}failed: {tail.strip()[-300:]}")
+    if stats is not None:
+        try:
+            el = max(0.1, time.monotonic() - t_start)
+            stats["frames"] = last
+            stats["elapsed"] = el
+            stats["avg_fps"] = (last / el) if last > 0 else 0.0
+            stats["exceeded"] = bool(last > total_frames)
+        except Exception:
+            pass
     return tail
 
 
@@ -1930,6 +1947,25 @@ def burn_subtitles(src_path: str, srt_path: str, out_path: str, ffmpeg: str,
                 out.unlink()
         except Exception:
             pass
+        def _speed_line(st: dict, what: str) -> None:
+            # "pass 1/2: avg 412 fps" - a NUMBER beats fan-noise guessing.
+            # Flags VFR-style estimate overshoot once (bar held at 99%).
+            if log_cb is None:
+                return
+            try:
+                fps = float((st or {}).get("avg_fps") or 0)
+                if fps > 0:
+                    log_cb(f"  {what}: avg {fps:.0f} fps")
+            except Exception:
+                pass
+            try:
+                if (st or {}).get("exceeded"):
+                    log_cb(f"  note: {st.get('frames', '?')} frames vs "
+                            f"{total_frames} estimated (VFR/high-fps?) - "
+                            f"bar held at 99% instead of a false 100%")
+            except Exception:
+                pass
+
         if use_nvenc:
             # NVENC multipass=2-pass VBR happens INSIDE one ffmpeg run (not
             # two runs like x264) - size lands approximately (~±5-10%).
@@ -1944,8 +1980,10 @@ def burn_subtitles(src_path: str, srt_path: str, out_path: str, ffmpeg: str,
                     pass
             p = subprocess.Popen(base + multi + [str(out)],
                                  stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+            _st: dict = {}
             _burn_popen_wait(p, total_frames, 0.0, 1.0, _bprog,
-                             cancel_event, label="")
+                             cancel_event, label="", stats=_st)
+            _speed_line(_st, "encode")
         elif passes == 2:
             if log_cb:
                 try:
@@ -1955,8 +1993,10 @@ def burn_subtitles(src_path: str, srt_path: str, out_path: str, ffmpeg: str,
             p1 = subprocess.Popen(base + ["-pass", "1", "-passlogfile", passlog,
                                           "-f", "mp4", os.devnull],
                                   stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+            _st1: dict = {}
             _burn_popen_wait(p1, total_frames, 0.0, 0.45, _bprog,
-                             cancel_event, label="pass 1/2 ")
+                             cancel_event, label="pass 1/2 ", stats=_st1)
+            _speed_line(_st1, "pass 1/2")
             if log_cb:
                 try:
                     log_cb("burn pass 2/2 (final encode)...")
@@ -1965,8 +2005,10 @@ def burn_subtitles(src_path: str, srt_path: str, out_path: str, ffmpeg: str,
             p2 = subprocess.Popen(base + ["-pass", "2", "-passlogfile", passlog,
                                           str(out)],
                                   stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+            _st2: dict = {}
             _burn_popen_wait(p2, total_frames, 0.45, 0.55, _bprog,
-                             cancel_event, label="pass 2/2 ")
+                             cancel_event, label="pass 2/2 ", stats=_st2)
+            _speed_line(_st2, "pass 2/2")
         else:
             # Single ABR pass: ~half the time, size lands within ~±10%
             # instead of ~1-3% (logged honestly, totals still reported).
@@ -1977,14 +2019,22 @@ def burn_subtitles(src_path: str, srt_path: str, out_path: str, ffmpeg: str,
                     pass
             p = subprocess.Popen(base + [str(out)],
                                  stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+            _st0: dict = {}
             _burn_popen_wait(p, total_frames, 0.0, 1.0, _bprog,
-                             cancel_event, label="")
+                             cancel_event, label="", stats=_st0)
+            _speed_line(_st0, "encode")
         try:
             out_bytes = out.stat().st_size if out.exists() else 0
         except Exception:
             out_bytes = 0
         if out_bytes <= 0:
             raise RuntimeError("burn produced no output file")
+        # Honest 100%: the file exists and verified non-empty above.
+        try:
+            if progress_cb:
+                progress_cb(1.0, f"Done: {out.name}")
+        except Exception:
+            pass
         try:
             record_eta_sample("burn", info["duration"], beta.elapsed())
         except Exception:
