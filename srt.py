@@ -8,16 +8,159 @@ Pipeline: video/audio -> ffmpeg (16kHz mono wav) ->
 sentence-aware cue packing -> .srt next to the source file by default.
 """
 
+import json
 import os
 import re
 import shutil
 import subprocess
 import threading
+import time
 import unicodedata
 from pathlib import Path
-from typing import Callable, List, Optional, Tuple
+from typing import Callable, Dict, List, Optional, Tuple
 
 import numpy as np
+
+
+# ---------------- ETA tracking (history baseline + live adaptive) ----------------
+# Aggregated baseline: per-engine totals persist in srt_eta.json so repeat
+# jobs predict from YOUR machine's measured speed, not guesses. The live
+# estimate then blends history with measured progress (trusting the measured
+# rate more as the job advances), so the countdown self-corrects.
+ETA_PATH = Path(__file__).parent / "srt_eta.json"
+ETA_DEFAULTS = {"whisper": 1.0, "canary": 3.0, "moonshine": 0.3, "burn": 1.5}
+_ETA_LOCK = threading.Lock()
+
+
+def _load_eta_stats() -> Dict:
+    try:
+        with open(str(ETA_PATH), "r", encoding="utf-8") as f:
+            d = json.load(f)
+            return d if isinstance(d, dict) else {}
+    except Exception:
+        return {}
+
+
+def _eta_factor(key: str) -> float:
+    try:
+        stats = _load_eta_stats()
+        entry = stats.get(key) or stats.get((key or "").split(":")[0]) or {}
+        a = float(entry.get("audio") or 0)
+        p = float(entry.get("proc") or 0)
+        if a > 1.0 and p > 0:
+            return min(20.0, max(0.05, p / a))
+    except Exception:
+        pass
+    base = (key or "").split(":")[0]
+    try:
+        return float(ETA_DEFAULTS.get(base, 1.0))
+    except Exception:
+        return 1.0
+
+
+def record_srt_job(key: str, audio_s: float, proc_s: float):
+    """Fold one successful job into the aggregated baseline (atomic write)."""
+    try:
+        audio_s, proc_s = float(audio_s), float(proc_s)
+    except Exception:
+        return
+    if not (audio_s >= 1.0 and proc_s >= 0.0) or not key:
+        return
+    with _ETA_LOCK:
+        try:
+            stats = _load_eta_stats()
+            e = stats.get(key) or {}
+            try:
+                e = {"n": int(e.get("n", 0)) + 1,
+                     "audio": float(e.get("audio", 0.0)) + audio_s,
+                     "proc": float(e.get("proc", 0.0)) + proc_s}
+            except Exception:
+                return
+            stats[key] = e
+            tmp = str(ETA_PATH) + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(stats, f, indent=1)
+            os.replace(tmp, str(ETA_PATH))
+        except Exception:
+            pass
+
+
+def format_eta(seconds) -> str:
+    try:
+        s = max(0, int(round(float(seconds))))
+    except Exception:
+        return ""
+    if s < 60:
+        return f"{s}s"
+    if s < 3600:
+        return f"{s // 60}:{s % 60:02d}"
+    return f"{s // 3600}h{(s % 3600) // 60:02d}m"
+
+
+def _eta_key_for(engine_kind, arch=0) -> str:
+    ek = engine_kind or ""
+    if "Whisper" in ek:
+        return "whisper"
+    if "Canary" in ek:
+        return "canary"
+    try:
+        return f"moonshine:{int(arch)}"
+    except Exception:
+        return "moonshine"
+
+
+class EtaTracker:
+    """Remaining-time estimator: history baseline blended with live speed."""
+
+    def __init__(self, key: str):
+        self.key = key or "job"
+        self.t0 = time.monotonic()
+        try:
+            self.factor = float(_eta_factor(self.key))
+        except Exception:
+            self.factor = 1.0
+        self.dur = None
+
+    def set_duration(self, seconds):
+        try:
+            d = float(seconds)
+            self.dur = d if d > 0 else None
+        except Exception:
+            self.dur = None
+
+    def elapsed(self) -> float:
+        try:
+            return max(0.0, time.monotonic() - self.t0)
+        except Exception:
+            return 0.0
+
+    def remaining(self, progress):
+        try:
+            p = float(progress)
+        except Exception:
+            return None
+        el = self.elapsed()
+        if self.dur:
+            hist_total = self.dur * self.factor
+            if p > 0.03:
+                measured = el / max(p, 1e-6)
+                w = min(0.85, max(0.0, p * 1.5))
+                return max(0.0, (1.0 - w) * hist_total + w * measured - el)
+            return max(0.0, hist_total - el)
+        if p > 0.05:
+            return max(0.0, el / max(p, 1e-6) - el)
+        return None
+
+    def suffix(self, progress) -> str:
+        try:
+            if float(progress) >= 0.999:
+                return ""
+            r = self.remaining(progress)
+        except Exception:
+            return ""
+        if r is None:
+            return ""
+        return f" \u00b7 ETA {format_eta(r)}"
 
 
 def _dlen(s: str) -> int:
@@ -640,10 +783,12 @@ def run_srt_job(src_path: str, out_dir: str, engine_kind: str,
                 srt_input_lang: str = "auto",
                 srt_output_lang: str = "en") -> str:
     """Blocking SRT job. progress_cb(fraction 0..1, message). Returns output .srt path."""
+    eta = EtaTracker(_eta_key_for(engine_kind, moonshine_arch))
+
     def prog(f, m):
         if progress_cb:
             try:
-                progress_cb(max(0.0, min(1.0, f)), m)
+                progress_cb(max(0.0, min(1.0, f)), str(m) + eta.suffix(f))
             except Exception:
                 pass
 
@@ -721,6 +866,7 @@ def run_srt_job(src_path: str, out_dir: str, engine_kind: str,
         info = sf.info(str(tmp_wav))
         duration = float(info.frames) / float(info.samplerate or 16000)
         log(f"Audio: {duration:.1f}s, {info.samplerate}Hz")
+        eta.set_duration(duration)
         prog(0.10, f"Audio ready ({duration:.0f}s)")
 
         # Stage 2: speech segments (10-15%).
@@ -825,8 +971,9 @@ def run_srt_job(src_path: str, out_dir: str, engine_kind: str,
             # through so Whisper auto-detects; translate always outputs en.
             eff_wsrc = srt_input_lang or "auto"
             eff_wtgt = "en" if whisper_task == "translate" else (srt_output_lang or "en")
-            _wait_for_model(eng, "Whisper Large v3",
-                            "Loading Whisper Large v3 (~3GB, slow first time)...", 0.16)
+            _wait_for_model(eng, f"Whisper {getattr(eng, 'model_id', 'Large v3')}",
+                            f"Loading Whisper {getattr(eng, 'model_id', 'Large v3')} "
+                            f"(slow first time - downloads when missing)...", 0.16)
             log(f"Transcribing full audio with Whisper Large v3 ({whisper_task} {eff_wsrc}->{eff_wtgt}, native timestamps)...")
             prog(0.20, "Whisper transcribing (single pass)...")
             if cancelled():
@@ -952,10 +1099,427 @@ def run_srt_job(src_path: str, out_dir: str, engine_kind: str,
         write_srt(cues, out_path)
         prog(1.0, f"Done: {out_path.name} ({len(cues)} cues)")
         log(f"Wrote {out_path}")
+        try:
+            record_srt_job(eta.key, duration, eta.elapsed())
+        except Exception:
+            pass
         return str(out_path)
     finally:
         try:
             if tmp_wav.exists():
                 tmp_wav.unlink()
+        except Exception:
+            pass
+
+
+def _batch_short(path: str, limit: int = 40) -> str:
+    """Basename truncated for progress/log prefixes."""
+    try:
+        name = Path(path).name or str(path)
+    except Exception:
+        name = str(path)
+    return name if len(name) <= limit else name[:limit - 1] + "…"
+
+
+def run_srt_batch(src_paths, run_one: Callable,
+                  progress_cb: Optional[Callable[[float, str], None]] = None,
+                  log_cb: Optional[Callable[[str], None]] = None,
+                  cancel_event: Optional[threading.Event] = None,
+                  file_cb: Optional[Callable] = None):
+    """Run SRT jobs sequentially over a file queue (one worker thread).
+
+    run_one(path, progress_cb, log_cb) -> output .srt path (may raise;
+    InterruptedError on cancel). Per-file progress/log lines are prefixed
+    with "[i/N name]". file_cb(kind, path, info) reports "start"/"done"/
+    "skip" for queue-UI updates. A failed file is recorded and the batch
+    continues; cancel stops after the current file. Never raises for
+    per-file errors - returns (results, cancelled) where results holds
+    (path, ok, out_or_error) tuples in queue order.
+    """
+    paths = [str(p) for p in (src_paths or []) if str(p or "").strip()]
+    total = len(paths)
+    results: list = []
+
+    def _cancelled() -> bool:
+        return bool(cancel_event is not None and cancel_event.is_set())
+
+    def _emit(kind, path, info):
+        if file_cb:
+            try:
+                file_cb(kind, path, info or {})
+            except Exception:
+                pass
+
+    for i, path in enumerate(paths):
+        tag = f"[{i + 1}/{total} {_batch_short(path)}]"
+        if _cancelled():
+            for j in range(i, total):
+                q = paths[j]
+                results.append((q, False, "Skipped (cancelled)"))
+                _emit("skip", q, {"index": j, "total": total,
+                                  "reason": "cancelled"})
+            try:
+                if log_cb:
+                    log_cb(f"{tag} batch cancelled")
+            except Exception:
+                pass
+            return results, True
+        _emit("start", path, {"index": i, "total": total})
+        try:
+            if progress_cb:
+                progress_cb(0.0, f"{tag} starting...")
+        except Exception:
+            pass
+
+        def _prog(f, m, _tag=tag):
+            if progress_cb:
+                try:
+                    progress_cb(max(0.0, min(1.0, f)), f"{_tag} {m}")
+                except Exception:
+                    pass
+
+        def _log(m, _tag=tag):
+            if log_cb:
+                try:
+                    log_cb(f"{_tag} {m}")
+                except Exception:
+                    pass
+
+        try:
+            out = run_one(path, _prog, _log)
+            results.append((path, True, out))
+            _emit("done", path, {"index": i, "total": total, "ok": True,
+                                 "out": out})
+        except InterruptedError:
+            results.append((path, False, "Cancelled by user"))
+            _emit("done", path, {"index": i, "total": total, "ok": False,
+                                 "error": "Cancelled by user"})
+            for j in range(i + 1, total):
+                q = paths[j]
+                results.append((q, False, "Skipped (cancelled)"))
+                _emit("skip", q, {"index": j, "total": total,
+                                  "reason": "cancelled"})
+            return results, True
+        except Exception as e:
+            err = str(e) or type(e).__name__
+            results.append((path, False, err))
+            _emit("done", path, {"index": i, "total": total, "ok": False,
+                                 "error": err})
+            try:
+                if log_cb:
+                    log_cb(f"{tag} FAILED: {err} (continuing batch)")
+            except Exception:
+                pass
+    return results, False
+
+
+# ---------------- Subtitle burn-in (hardcode into a new MP4) ----------------
+# Audio codecs the MP4 container accepts for stream-copy; anything else is
+# re-encoded to AAC at (about) its original bitrate so total size still lands.
+MP4_OK_AUDIO = {"aac", "ac3", "mp3", "opus"}
+BURN_OVERHEAD = 0.015  # reserve for moov/moov atom differences between containers
+BURN_SUFFIX = ".burned.mp4"
+
+
+def default_burn_path(src: Path, out_dir: Optional[str]) -> Path:
+    if out_dir and str(out_dir).strip():
+        d = Path(str(out_dir).strip())
+        d.mkdir(parents=True, exist_ok=True)
+        return d / (src.stem + BURN_SUFFIX)
+    return src.parent / (src.stem + BURN_SUFFIX)
+
+
+def probe_media(path, ffmpeg: str) -> dict:
+    """ffprobe-less probe via `ffmpeg -i` stderr (imageio-ffmpeg ships no
+    ffprobe binary). Raises RuntimeError when duration/size unreadable."""
+    proc = subprocess.run(
+        [ffmpeg, "-hide_banner", "-i", str(path)],
+        stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
+        text=True, errors="replace")
+    err = proc.stderr or ""
+    info = {"duration": 0.0, "fps": 0.0, "width": 0, "height": 0,
+            "vcodec": "", "acodec": "", "audio_bps": 0,
+            "has_audio": False, "overall_bps": 0, "size": 0}
+    m = re.search(r"Duration:\s*(\d+):(\d+):([\d.]+)", err)
+    if m:
+        try:
+            info["duration"] = (int(m.group(1)) * 3600 + int(m.group(2))
+                                + float(m.group(3)))
+        except Exception:
+            pass
+    m = re.search(r"bitrate:\s*(\d+)\s*kb/s", err)
+    if m:
+        try:
+            info["overall_bps"] = int(m.group(1)) * 1000
+        except Exception:
+            pass
+    for line in err.splitlines():
+        s = line.strip()
+        if ": Video:" in s and not info["vcodec"]:
+            mv = re.search(r"Video:\s*([a-z0-9_]+)", s)
+            if mv:
+                info["vcodec"] = mv.group(1).lower()
+            mr = re.search(r"(\d{3,5})x(\d{3,5})", s)
+            if mr:
+                try:
+                    info["width"], info["height"] = int(mr.group(1)), int(mr.group(2))
+                except Exception:
+                    pass
+            mf = re.search(r"(\d+(?:\.\d+)?)\s*fps", s)
+            if not mf:
+                mf = re.search(r"(\d+(?:\.\d+)?)\s*tbr", s)
+            if mf:
+                try:
+                    info["fps"] = float(mf.group(1))
+                except Exception:
+                    pass
+        if ": Audio:" in s and not info["has_audio"]:
+            info["has_audio"] = True
+            ma = re.search(r"Audio:\s*([a-z0-9_]+)", s)
+            if ma:
+                info["acodec"] = ma.group(1).lower()
+            mb = re.search(r"(\d+)\s*kb/s", s)
+            if mb:
+                try:
+                    info["audio_bps"] = int(mb.group(1)) * 1000
+                except Exception:
+                    pass
+    try:
+        info["size"] = Path(path).stat().st_size
+    except Exception:
+        info["size"] = 0
+    if info["duration"] <= 0 or info["size"] <= 0:
+        raise RuntimeError(f"could not probe media: {path}")
+    return info
+
+
+def plan_burn_bitrates(info: dict, target_bytes: Optional[int] = None):
+    """Split a total-size budget into (video_bps, audio_bps, audio_copy).
+
+    Default target = original file size, so a 1GB video burns to ~1GB:
+    audio is copied when MP4-compatible (exact bytes) else re-encoded near
+    its probed rate, and x264 two-pass spends whatever is left on video.
+    """
+    try:
+        total = int(target_bytes) if target_bytes else int(info["size"])
+    except Exception:
+        total = int(info.get("size", 0))
+    dur = max(0.1, float(info.get("duration", 0) or 0))
+    if info.get("has_audio"):
+        acodec = (info.get("acodec") or "").lower()
+        if acodec in MP4_OK_AUDIO:
+            audio_copy = True
+            audio_bps = int(info.get("audio_bps") or 128000)
+        else:
+            audio_copy = False
+            try:
+                audio_bps = min(int(info.get("audio_bps") or 128000), 192000)
+            except Exception:
+                audio_bps = 128000
+    else:
+        audio_copy, audio_bps = False, 0
+    usable_bps = total * 8 * (1.0 - BURN_OVERHEAD) / dur
+    video_bps = int(max(100000, usable_bps - audio_bps))
+    return video_bps, audio_bps, audio_copy
+
+
+def _has_cjk(text: str) -> bool:
+    for c in text or "":
+        o = ord(c)
+        if 0x3040 <= o <= 0x30FF or 0x4E00 <= o <= 0x9FFF or 0xAC00 <= o <= 0xD7AF:
+            return True
+    return False
+
+
+def assert_burnable_text(srt_path):
+    """Refuse CJK SRTs loudly: this libass build resolves no CJK-capable
+    family (only Arial draws), so such burns would come out BLANK. Failing
+    fast beats a silently broken MP4."""
+    try:
+        data = Path(srt_path).read_text(encoding="utf-8", errors="ignore")
+    except Exception:
+        return
+    if _has_cjk(data):
+        raise RuntimeError(
+            "SRT contains Japanese/Chinese/Korean text, which cannot be "
+            "burned into video with the bundled renderer (subtitles would "
+            "come out blank). Tip: generate English subtitles first "
+            "(Task=translate), then burn those. Original video untouched.")
+
+
+def _esc_filter_path(p: str) -> str:
+    return (str(p).replace("\\", "/").replace(":", "\\:").replace("'", "\\'"))
+
+
+def _burn_popen_wait(proc, total_frames: int, base: float, span: float,
+                     progress_cb=None, cancel_event=None, label: str = ""):
+    """Drain stderr on a thread (ffmpeg status lines use \\r, not \\n),
+    poll for cancel, report frame-based progress. Raises on failure."""
+    chunks: list = []
+
+    def _drain():
+        try:
+            while True:
+                data = proc.stderr.read(65536)
+                if not data:
+                    break
+                chunks.append(data)
+        except Exception:
+            pass
+
+    t = threading.Thread(target=_drain, daemon=True)
+    t.start()
+    last = 0
+    try:
+        while proc.poll() is None:
+            if cancel_event is not None and cancel_event.is_set():
+                try:
+                    proc.terminate()
+                except Exception:
+                    pass
+                try:
+                    proc.wait(timeout=5)
+                except Exception:
+                    try:
+                        proc.kill()
+                    except Exception:
+                        pass
+                raise InterruptedError("cancelled")
+            try:
+                buf = b"".join(chunks)
+                if buf:
+                    found = re.findall(rb"frame=\s*(\d+)", buf)
+                    if found:
+                        try:
+                            last = max(last, int(found[-1]))
+                        except Exception:
+                            pass
+            except Exception:
+                pass
+            if progress_cb and total_frames > 0:
+                try:
+                    frac = base + span * min(1.0, last / total_frames)
+                    progress_cb(max(0.0, min(1.0, frac)),
+                                f"{label} frame {last}/{total_frames}")
+                except Exception:
+                    pass
+            try:
+                proc.wait(timeout=0.5)
+            except subprocess.TimeoutExpired:
+                pass
+    finally:
+        try:
+            t.join(timeout=10)
+        except Exception:
+            pass
+    tail = ""
+    try:
+        tail = b"".join(chunks)[-600:].decode("utf-8", "ignore")
+    except Exception:
+        pass
+    if proc.returncode != 0:
+        raise RuntimeError(f"ffmpeg burn {label}failed: {tail.strip()[-300:]}")
+    return tail
+
+
+def burn_subtitles(src_path: str, srt_path: str, out_path: str, ffmpeg: str,
+                   video_kbps: int, audio_kbps: int = 128,
+                   audio_copy: bool = True, threads: int = 0,
+                   progress_cb: Optional[Callable[[float, str], None]] = None,
+                   log_cb: Optional[Callable[[str], None]] = None,
+                   cancel_event: Optional[threading.Event] = None):
+    """Burn an SRT into a new MP4 with x264 two-pass at a fixed video bitrate
+    (size targeting lives in plan_burn_bitrates). Same resolution/fps as the
+    source. Returns (out_path, in_bytes, out_bytes)."""
+    import tempfile as _tf
+    src, srtp, out = Path(src_path), Path(srt_path), Path(out_path)
+    if not srtp.exists():
+        raise FileNotFoundError(f"SRT not found: {srtp} (Generate SRT first)")
+    assert_burnable_text(srtp)
+    info = probe_media(src, ffmpeg)
+    beta = EtaTracker("burn")
+    beta.set_duration(info["duration"])
+
+    def _bprog(f, m):
+        if progress_cb:
+            try:
+                progress_cb(max(0.0, min(1.0, f)), str(m) + beta.suffix(f))
+            except Exception:
+                pass
+
+    total_frames = max(1, int(info["duration"] * (info["fps"] or 30.0)))
+    in_bytes = info["size"]
+    # NOTE: FontName=Arial is forced because it is the ONLY family this
+    # libass build resolves (DirectWrite matching fails for everything
+    # else, silently rendering nothing). CJK SRTs are rejected above, so
+    # Arial's Latin-only coverage is sufficient here.
+    tmpd = Path(_tf.mkdtemp(prefix="burn_"))
+    try:
+        # Plain-ASCII temp SRT copy: sidesteps filter-escaping pitfalls
+        # (quotes/brackets/unicode in real filenames) entirely.
+        safe_srt = tmpd / "subs.srt"
+        shutil.copy(str(srtp), str(safe_srt))
+        vf = ("subtitles='%s':fontsdir='%s':force_style='FontName=Arial,"
+              "FontSize=18,PrimaryColour=&H00FFFFFF,"
+              "OutlineColour=&H80000000,BorderStyle=1,Outline=1,"
+              "Shadow=0,MarginV=28'" % (
+                  _esc_filter_path(str(safe_srt)),
+                  _esc_filter_path("C:/Windows/Fonts")))
+        vbps = max(100, int(video_kbps))
+        base = [ffmpeg, "-hide_banner", "-y", "-v", "info", "-i", str(src),
+                "-map", "0:v:0", "-map", "0:a:0?",
+                "-c:v", "libx264", "-b:v", f"{vbps}k",
+                "-preset", "medium", "-pix_fmt", "yuv420p",
+                "-vf", vf]
+        if threads and int(threads) > 0:
+            base += ["-threads", str(int(threads))]
+        if info["has_audio"]:
+            if audio_copy:
+                base += ["-c:a", "copy"]
+            else:
+                base += ["-c:a", "aac", "-b:a", f"{max(32, int(audio_kbps))}k",
+                         "-ac", "2", "-ar", "48000"]
+        else:
+            base += ["-an"]
+        passlog = str(tmpd / "x264pass")
+        if log_cb:
+            try:
+                log_cb(f"burn pass 1/2 (analysis, {vbps} kbps video)...")
+            except Exception:
+                pass
+        p1 = subprocess.Popen(base + ["-pass", "1", "-passlogfile", passlog,
+                                      "-f", "mp4", os.devnull],
+                              stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+        _burn_popen_wait(p1, total_frames, 0.0, 0.45, _bprog,
+                         cancel_event, label="pass 1/2 ")
+        if log_cb:
+            try:
+                log_cb("burn pass 2/2 (final encode)...")
+            except Exception:
+                pass
+        try:
+            if out.exists():
+                out.unlink()
+        except Exception:
+            pass
+        p2 = subprocess.Popen(base + ["-pass", "2", "-passlogfile", passlog,
+                                      str(out)],
+                              stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+        _burn_popen_wait(p2, total_frames, 0.45, 0.55, _bprog,
+                         cancel_event, label="pass 2/2 ")
+        try:
+            out_bytes = out.stat().st_size if out.exists() else 0
+        except Exception:
+            out_bytes = 0
+        if out_bytes <= 0:
+            raise RuntimeError("burn produced no output file")
+        try:
+            record_srt_job("burn", info["duration"], beta.elapsed())
+        except Exception:
+            pass
+        return str(out), in_bytes, out_bytes
+    finally:
+        try:
+            shutil.rmtree(str(tmpd), ignore_errors=True)
         except Exception:
             pass

@@ -30,6 +30,19 @@ MODEL_CHOICES = {
 }
 MODEL_CHOICES_REV = {v: k for k, v in MODEL_CHOICES.items()}
 
+# Downloadable Whisper sizes (faster-whisper auto-fetches on first use).
+# No turbo: OpenAI excluded translation from turbo training, so it cannot
+# translate regardless of conversion.
+WHISPER_MODEL_CHOICES = {
+    "Tiny (75MB, fastest)": "tiny",
+    "Base (145MB)": "base",
+    "Small (500MB)": "small",
+    "Medium (1.5GB)": "medium",
+    "Large v3 (3GB, best)": "large-v3",
+}
+WHISPER_MODEL_CHOICES_REV = {v: k for k, v in WHISPER_MODEL_CHOICES.items()}
+CANARY_MODEL_LABEL = "Canary-1B (3.9GB, fixed)"
+
 ENGINE_CHOICES = ["Moonshine v2", "Canary-1B", "Whisper Large v3"]
 CANARY_TASKS = ["transcribe", "translate"]
 # Union of Canary + Whisper src langs so one shared Src menu serves both engines.
@@ -382,43 +395,56 @@ class MoonshineGUI(ctk.CTk):
         self._srt_max_cpu = max(1, int(max_cpu))
         self._srt_start_cb = None
         self._srt_cancel_cb = None
-        self._srt_input_path = ""
+        self._srt_input_paths: list = []  # batch queue (ordered, may repeat)
+        self._srt_file_status: dict = {}  # queue index -> status text
         self._srt_running = False
 
         scroll = ctk.CTkScrollableFrame(tab, fg_color="transparent")
         scroll.pack(fill="both", expand=True, padx=4, pady=4)
         scroll.grid_columnconfigure(0, weight=1)
 
-        # File drop card
+        # File drop card (batch queue)
         file_card = ctk.CTkFrame(scroll, fg_color=BG_CARD, corner_radius=12)
         file_card.grid(row=0, column=0, sticky="ew", padx=4, pady=(0, 8))
         file_card.grid_columnconfigure(0, weight=1)
-        ctk.CTkLabel(file_card, text="Video / Audio File",
+        ctk.CTkLabel(file_card, text="Video / Audio Files  (queue - runs one by one)",
                      font=("Segoe UI", 11, "bold"), text_color=FG_DIM
                      ).pack(anchor="w", padx=12, pady=(10, 2))
         self.srt_drop = ctk.CTkTextbox(file_card, font=("Segoe UI", 11),
                                        fg_color=BG_INPUT, text_color=FG_SECONDARY,
-                                       corner_radius=8, height=64,
+                                       corner_radius=8, height=44,
                                        activate_scrollbars=False, wrap="word")
         self.srt_drop.pack(fill="x", padx=10, pady=(0, 6))
-        self.srt_drop.insert("1.0", "Drag && drop a video/audio file here,\nor click Browse...")
+        self.srt_drop.insert("1.0", "Drag && drop video/audio files here,\nor click Browse Files...")
         self.srt_drop.configure(state="disabled")
         self._srt_dnd_ok = self._enable_drop(self.srt_drop)
         self._enable_drop(file_card)
+
+        import tkinter as _tk
+        self.srt_file_list = _tk.Listbox(
+            file_card, height=5, font=("Segoe UI", 10),
+            bg=BG_INPUT, fg=FG_PRIMARY, selectbackground=ACCENT,
+            selectforeground=FG_PRIMARY, highlightthickness=0,
+            relief="flat", activestyle="none")
+        self.srt_file_list.pack(fill="x", padx=10, pady=(0, 6))
+        try:
+            self._enable_drop(self.srt_file_list)
+        except Exception:
+            pass
 
         fbtn = ctk.CTkFrame(file_card, fg_color="transparent")
         fbtn.pack(fill="x", padx=10, pady=(0, 10))
         fbtn.grid_columnconfigure(0, weight=1)
         fbtn.grid_columnconfigure(1, weight=1)
-        ctk.CTkButton(fbtn, text="Browse File...", font=("Segoe UI", 12),
+        self.srt_browse_btn = ctk.CTkButton(fbtn, text="Browse Files...", font=("Segoe UI", 12),
                       fg_color=ACCENT, hover_color=ACCENT_DARK, height=36,
-                      corner_radius=8, command=self._srt_browse_file
-                      ).grid(row=0, column=0, padx=(0, 4), sticky="ew")
-        ctk.CTkButton(fbtn, text="Clear", font=("Segoe UI", 12),
+                      corner_radius=8, command=self._srt_browse_file)
+        self.srt_browse_btn.grid(row=0, column=0, padx=(0, 4), sticky="ew")
+        self.srt_clear_btn = ctk.CTkButton(fbtn, text="Clear", font=("Segoe UI", 12),
                       fg_color="#2D3748", hover_color="#4A5568", height=36,
                       corner_radius=8, text_color=FG_SECONDARY,
-                      command=self._srt_clear_file
-                      ).grid(row=0, column=1, padx=(4, 0), sticky="ew")
+                      command=self._srt_clear_file)
+        self.srt_clear_btn.grid(row=0, column=1, padx=(4, 0), sticky="ew")
 
         # Output dir card (default = source folder)
         out_card = ctk.CTkFrame(scroll, fg_color=BG_CARD, corner_radius=12)
@@ -536,9 +562,8 @@ class MoonshineGUI(ctk.CTk):
         # Action buttons - always visible at bottom of tab
         abtn = ctk.CTkFrame(scroll, fg_color="transparent")
         abtn.grid(row=5, column=0, sticky="ew", padx=4, pady=(0, 8))
-        abtn.grid_columnconfigure(0, weight=1)
+        abtn.grid_columnconfigure(0, weight=2)
         abtn.grid_columnconfigure(1, weight=1)
-        abtn.grid_columnconfigure(2, weight=1)
         self.srt_start_btn = ctk.CTkButton(
             abtn, text="\u25B6  Generate SRT", font=("Segoe UI", 13, "bold"),
             fg_color=SUCCESS, hover_color="#00916E", height=42,
@@ -548,12 +573,18 @@ class MoonshineGUI(ctk.CTk):
             abtn, text="Cancel", font=("Segoe UI", 12),
             fg_color=DANGER, hover_color="#C0392B", height=42,
             corner_radius=10, state="disabled", command=self._on_srt_cancel)
-        self.srt_cancel_btn.grid(row=0, column=1, padx=4, sticky="ew")
+        self.srt_cancel_btn.grid(row=0, column=1, padx=(4, 0), sticky="ew")
+        self.srt_burn_btn = ctk.CTkButton(
+            abtn, text="Burn SRT into MP4", font=("Segoe UI", 12, "bold"),
+            fg_color="#B5651D", hover_color="#8E4E15", height=42,
+            corner_radius=10, command=self._on_srt_burn)
+        self.srt_burn_btn.grid(row=1, column=0, padx=(0, 4), pady=(8, 0), sticky="ew")
         ctk.CTkButton(abtn, text="Open Folder", font=("Segoe UI", 12),
                       fg_color="#2D3748", hover_color="#4A5568", height=42,
                       corner_radius=10, text_color=FG_SECONDARY,
                       command=self._on_srt_open_folder
-                      ).grid(row=0, column=2, padx=(4, 0), sticky="ew")
+                      ).grid(row=1, column=1, padx=(4, 0), pady=(8, 0), sticky="ew")
+        self._srt_burn_cb = None
 
     def _toggle_record(self):
         if self._is_recording:
@@ -682,9 +713,24 @@ class MoonshineGUI(ctk.CTk):
         self.suffix_var.set(suffix if suffix in ["none", "space", "newline", "period_space"] else "none")
 
     def set_model(self, arch: int, callback: Callable):
+        self.set_model_options(
+            list(MODEL_CHOICES.keys()),
+            MODEL_CHOICES_REV.get(arch, "Medium Streaming (110MB, best)"),
+            callback)
+
+    def set_model_options(self, values, current: str, callback: Callable):
+        """Swap the Model row to another engine's choices (Whisper sizes /
+        Canary fixed label) and select `current`."""
         self._model_callback = callback
-        label = MODEL_CHOICES_REV.get(arch, "Medium Streaming (110MB, best)")
-        self.model_var.set(label)
+        try:
+            self.model_menu.configure(values=list(values))
+        except Exception:
+            pass
+        try:
+            vals = list(values)
+            self.model_var.set(current if current in vals else vals[0])
+        except Exception:
+            pass
 
     def set_engine(self, engine: str, task: str, src_lang: str, engine_cb: Callable, task_cb: Callable, lang_cb: Callable):
         self._engine_callback = engine_cb
@@ -748,7 +794,7 @@ class MoonshineGUI(ctk.CTk):
         try:
             files = self._parse_drop(event.data)
             if files:
-                self.set_srt_input(files[0])
+                self.add_srt_files(files)
         except Exception:
             pass
 
@@ -757,20 +803,96 @@ class MoonshineGUI(ctk.CTk):
             from tkinter import filedialog
             from srt import SUPPORTED_EXTS
             exts = " ".join(f"*{e}" for e in SUPPORTED_EXTS)
-            path = filedialog.askopenfilename(
-                title="Pick video or audio file",
+            paths = filedialog.askopenfilenames(
+                title="Pick video or audio files (multi-select for batch)",
                 filetypes=[("Media", exts), ("All files", "*.*")])
-            if path:
-                self.set_srt_input(path)
+            if paths:
+                self.add_srt_files(list(paths))
+        except Exception:
+            pass
+
+    def add_srt_files(self, paths) -> int:
+        """Append files to the batch queue (skips unsupported types with a
+        notice). Returns the number added."""
+        try:
+            from srt import SUPPORTED_EXTS as _exts
+        except Exception:
+            _exts = ()
+        added = 0
+        try:
+            for raw in (paths or []):
+                p = str(raw or "").strip().strip('"')
+                if not p:
+                    continue
+                import os as _os
+                if _exts and _os.path.splitext(p)[1].lower() not in _exts:
+                    try:
+                        self.srt_log(f"skip (unsupported type): {_os.path.basename(p)}")
+                    except Exception:
+                        pass
+                    continue
+                self._srt_input_paths.append(p)
+                self._srt_file_status[len(self._srt_input_paths) - 1] = "queued"
+                added += 1
+            self._refresh_srt_list()
+            if added:
+                try:
+                    last = self._srt_input_paths[-1]
+                    import os as _os
+                    self.set_srt_progress(
+                        0, f"Ready: {added} file(s) - latest: {_os.path.basename(last)}")
+                except Exception:
+                    pass
+        except Exception:
+            pass
+        return added
+
+    def _refresh_srt_list(self):
+        try:
+            self.srt_file_list.delete(0, "end")
+        except Exception:
+            return
+        try:
+            import os as _os
+            for i, p in enumerate(self._srt_input_paths):
+                st = self._srt_file_status.get(i, "queued")
+                self.srt_file_list.insert("end", f"{i + 1}. {_os.path.basename(p)}  [{st}]")
+            n = len(self._srt_input_paths)
+            self.srt_drop.configure(state="normal")
+            self.srt_drop.delete("1.0", "end")
+            if n:
+                self.srt_drop.insert(
+                    "1.0", f"{n} file(s) queued - runs one by one.\n"
+                           "Drop more files or Browse Files... to add.")
+            else:
+                self.srt_drop.insert(
+                    "1.0", "Drag && drop video/audio files here,\nor click Browse Files...")
+            self.srt_drop.configure(state="disabled")
+        except Exception:
+            pass
+
+    def get_srt_input_paths(self) -> list:
+        return [p for p in list(self._srt_input_paths or []) if p]
+
+    def set_srt_file_status(self, index: int, status: str):
+        """Update one queue row's status text (safe from any thread via
+        the app's after() pump - but defensive try/except anyway)."""
+        try:
+            self._srt_file_status[int(index)] = str(status or "")
+            self._refresh_srt_list()
+            try:
+                self.srt_file_list.see(int(index))
+            except Exception:
+                pass
         except Exception:
             pass
 
     def _srt_clear_file(self):
-        self._srt_input_path = ""
-        self.srt_drop.configure(state="normal")
-        self.srt_drop.delete("1.0", "end")
-        self.srt_drop.insert("1.0", "Drag && drop a video/audio file here,\nor click Browse...")
-        self.srt_drop.configure(state="disabled")
+        if getattr(self, "_srt_running", False):
+            return  # never wipe the queue mid-run
+        self._srt_input_paths = []
+        self._srt_file_status = {}
+        self._refresh_srt_list()
 
     def _srt_browse_outdir(self):
         try:
@@ -793,8 +915,9 @@ class MoonshineGUI(ctk.CTk):
     def _on_srt_start(self):
         if self._srt_running:
             return
-        if not self._srt_input_path:
-            self.set_srt_progress(0, "Pick a video/audio file first")
+        paths = self.get_srt_input_paths()
+        if not paths:
+            self.set_srt_progress(0, "Add video/audio files first")
             return
         if self._srt_start_cb:
             # Snapshot ALL Tk state here on the GUI thread. The callback
@@ -823,7 +946,7 @@ class MoonshineGUI(ctk.CTk):
             if srt_task not in ("transcribe", "translate"):
                 srt_task = ""
             threading.Thread(target=self._srt_start_cb,
-                             args=(self._srt_input_path, out_dir, cpu,
+                             args=(paths, out_dir, cpu,
                                    srt_in, srt_out, srt_task),
                              daemon=True).start()
 
@@ -834,14 +957,38 @@ class MoonshineGUI(ctk.CTk):
             except Exception:
                 pass
 
+    def _on_srt_burn(self):
+        if self._srt_running:
+            return
+        paths = self.get_srt_input_paths()
+        if not paths:
+            self.set_srt_progress(0, "Add video files first (burn needs the queue)")
+            return
+        if self._srt_burn_cb:
+            # Same GUI-thread snapshot discipline as Generate: the worker
+            # thread must never touch Tk widgets.
+            try:
+                out_dir = self.srt_out_entry.get().strip()
+            except Exception:
+                out_dir = ""
+            try:
+                cpu = max(1, int(round(float(self.srt_cpu_slider.get()))))
+            except Exception:
+                cpu = 1
+            threading.Thread(target=self._srt_burn_cb,
+                             args=(paths, out_dir, cpu),
+                             daemon=True).start()
+
     def _on_srt_open_folder(self):
         import os as _os
         import subprocess as _sp
         from pathlib import Path as _P
         target = self.srt_out_entry.get().strip() if hasattr(self, "srt_out_entry") else ""
-        if not target and getattr(self, "_srt_input_path", ""):
+        if not target:
             try:
-                target = str(_P(self._srt_input_path).parent)
+                first = (self.get_srt_input_paths() or [""])[0]
+                if first:
+                    target = str(_P(first).parent)
             except Exception:
                 target = ""
         if not target:
@@ -855,21 +1002,21 @@ class MoonshineGUI(ctk.CTk):
                 pass
 
     def set_srt_input(self, path: str):
-        self._srt_input_path = (path or "").strip().strip('"')
-        self.srt_drop.configure(state="normal")
-        self.srt_drop.delete("1.0", "end")
-        if self._srt_input_path:
-            import os as _os
-            name = _os.path.basename(self._srt_input_path)
-            self.srt_drop.insert("1.0", f"File:\n{name}\n{self._srt_input_path}")
-            self.set_srt_progress(0, f"Ready: {name}")
-        else:
-            self.srt_drop.insert("1.0", "Drag && drop a video/audio file here,\nor click Browse...")
-        self.srt_drop.configure(state="disabled")
+        """Compat wrapper (old single-file API): replace queue with one file."""
+        try:
+            if getattr(self, "_srt_running", False):
+                return
+            self._srt_input_paths = []
+            self._srt_file_status = {}
+        except Exception:
+            pass
+        self.add_srt_files([path])
 
-    def set_srt_callbacks(self, on_start: Callable, on_cancel: Callable):
+    def set_srt_callbacks(self, on_start: Callable, on_cancel: Callable,
+                          on_burn: Optional[Callable] = None):
         self._srt_start_cb = on_start
         self._srt_cancel_cb = on_cancel
+        self._srt_burn_cb = on_burn
 
     def set_srt_engine_label(self, text: str):
         try:
@@ -882,6 +1029,22 @@ class MoonshineGUI(ctk.CTk):
         try:
             self.srt_start_btn.configure(state="disabled" if running else "normal")
             self.srt_cancel_btn.configure(state="normal" if running else "disabled")
+            try:
+                self.srt_burn_btn.configure(state="disabled" if running else "normal")
+            except Exception:
+                pass
+            # Freeze the queue itself mid-run (the job owns a snapshot).
+            for w in (getattr(self, "srt_browse_btn", None),
+                      getattr(self, "srt_clear_btn", None)):
+                try:
+                    if w is not None:
+                        w.configure(state="disabled" if running else "normal")
+                except Exception:
+                    pass
+            try:
+                self.srt_file_list.configure(state="disabled" if running else "normal")
+            except Exception:
+                pass
             if running:
                 self.srt_bar.set(0)
                 self.srt_pct.configure(text="0%")

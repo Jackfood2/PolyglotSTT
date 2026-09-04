@@ -45,11 +45,17 @@ WHISPER_SOURCE_LANGS = [
     "de", "fr", "es", "it", "pt", "nl", "ru",
     "ar", "hi", "tr", "id", "uk", "vi", "th",
 ]
-# Whisper translate task only outputs English.
-WHISPER_TARGET_LANGS = {
-    "transcribe": WHISPER_SOURCE_LANGS,
-    "translate": ["en"],
+# Downloadable sizes (faster-whisper Systran aliases; auto-fetched on first
+# use when online, then cached offline). NOTE: no turbo here - OpenAI
+# trained turbo on transcription data only, so it cannot translate.
+WHISPER_MODEL_CHOICES = {
+    "Tiny (75MB, fastest)": "tiny",
+    "Base (145MB)": "base",
+    "Small (500MB)": "small",
+    "Medium (1.5GB)": "medium",
+    "Large v3 (3GB, best)": "large-v3",
 }
+WHISPER_MODEL_CHOICES_REV = {v: k for k, v in WHISPER_MODEL_CHOICES.items()}
 
 
 class WhisperEngine:
@@ -67,6 +73,7 @@ class WhisperEngine:
         self._infer_lock = threading.Lock()
         self._loading = False
         self._last_error: Optional[str] = None
+        self._switch_cb: Optional[Callable] = None  # one-shot switch_model callback
 
     @property
     def is_ready(self) -> bool:
@@ -146,8 +153,14 @@ class WhisperEngine:
                     self._ready = True
                     self._last_error = None
                     self._loading = False
+                    switch_cb, self._switch_cb = self._switch_cb, None
                 if self._on_ready:
                     self._on_ready(True, None)
+                if switch_cb:
+                    try:
+                        switch_cb(True, None)
+                    except Exception:
+                        pass
             except Exception as e:
                 import traceback
                 traceback.print_exc()
@@ -155,8 +168,14 @@ class WhisperEngine:
                     self._ready = False
                     self._last_error = str(e)
                     self._loading = False
+                    switch_cb, self._switch_cb = self._switch_cb, None
                 if self._on_ready:
                     self._on_ready(False, str(e))
+                if switch_cb:
+                    try:
+                        switch_cb(False, str(e))
+                    except Exception:
+                        pass
 
         threading.Thread(target=_load, daemon=True).start()
 
@@ -183,6 +202,37 @@ class WhisperEngine:
                 self.source_lang = source_lang
         if on_ready:
             on_ready(True, None)
+
+    def switch_model(self, model_id: str,
+                     on_ready: Optional[Callable] = None):
+        """Switch downloadable size (tiny/base/small/medium/large-v3).
+
+        Drops the loaded weights and reloads (downloading first time when
+        online). In-flight inference sees not-ready and skips cleanly.
+        """
+        if not model_id:
+            if on_ready:
+                on_ready(False, "empty model id")
+            return
+        with self._lock:
+            if model_id == self.model_id and self._ready and self._model is not None:
+                same_cb = on_ready
+                already = True
+            else:
+                same_cb, already = None, False
+                self.model_id = model_id
+                self._model = None
+                self._ready = False
+                self._last_error = None
+                self._loading = False
+                self._switch_cb = on_ready
+        if already:
+            try:
+                same_cb(True, None)
+            except Exception:
+                pass
+            return
+        self.load()
 
     def _snapshot_opts(self) -> tuple:
         """Atomic (task, source_lang, target_lang) snapshot for one inference call."""

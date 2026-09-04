@@ -47,6 +47,7 @@ DEFAULT_CONFIG = {
     "canary_src_lang": "auto",      # canary-1b tokenizer only has de/en/es/fr (+auto->en)
     "whisper_task": "translate",    # transcribe | translate (->en, Whisper only outputs EN on translate)
     "whisper_src_lang": "ja",       # auto + whisper langs (ja/zh/ko/en/...)
+    "whisper_model": "large-v3",    # tiny | base | small | medium | large-v3 (downloaded on demand)
     "srt_cpu": 0,                   # 0 = auto (80% of cores), else thread count
     "srt_out_dir": "",              # "" = same folder as source file
     "srt_input_lang": "ja",         # SRT input language code (auto/en/ja/zh/ko/...)
@@ -133,12 +134,17 @@ class MoonshineSTTApp:
             self.config["whisper_task"] = "translate"
             needs_save = True
         try:
-            from whisper_engine import WHISPER_SOURCE_LANGS
+            from whisper_engine import WHISPER_SOURCE_LANGS, WHISPER_MODEL_CHOICES
             _wlangs = tuple(WHISPER_SOURCE_LANGS)
+            _wmodels = tuple(WHISPER_MODEL_CHOICES.values())
         except Exception:
             _wlangs = ("auto", "en", "ja", "zh", "ko", "de", "fr", "es")
+            _wmodels = ("tiny", "base", "small", "medium", "large-v3")
         if self.config.get("whisper_src_lang") not in _wlangs:
             self.config["whisper_src_lang"] = "ja"
+            needs_save = True
+        if self.config.get("whisper_model") not in _wmodels:
+            self.config["whisper_model"] = "large-v3"
             needs_save = True
         # Validate SRT language codes
         try:
@@ -206,9 +212,7 @@ class MoonshineSTTApp:
                     self._on_suffix_changed,
                 )
                 try:
-                    from gui import MODEL_CHOICES_REV
-                    cur_arch = int(self.config.get("model_arch", 5))
-                    self.gui.set_model(cur_arch, self._on_model_changed)
+                    self._refresh_model_row()
                 except Exception:
                     pass
                 # Engine selector + Canary/Whisper options (shared Task/Src widgets)
@@ -229,7 +233,8 @@ class MoonshineSTTApp:
                 except Exception:
                     pass
                 try:
-                    self.gui.set_srt_callbacks(self._srt_start, self._srt_cancel)
+                    self.gui.set_srt_callbacks(self._srt_start, self._srt_cancel,
+                                               self._burn_start)
                     # SRT language dropdowns (only meaningful for Canary/Whisper)
                     try:
                         self.gui.set_srt_languages(
@@ -322,6 +327,7 @@ class MoonshineSTTApp:
                             task=self.config.get("whisper_task", "translate"),
                             source_lang=self.config.get("whisper_src_lang", "ja"),
                             target_lang="en",
+                            model_id=self.config.get("whisper_model", "large-v3"),
                             on_ready=self._model_ready,
                         )
                     except Exception as e:
@@ -348,7 +354,36 @@ class MoonshineSTTApp:
         save_local_config(self.config)
         self._log(f"Suffix -> {value}")
 
+    def _refresh_model_row(self):
+        """Show the active engine's choices in the shared Model row."""
+        if not self.gui:
+            return
+        try:
+            eng = self.config.get("engine", "Moonshine v2")
+            if eng == "Whisper Large v3":
+                from gui import WHISPER_MODEL_CHOICES, WHISPER_MODEL_CHOICES_REV
+                cur = WHISPER_MODEL_CHOICES_REV.get(
+                    self.config.get("whisper_model", "large-v3"),
+                    "Large v3 (3GB, best)")
+                self.gui.set_model_options(list(WHISPER_MODEL_CHOICES.keys()),
+                                           cur, self._on_model_changed)
+            elif eng == "Canary-1B":
+                from gui import CANARY_MODEL_LABEL
+                self.gui.set_model_options([CANARY_MODEL_LABEL], CANARY_MODEL_LABEL,
+                                           self._on_model_changed)
+            else:
+                from gui import MODEL_CHOICES_REV
+                cur_arch = int(self.config.get("model_arch", 5))
+                self.gui.set_model(cur_arch, self._on_model_changed)
+        except Exception:
+            pass
+
     def _on_model_changed(self, display_label: str):
+        if self.config.get("engine") == "Whisper Large v3":
+            self._on_whisper_model_changed(display_label)
+            return
+        if self.config.get("engine") not in ("Moonshine v2",):
+            return  # fixed-model engines have nothing to switch
         try:
             from gui import MODEL_CHOICES
             new_arch = MODEL_CHOICES.get(display_label, 5)
@@ -392,6 +427,62 @@ class MoonshineSTTApp:
             self.engine = self.moonshine_engine
         self.engine.switch_model(new_arch, on_ready=_model_switched)
 
+    def _on_whisper_model_changed(self, display_label: str):
+        try:
+            from gui import WHISPER_MODEL_CHOICES, WHISPER_MODEL_CHOICES_REV
+        except Exception:
+            return
+        new_id = WHISPER_MODEL_CHOICES.get(display_label)
+        if not new_id:
+            return
+        old_id = self.config.get("whisper_model", "large-v3")
+        if new_id == old_id:
+            return
+        if self._srt_busy:
+            # The SRT/burn job shares this engine - switching mid-job would
+            # blank its chunks. Revert the menu and say so.
+            self._log("Stop the SRT/burn job before switching Whisper model")
+            if self.gui:
+                try:
+                    self.gui.model_var.set(
+                        WHISPER_MODEL_CHOICES_REV.get(old_id, display_label))
+                except Exception:
+                    pass
+            return
+        self.config["whisper_model"] = new_id
+        save_local_config(self.config)
+        self._log(f"Whisper model -> {display_label} ({new_id}), reloading...")
+        if self.gui:
+            self.gui.set_model_status(f"Switching to {display_label}...", WARNING)
+            try:
+                self.gui.record_btn.configure(state="disabled")
+            except Exception:
+                pass
+
+        def _whisper_switched(success, err):
+            def _ui():
+                try:
+                    self.gui.record_btn.configure(state="normal")
+                except Exception:
+                    pass
+                if success:
+                    self.gui.set_status(f"Ready \u2022 Whisper {new_id}", SUCCESS)
+                else:
+                    self.gui.set_status(f"Model error: {err}", DANGER)
+            if self.gui:
+                try:
+                    self.gui.after(0, _ui)
+                except Exception:
+                    pass
+
+        eng = self._get_whisper_engine()
+        try:
+            eng.switch_model(new_id, on_ready=_whisper_switched)
+        except AttributeError:
+            # Fallback target (moonshine) has no whisper switch - shouldn't
+            # happen, but never wedge the UI.
+            _whisper_switched(False, "engine unavailable")
+
     def _on_engine_changed(self, display_label: str):
         old = self.config.get("engine", "Moonshine v2")
         if display_label == old:
@@ -428,6 +519,12 @@ class MoonshineSTTApp:
                 # Enable/disable SRT language dropdowns based on engine
                 try:
                     self.gui.set_srt_lang_state(display_label)
+                except Exception:
+                    pass
+                # Show the new engine's choices in the shared Model row
+                # (Moonshine sizes / Whisper downloadable sizes / Canary fixed)
+                try:
+                    self._refresh_model_row()
                 except Exception:
                     pass
         except Exception:
@@ -641,6 +738,11 @@ class MoonshineSTTApp:
                     self.gui.srt_log(payload)
                 elif msg_type == "srt_done":
                     self.gui.srt_done(payload[0], payload[1])
+                elif msg_type == "srt_file_status":
+                    try:
+                        self.gui.set_srt_file_status(payload[0], payload[1])
+                    except Exception:
+                        pass
         except queue.Empty:
             pass
         self.gui.after(100, self._poll_queue)
@@ -834,7 +936,7 @@ class MoonshineSTTApp:
             arch_name = str(arch)
         return tr, arch_name
 
-    def _srt_start(self, input_path: str, out_dir: str, cpu_workers: int,
+    def _srt_start(self, input_paths, out_dir: str, cpu_workers: int,
                    srt_in: str = "", srt_out: str = "", srt_task: str = ""):
         # Atomic check-and-set: two rapid Starts must not launch two jobs.
         # Self-heal: if a previous job thread died without clearing the flag
@@ -844,7 +946,7 @@ class MoonshineSTTApp:
             if self._srt_busy:
                 _t = self._srt_thread
                 if _t is not None and _t.is_alive():
-                    self._gui_queue.put(("srt_log", "A job is already running. Cancel it first."))
+                    self._gui_queue.put(("srt_log", "A batch is already running. Cancel it first."))
                     return
                 self._gui_queue.put(("srt_log", "Clearing stale job flag from a previous run..."))
                 self._srt_busy = False
@@ -855,6 +957,17 @@ class MoonshineSTTApp:
         try:
             # Snapshot everything the job needs NOW (worker thread must never
             # touch Tk widgets, and config may change mid-job from the GUI).
+            # First arg is the batch queue (a single stray string is tolerated).
+            if isinstance(input_paths, str):
+                paths = [input_paths]
+            else:
+                try:
+                    paths = list(input_paths or [])
+                except Exception:
+                    paths = []
+            paths = [str(p).strip().strip('"') for p in paths if str(p or "").strip()]
+            if not paths:
+                raise ValueError("queue is empty - add video/audio files first")
             from gui import SRT_LANGS as _SRT_LANGS
             srt_in = (srt_in or "").strip().lower() or None
             srt_out = (srt_out or "").strip().lower() or None
@@ -890,7 +1003,7 @@ class MoonshineSTTApp:
                     "srt_input_lang": self.config.get("srt_input_lang", "auto"),
                     "srt_output_lang": self.config.get("srt_output_lang", "en"),
                     "cpu_workers": int(cpu_workers),
-                    "src_path": input_path,
+                    "src_paths": paths,
                     "out_dir": out_dir,
                 }
             if job["engine_kind"] not in ("Moonshine v2", "Canary-1B", "Whisper Large v3"):
@@ -898,7 +1011,9 @@ class MoonshineSTTApp:
             self._srt_cancel.clear()
             if self.gui:
                 self.gui.after(0, lambda: self.gui.set_srt_running(True))
-                self.gui.after(0, lambda: self.gui.set_srt_progress(0, "Starting..."))
+                _n = len(job["src_paths"])
+                self.gui.after(0, lambda _n=_n: self.gui.set_srt_progress(
+                    0, f"Starting batch ({_n} file(s))..."))
         except Exception as e:
             with self._srt_lock:
                 self._srt_busy = False
@@ -907,30 +1022,84 @@ class MoonshineSTTApp:
 
         def _job():
             try:
+                import os as _os
                 import srt as srtmod
                 # Frozen snapshot - immune to GUI changes mid-job.
-                out = srtmod.run_srt_job(
-                    src_path=job["src_path"],
-                    out_dir=job["out_dir"],
-                    engine_kind=job["engine_kind"],
-                    moonshine_arch=job["moonshine_arch"],
-                    canary_task=job["canary_task"],
-                    canary_src=job["canary_src"],
-                    cpu_workers=job["cpu_workers"],
-                    get_moonshine_transcriber=self._get_srt_moonshine_transcriber,
-                    # apply_live_options=False: SRT uses per-call overrides and
-                    # must never mutate the live engine from this worker thread.
-                    get_canary_engine=lambda: self._get_canary_engine(False),
+                def _run_one(path, progress_cb, log_cb):
+                    return srtmod.run_srt_job(
+                        src_path=path,
+                        out_dir=job["out_dir"],
+                        engine_kind=job["engine_kind"],
+                        moonshine_arch=job["moonshine_arch"],
+                        canary_task=job["canary_task"],
+                        canary_src=job["canary_src"],
+                        cpu_workers=job["cpu_workers"],
+                        get_moonshine_transcriber=self._get_srt_moonshine_transcriber,
+                        # apply_live_options=False: SRT uses per-call overrides
+                        # and must never mutate the live engine from this worker.
+                        get_canary_engine=lambda: self._get_canary_engine(False),
+                        progress_cb=progress_cb,
+                        log_cb=log_cb,
+                        cancel_event=self._srt_cancel,
+                        whisper_task=job["whisper_task"],
+                        whisper_src=job["whisper_src"],
+                        get_whisper_engine=lambda: self._get_whisper_engine(False),
+                        srt_input_lang=job["srt_input_lang"],
+                        srt_output_lang=job["srt_output_lang"],
+                    )
+
+                def _file_cb(kind, path, info):
+                    try:
+                        idx = int((info or {}).get("index", -1))
+                    except Exception:
+                        idx = -1
+                    total = len(job["src_paths"])
+                    if kind == "start":
+                        self._gui_queue.put(
+                            ("srt_file_status", (idx, "working…")))
+                    elif kind == "done":
+                        if (info or {}).get("ok"):
+                            try:
+                                name = _os.path.basename((info or {}).get("out") or path)
+                            except Exception:
+                                name = "saved"
+                            self._gui_queue.put(
+                                ("srt_file_status", (idx, f"✓ {name}")))
+                        else:
+                            err = str((info or {}).get("error") or "error")[:60]
+                            self._gui_queue.put(
+                                ("srt_file_status", (idx, f"✗ {err}")))
+                    elif kind == "skip":
+                        self._gui_queue.put(
+                            ("srt_file_status", (idx, "– skipped")))
+
+                results, cancelled = srtmod.run_srt_batch(
+                    job["src_paths"], _run_one,
                     progress_cb=lambda f, m: self._gui_queue.put(("srt_progress", (f, m))),
                     log_cb=lambda m: self._gui_queue.put(("srt_log", m)),
                     cancel_event=self._srt_cancel,
-                    whisper_task=job["whisper_task"],
-                    whisper_src=job["whisper_src"],
-                    get_whisper_engine=lambda: self._get_whisper_engine(False),
-                    srt_input_lang=job["srt_input_lang"],
-                    srt_output_lang=job["srt_output_lang"],
+                    file_cb=_file_cb,
                 )
-                self._gui_queue.put(("srt_done", (True, f"Saved: {out}")))
+                ok_paths = [p for (p, ok, _m) in results if ok]
+                bad = [(p, m) for (p, ok, m) in results if not ok]
+                total = len(results)
+                if cancelled:
+                    self._gui_queue.put(
+                        ("srt_done", (False, f"Cancelled after {len(ok_paths)}/{total} files")))
+                elif not bad:
+                    self._gui_queue.put(
+                        ("srt_done", (True, f"Batch done: all {total} saved")))
+                elif ok_paths:
+                    try:
+                        first_bad = _os.path.basename(bad[0][0])
+                    except Exception:
+                        first_bad = "a file"
+                    self._gui_queue.put(
+                        ("srt_done", (True, f"Batch done: {len(ok_paths)}/{total} saved "
+                                            f"({len(bad)} failed, e.g. {first_bad})")))
+                else:
+                    self._gui_queue.put(
+                        ("srt_done", (False, f"Batch failed: 0/{total} saved")))
             except InterruptedError:
                 self._gui_queue.put(("srt_done", (False, "Cancelled by user")))
             except Exception as e:
@@ -951,6 +1120,177 @@ class MoonshineSTTApp:
     def _srt_cancel(self):
         self._srt_cancel.set()
         self._gui_queue.put(("srt_log", "Cancelling..."))
+
+    @staticmethod
+    def _fmt_gb(nbytes: int) -> str:
+        try:
+            v = float(nbytes)
+        except Exception:
+            return "?GB"
+        if v >= 1e9:
+            return f"{v / 1e9:.2f}GB"
+        if v >= 1e6:
+            return f"{v / 1e6:.0f}MB"
+        return f"{int(v)}B"
+
+    def _burn_start(self, input_paths, out_dir: str, cpu_workers: int):
+        # Same single-flight machinery as SRT: one heavy job at a time, same
+        # Cancel button/event, same running UI state.
+        with self._srt_lock:
+            if self._srt_busy:
+                _t = self._srt_thread
+                if _t is not None and _t.is_alive():
+                    self._gui_queue.put(("srt_log", "A job is already running. Cancel it first."))
+                    return
+                self._gui_queue.put(("srt_log", "Clearing stale job flag from a previous run..."))
+                self._srt_busy = False
+                self._srt_thread = None
+            self._srt_busy = True
+        try:
+            if isinstance(input_paths, str):
+                paths = [input_paths]
+            else:
+                try:
+                    paths = list(input_paths or [])
+                except Exception:
+                    paths = []
+            paths = [str(p).strip().strip('"') for p in paths if str(p or "").strip()]
+            if not paths:
+                raise ValueError("queue is empty - add video files first")
+            with _CONFIG_LOCK:
+                self.config["srt_out_dir"] = out_dir or ""
+                try:
+                    self.config["srt_cpu"] = int(cpu_workers)
+                except Exception:
+                    self.config["srt_cpu"] = 0
+                save_local_config(self.config)
+                job = {"paths": paths, "out_dir": out_dir,
+                       "cpu_workers": int(cpu_workers)}
+            self._srt_cancel.clear()
+            if self.gui:
+                self.gui.after(0, lambda: self.gui.set_srt_running(True))
+                _n = len(job["paths"])
+                _cpu = job["cpu_workers"]
+                self.gui.after(0, lambda _n=_n: self.gui.set_srt_progress(
+                    0, f"Starting burn ({_n} file(s))..."))
+                self._gui_queue.put(
+                    ("srt_log", f"Burn: {_n} file(s), {_cpu} threads (x264 multi-core), "
+                                f"size-match target"))
+        except Exception as e:
+            with self._srt_lock:
+                self._srt_busy = False
+            self._gui_queue.put(("srt_done", (False, f"Could not start burn: {e}")))
+            return
+
+        def _job():
+            try:
+                import os as _os
+                import srt as srtmod
+                ffmpeg = srtmod.get_ffmpeg_exe()
+                if not ffmpeg:
+                    raise RuntimeError("ffmpeg not found - run setup.bat once.")
+
+                def _run_one(path, progress_cb, log_cb):
+                    from pathlib import Path as _P
+                    src = _P(path)
+                    srt_path = srtmod.default_out_path(src, job["out_dir"])
+                    if not srt_path.exists():
+                        raise FileNotFoundError(
+                            f"no SRT for {src.name} - Generate SRT first")
+                    info = srtmod.probe_media(src, ffmpeg)
+                    vbps, abps, acopy = srtmod.plan_burn_bitrates(info)
+                    try:
+                        in_gb = self._fmt_gb(info["size"])
+                    except Exception:
+                        in_gb = "?"
+                    log_cb(f"budget: video {vbps // 1000} kbps, "
+                           f"audio {'copy' if acopy else f'AAC {abps // 1000} kbps'} "
+                           f"(in {in_gb}, target match)")
+                    out_path = srtmod.default_burn_path(src, job["out_dir"])
+                    return srtmod.burn_subtitles(
+                        str(src), str(srt_path), str(out_path), ffmpeg,
+                        vbps // 1000, (abps // 1000) if not acopy else 128,
+                        acopy, job["cpu_workers"],
+                        progress_cb=progress_cb, log_cb=log_cb,
+                        cancel_event=self._srt_cancel)
+
+                def _file_cb(kind, path, info):
+                    try:
+                        idx = int((info or {}).get("index", -1))
+                    except Exception:
+                        idx = -1
+                    if kind == "start":
+                        self._gui_queue.put(("srt_file_status", (idx, "burning…")))
+                    elif kind == "done":
+                        if (info or {}).get("ok"):
+                            try:
+                                _o, _ib, _ob = (info or {}).get("out"), 0, 0
+                                if isinstance(_o, (list, tuple)) and len(_o) >= 3:
+                                    _ib, _ob = _o[1], _o[2]
+                                tag = (f"\u2713 {self._fmt_gb(_ob)}"
+                                       if _ob else "\u2713 burned")
+                            except Exception:
+                                tag = "\u2713 burned"
+                            self._gui_queue.put(("srt_file_status", (idx, tag)))
+                        else:
+                            err = str((info or {}).get("error") or "error")[:60]
+                            self._gui_queue.put(("srt_file_status", (idx, f"\u2717 {err}")))
+                    elif kind == "skip":
+                        self._gui_queue.put(("srt_file_status", (idx, "– skipped")))
+
+                results, cancelled = srtmod.run_srt_batch(
+                    job["paths"], _run_one,
+                    progress_cb=lambda f, m: self._gui_queue.put(("srt_progress", (f, m))),
+                    log_cb=lambda m: self._gui_queue.put(("srt_log", m)),
+                    cancel_event=self._srt_cancel,
+                    file_cb=_file_cb,
+                )
+                ok = [(p, m) for (p, ok_, m) in results if ok_]
+                bad = [(p, m) for (p, ok_, m) in results if not ok_]
+                total = len(results)
+                in_sum = out_sum = 0
+                for (_p, m) in ok:
+                    try:
+                        if isinstance(m, (list, tuple)) and len(m) >= 3:
+                            in_sum += int(m[1] or 0)
+                            out_sum += int(m[2] or 0)
+                    except Exception:
+                        pass
+                sizes = (f" ({self._fmt_gb(in_sum)}\u2192{self._fmt_gb(out_sum)})"
+                         if in_sum and out_sum else "")
+                if cancelled:
+                    self._gui_queue.put(
+                        ("srt_done", (False, f"Burn cancelled after {len(ok)}/{total} files")))
+                elif not bad:
+                    self._gui_queue.put(
+                        ("srt_done", (True, f"Burned all {total}{sizes}")))
+                elif ok:
+                    try:
+                        first_bad = _os.path.basename(bad[0][0])
+                    except Exception:
+                        first_bad = "a file"
+                    self._gui_queue.put(
+                        ("srt_done", (True, f"Burned {len(ok)}/{total}{sizes} "
+                                            f"({len(bad)} failed, e.g. {first_bad})")))
+                else:
+                    self._gui_queue.put(
+                        ("srt_done", (False, f"Burn failed: 0/{total}")))
+            except InterruptedError:
+                self._gui_queue.put(("srt_done", (False, "Cancelled by user")))
+            except Exception as e:
+                import traceback
+                traceback.print_exc()
+                self._gui_queue.put(("srt_done", (False, f"Error: {e}")))
+            finally:
+                with self._srt_lock:
+                    self._srt_busy = False
+                    if threading.current_thread() is self._srt_thread:
+                        self._srt_thread = None
+
+        _t = threading.Thread(target=_job, daemon=True)
+        with self._srt_lock:
+            self._srt_thread = _t
+        _t.start()
 
     def _gui_record_start(self):
         if not self._recording:

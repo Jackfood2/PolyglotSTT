@@ -12,6 +12,8 @@ __pycache__/
 *.pyo
 # Per-machine settings (auto-created with defaults on first launch).
 moonshine_config.json
+# Aggregated SRT timing baseline (auto-created from successful jobs).
+srt_eta.json
 # SRT job temp files.
 *.srt_tmp16k.wav
 *.tmp

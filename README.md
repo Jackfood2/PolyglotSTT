@@ -31,8 +31,17 @@ each engine the languages it can actually do.
 - **Live tab** — hold `F2` to record, release to transcribe; text is typed
   into the focused window (clipboard fallback), with level meter, waveform,
   history, and per-engine Task / source-language selectors.
-- **SRT File tab** — drag & drop a video/audio file, pick an output folder,
-  generate `.srt` with live progress bar, per-chunk log, and cancel.
+- **SRT File tab** — queue one or many video/audio files (batch runs one by
+  one, failures don't stop the queue), pick an output folder, generate
+  `.srt` with live progress bar, per-file status list, per-chunk log,
+  cancel, and a remaining-time countdown.
+- **Burn SRT into MP4** — hardcode subtitles into a new `.mp4`
+  (`<name>.burned.mp4`, any input: mp4/mkv/ts/…) with x264 two-pass sized
+  to match the original file (audio copied when possible). Latin subtitles
+  only — CJK burns are refused loudly instead of producing blank video.
+- **Live + jobs at once** — hold-to-talk dictation keeps working while an
+  SRT/burn job runs (separate threads; engines serialize inference, so
+  everything just shares CPU).
 - **Accurate timing** — Whisper cues are snapped to measured speech energy,
   anchored to per-word timestamps (including one-word cues), silence
   hallucinations and `[Music]` markers are dropped; sentence-aware packing
@@ -71,7 +80,7 @@ connection — grab them manually:
 |---|---|---|---|
 | Moonshine medium-streaming (default) + tiny-streaming | ~155 MB | fetched by `setup.bat` via `moonshine_voice.download` | `models_cache\download.moonshine.ai\` |
 | `nvidia/canary-1b` | ~3.9 GB | <https://huggingface.co/nvidia/canary-1b> — or drop a `canary-1b.nemo` file at `models_cache\canary-1b\canary-1b.nemo` (>100 MB is picked up automatically, fully offline) | `models_cache\canary-1b\` (+ `models_cache\huggingface\`, `models_cache\torch\`) |
-| `Systran/faster-whisper-large-v3` | ~3 GB | <https://huggingface.co/Systran/faster-whisper-large-v3> (auto-downloaded by Faster-Whisper) | `models_cache\whisper-models\` |
+| `Systran/faster-whisper-large-v3` (+ tiny/base/small/medium) | 75 MB – 3 GB | <https://huggingface.co/Systran/faster-whisper-large-v3> (auto-downloaded by Faster-Whisper) — pick the size in the Live tab *Model* row when the Whisper engine is active; each size downloads once on first selection | `models_cache\whisper-models\` |
 
 `ffmpeg` ships via the `imageio-ffmpeg` wheel (no system install needed).
 Everything the app needs lives inside the project folder (except the
@@ -84,12 +93,20 @@ system Python install), so zipping the folder makes a portable offline copy.
 source language. Hold `F2`, speak, release. Typing method / suffix options
 are in the Live tab; settings persist in `moonshine_config.json`.
 
-**SRT subtitles** — open the *SRT File* tab, drop a video/audio file
-(mp4/mkv/avi/mov/mp3/wav/m4a/…), optionally set an output folder (default:
-next to the source), set *Input/Output Language* (enabled for Canary and
-Whisper only; `translate` always outputs English), tune CPU threads, then
-*Generate SRT*. The engine label (e.g. `Whisper Large v3 (translate
-Japanese->English)`) always shows exactly what the job will do.
+**SRT subtitles** — open the *SRT File* tab, drop video/audio files
+(mp4/mkv/avi/mov/ts/mp3/wav/m4a/… — multi-select for batch), optionally set
+an output folder (default: next to the source), set *Input/Output
+Language* (enabled for Canary and Whisper only; `translate` always outputs
+English), tune CPU threads, then *Generate SRT*. The engine label (e.g.
+`Whisper Large v3 (translate Japanese->English)`) always shows exactly
+what the job will do. The status line counts down remaining time, learned
+from your past jobs on this machine (`srt_eta.json`) and self-correcting
+as the job runs.
+
+**Burn-in** — with SRTs generated, *Burn SRT into MP4* hardcodes each
+queued video's subtitles into a size-matched `.burned.mp4` next to it
+(same folder or the chosen output folder). Needs the SRT first or the
+file is skipped with a notice.
 
 ## Project structure
 
@@ -120,7 +137,11 @@ requirements*.txt  dependency pins (base / Canary / Whisper)
 - **Japanese + Canary** — unsupported by the model (only de/en/es/fr);
   switch Engine to Whisper Large v3.
 - **Model download fails** — check internet, re-run `setup.bat`; Canary
-  also accepts a manually placed `canary-1b.nemo`.
+  also accepts a manually placed `canary-1b.nemo`. Whisper sizes download
+  when first selected (watch the log for progress on slow links).
+- **Burn says CJK cannot be burned** — by design: burned CJK subtitles
+  would come out blank with the bundled renderer. Generate English
+  subtitles (`translate`) and burn those instead.
 
 ## Credits & licenses
 
