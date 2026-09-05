@@ -246,7 +246,16 @@ requirements*.txt  dependency pins (base / Canary / Whisper)
 
 ## Changelog
 
-### v1.1.0 (latest)
+### v1.1.1 (latest)
+
+- Learned burn-size estimates: every successful burn records its
+  actual-vs-predicted ratio per speed (`burn_size.json`), and the burn card
+  shows a live `Est. size` that follows the kbps slider, speed, and queue —
+  including unpredictable NVENC modes. No history for a speed shows
+  `-- no historical data --` instead of guessing; size-match shows
+  ≈ source size.
+
+### v1.1.0
 
 - Accurate ETAs: history is now keyed per Whisper model size and per burn
   speed (`whisper:tiny` vs `whisper:large-v3`, `burn:match` vs
