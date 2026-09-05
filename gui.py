@@ -777,16 +777,34 @@ class MoonshineGUI(ctk.CTk):
                      font=("Segoe UI", 9), text_color=FG_DIM, wraplength=420,
                      justify="left").grid(row=5, column=0, columnspan=4,
                                           sticky="w", padx=12, pady=(2, 8))
-        # Learned output-size estimate (per-speed history; manual kbps only).
-        self.burn_est_value = ctk.CTkLabel(
-            style_card, text="Est. size: —",
-            font=("Segoe UI", 10, "bold"), text_color=FG_PRIMARY,
-            wraplength=420, justify="left")
-        self.burn_est_value.grid(row=6, column=0, columnspan=4,
-                                 sticky="w", padx=12, pady=(2, 8))
+        # Target size box (two-way with the kbps slider): type MB to set an
+        # exact manual bitrate, drag the slider to estimate MB back. Active
+        # only with 2+ past burns at this speed; otherwise informative.
+        estrow = ctk.CTkFrame(style_card, fg_color="transparent")
+        estrow.grid(row=6, column=0, columnspan=4, sticky="ew",
+                    padx=12, pady=(2, 10))
+        ctk.CTkLabel(estrow, text="Est. size:",
+                     font=("Segoe UI", 10, "bold"),
+                     text_color=FG_DIM).pack(side="left")
+        self.burn_est_entry = ctk.CTkEntry(
+            estrow, width=90, height=28, font=("Segoe UI", 11, "bold"),
+            fg_color=BG_INPUT, text_color=FG_PRIMARY, corner_radius=8,
+            placeholder_text="MB")
+        self.burn_est_entry.pack(side="left", padx=(6, 4))
+        self.burn_est_entry.bind("<Return>", self._on_burn_mb_commit)
+        self.burn_est_entry.bind("<FocusOut>", self._on_burn_mb_commit)
+        ctk.CTkLabel(estrow, text="MB", font=("Segoe UI", 10),
+                     text_color=FG_DIM).pack(side="left", padx=(0, 8))
+        self.burn_est_basis = ctk.CTkLabel(
+            estrow, text="", font=("Segoe UI", 10), text_color=FG_DIM,
+            wraplength=300, justify="left")
+        self.burn_est_basis.pack(side="left", fill="x", expand=True)
         self._burn_probe_cache = {}
         self._burn_est_token = 0
         self._burn_est_sig = None
+        self._burn_est_ctx = None
+        self._burn_est_shown = ""
+        self._burn_vbr_exact = None
         self._srt_preview_cb = None
         self._preview_running = False
         # Sample controls: when no SRT exists yet, Preview transcribes just
@@ -1968,13 +1986,40 @@ class MoonshineGUI(ctk.CTk):
         except Exception:
             pass
 
-    def _on_burn_vbr_changed(self, value):
+    def _slider_kbps(self) -> int:
+        """Coarse slider value snapped to 100kbps steps."""
         try:
-            n = max(300, min(10000, int(round(float(value) / 100.0)) * 100))
+            return max(300, min(10000, int(round(float(self.burn_vbr_slider.get()) / 100.0)) * 100))
         except Exception:
-            n = 2000
+            return 2000
+
+    def _update_burn_vbr_display(self):
+        """Bitrate readout: auto, exact typed kbps, or slider value."""
         try:
-            self.burn_vbr_value.configure(text=f"{n}k")
+            auto = bool(self.burn_vbr_auto_var.get())
+        except Exception:
+            auto = True
+        try:
+            if auto:
+                text = "auto"
+            else:
+                try:
+                    exact = int(getattr(self, "_burn_vbr_exact", 0) or 0)
+                except Exception:
+                    exact = 0
+                text = f"{exact}k" if exact >= 300 else f"{self._slider_kbps()}k"
+            self.burn_vbr_value.configure(text=text)
+        except Exception:
+            pass
+
+    def _on_burn_vbr_changed(self, value):
+        # A slider drag always wins back control from a typed exact value.
+        try:
+            self._burn_vbr_exact = None
+        except Exception:
+            pass
+        try:
+            self._update_burn_vbr_display()
         except Exception:
             pass
         try:
@@ -2001,7 +2046,9 @@ class MoonshineGUI(ctk.CTk):
             pass
 
     def get_burn_vbr(self):
-        """(auto_bool, kbps) manual video-bitrate snapshot."""
+        """(auto_bool, kbps) manual video-bitrate snapshot. A typed MB
+        target sets an exact 1kbps value that rules until the slider moves
+        again (the slider only speaks in 100kbps steps)."""
         try:
             auto = bool(self.burn_vbr_auto_var.get())
         except Exception:
@@ -2009,10 +2056,12 @@ class MoonshineGUI(ctk.CTk):
         if auto:
             return True, 0
         try:
-            n = max(300, min(10000, int(round(float(self.burn_vbr_slider.get()) / 100.0)) * 100))
+            exact = int(getattr(self, "_burn_vbr_exact", 0) or 0)
         except Exception:
-            return True, 0
-        return False, n
+            exact = 0
+        if exact >= 300:
+            return False, min(10000, exact)
+        return False, self._slider_kbps()
 
     def _refresh_burn_est(self):
         """Recompute the learned output-size estimate (kbps/speed/queue
@@ -2087,53 +2136,186 @@ class MoonshineGUI(ctk.CTk):
                 except Exception:
                     continue
             res = _est(entries, speed, vauto, vkbps)
+            try:
+                ctx = {"entries": entries, "speed": speed}
+            except Exception:
+                ctx = {"entries": [], "speed": speed}
         except Exception:
             res = {"mode": "none"}
+            ctx = {"entries": [], "speed": "match"}
         try:
-            self.after(0, lambda: self._apply_burn_est(token, res))
+            self.after(0, lambda: self._apply_burn_est(token, res, ctx))
         except Exception:
             pass
 
     @staticmethod
-    def _fmt_est_size(nbytes):
+    def _fmt_est_mb(nbytes) -> str:
+        """Short MB/GB text for the target-size box (matches box precision)."""
         try:
-            v = float(nbytes)
+            mb = float(nbytes) / 1e6
         except Exception:
-            return "?"
-        if v >= 1e9:
-            return f"{v / 1e9:.2f} GB"
-        if v >= 1e6:
-            return f"{v / 1e6:.0f} MB"
-        if v >= 1000:
-            return f"{int(v / 1e3)} KB"
-        return f"{int(v)} B"
+            return ""
+        return f"{mb:.0f}" if mb >= 100 else f"{mb:.1f}"
 
-    def _apply_burn_est(self, token, res):
+    def _set_est_entry(self, text: str, enabled: bool, placeholder: str = ""):
+        try:
+            self.burn_est_entry.configure(state="normal" if enabled else "disabled")
+        except Exception:
+            pass
+        try:
+            if placeholder != getattr(self, "_est_placeholder", None):
+                try:
+                    self.burn_est_entry.configure(placeholder_text=placeholder)
+                except Exception:
+                    pass
+                self._est_placeholder = placeholder
+        except Exception:
+            pass
+        try:
+            self.burn_est_entry.delete(0, "end")
+            if text:
+                self.burn_est_entry.insert(0, text)
+            self._burn_est_shown = text or ""
+        except Exception:
+            pass
+
+    def _apply_burn_est(self, token, res, ctx=None):
         try:
             if int(token) != int(getattr(self, "_burn_est_token", 0) or 0):
                 return  # a newer refresh won - drop this stale result
         except Exception:
             pass
         try:
+            self._burn_est_ctx = dict(ctx or {})
+        except Exception:
+            self._burn_est_ctx = {}
+        try:
+            typing = False
+            try:
+                typing = (self.focus_get() == self.burn_est_entry)
+            except Exception:
+                typing = False
             res = res or {}
             mode = res.get("mode")
-            if mode == "auto" and res.get("bytes"):
-                text = (f"Est. size: ≈ {self._fmt_est_size(res['bytes'])} total "
-                        f"({int(res.get('files') or 0)} file(s), "
-                        f"size-match ≈ source)")
+            n = int(res.get("basis") or 0)
+            nfiles = int(res.get("files") or 0)
+            if mode == "manual" and res.get("bytes") and n >= 2:
+                # Calibrated: editable box, slider follows on commit.
+                try:
+                    self.burn_est_basis.configure(
+                        text=f"(learned, {n} burn{'s' if n != 1 else ''})")
+                except Exception:
+                    pass
+                if not typing:
+                    self._set_est_entry(self._fmt_est_mb(res["bytes"]),
+                                        True, "")
             elif mode == "manual" and res.get("bytes"):
-                n = int(res.get("basis") or 0)
-                text = (f"Est. size: ≈ {self._fmt_est_size(res['bytes'])} total "
-                        f"({int(res.get('files') or 0)} file(s), learned from "
-                        f"{n} past burn{'s' if n != 1 else ''})")
+                # One sample: show it, but sizing unlocks at two.
+                try:
+                    self.burn_est_basis.configure(
+                        text=f"(≈{self._fmt_est_mb(res['bytes'])} MB from 1 burn — "
+                             f"one more enables sizing)")
+                except Exception:
+                    pass
+                if not typing:
+                    self._set_est_entry("", False, "need 1 more")
             elif mode == "manual":
-                text = ("Est. size: -- no historical data -- "
-                        "(burn once at this speed to calibrate)")
+                try:
+                    self.burn_est_basis.configure(
+                        text="(burn twice at this speed to calibrate)")
+                except Exception:
+                    pass
+                if not typing:
+                    self._set_est_entry("", False, "no data")
+            elif mode == "auto" and res.get("bytes"):
+                try:
+                    self.burn_est_basis.configure(text="(size-match ≈ source)")
+                except Exception:
+                    pass
+                if not typing:
+                    self._set_est_entry(self._fmt_est_mb(res["bytes"]),
+                                        False, "")
             else:
-                text = "Est. size: —"
-            self.burn_est_value.configure(text=text)
+                try:
+                    self.burn_est_basis.configure(text="")
+                except Exception:
+                    pass
+                if not typing:
+                    self._set_est_entry("", False, "MB")
         except Exception:
             pass
+
+    def _on_burn_mb_commit(self, event=None):
+        """MB target -> exact manual kbps (1kbps precision). The typed value
+        rules the encode until the slider moves again (slider drag clears
+        it back to 100kbps steps). Typing a target implies manual mode."""
+        if getattr(self, "_srt_running", False):
+            return
+        try:
+            from srt import BURN_SPEED_IDS as _BSI, solve_burn_kbps as _solve
+            speed = _BSI.get((self.burn_speed_var.get() or "").strip(), "match")
+        except Exception:
+            return
+        try:
+            ctx = getattr(self, "_burn_est_ctx", None) or {}
+            if ctx.get("speed") != speed:
+                # Queue/speed moved under us - refresh and let the user retry.
+                try:
+                    self._refresh_burn_est()
+                except Exception:
+                    pass
+                return
+            raw = str(self.burn_est_entry.get() or "").strip().lower()
+            if raw.endswith("mb"):
+                raw = raw[:-2].strip()
+            if "," in raw and "." not in raw:
+                raw = raw.replace(",", ".")
+            else:
+                raw = raw.replace(",", "")
+            mb = float(raw)
+            kbps = _solve(ctx.get("entries") or [], speed, mb)
+            if kbps is None:
+                self.srt_log("Size target needs 2+ past burns at this speed "
+                             "(and a target above the audio floor)")
+                try:
+                    self._set_est_entry(getattr(self, "_burn_est_shown", ""),
+                                        len(self._burn_est_shown or "") > 0,
+                                        "" if getattr(self, "_burn_est_shown", "") else "MB")
+                except Exception:
+                    pass
+                return
+            lo, hi = 300, 10000
+            clamped = kbps < lo or kbps > hi
+            kbps = max(lo, min(hi, kbps))
+            try:
+                self.burn_vbr_auto_var.set(False)
+            except Exception:
+                pass
+            self._burn_vbr_exact = kbps
+            try:
+                self.burn_vbr_slider.configure(state="normal")
+            except Exception:
+                pass
+            try:
+                self.burn_vbr_slider.set(max(300, min(10000, int(round(kbps / 100.0)) * 100)))
+            except Exception:
+                pass
+            self._update_burn_vbr_display()
+            self.srt_log(f"Target ≈{mb:g} MB -> {kbps} kbps video"
+                         f"{' (clamped to slider range)' if clamped else ''} [{speed}]")
+            try:
+                self._refresh_burn_est()
+            except Exception:
+                pass
+        except Exception as e:
+            try:
+                self.srt_log(f"Size target not understood (type MB, e.g. 850): {e}")
+            except Exception:
+                pass
+            try:
+                self._refresh_burn_est()
+            except Exception:
+                pass
 
     def _refresh_burn_speed_desc(self):
         """One-line trade-off note for the selected burn speed. NVENC rows

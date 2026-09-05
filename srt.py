@@ -303,6 +303,48 @@ def estimate_burn_batch(entries, speed_id, vbr_auto, vbr_kbps):
             "files": len(files)}
 
 
+def solve_burn_kbps(entries, speed_id, target_mb):
+    """Invert the size model: manual video kbps (1kbps precision) expected
+    to produce target_mb for these entries.
+
+    Needs 2+ history samples for the speed (one sample cannot separate
+    content luck from systematic overshoot). Returns an int, or None when
+    unsolvable: bad target, no usable durations, no history, or a target
+    at/below the audio floor (even 1kbps video would overshoot). The caller
+    clamps to its own slider range. Never raises."""
+    try:
+        target = float(target_mb)
+    except Exception:
+        return None
+    if not (target > 0):
+        return None
+    try:
+        files = [e for e in (entries or [])
+                 if float((e or {}).get("duration") or 0) > 1.0]
+    except Exception:
+        return None
+    if not files:
+        return None
+    fudge, n = burn_size_fudge(speed_id)
+    if fudge is None or n < 2 or not (fudge > 0):
+        return None
+    try:
+        total_dur = sum(float(e.get("duration")) for e in files)
+        audio_part = sum(max(0.0, float(e.get("audio_bps") or 0))
+                         * float(e.get("duration")) for e in files) / 8.0
+    except Exception:
+        return None
+    if not (total_dur > 0):
+        return None
+    vkbps = ((target * 1e6 / fudge) - audio_part) * 8.0 / (1000.0 * total_dur)
+    if not (vkbps > 0) or vkbps != vkbps:  # <=0 or NaN (audio floor / inf)
+        return None
+    try:
+        return max(1, int(round(vkbps)))
+    except Exception:
+        return None
+
+
 def record_eta_sample(key: str, audio_s: float, proc_s: float):
     """Fold one successful job into the aggregated baseline (atomic write),
     updating both its length bucket and the engine-wide aggregate."""

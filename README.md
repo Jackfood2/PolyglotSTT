@@ -86,9 +86,13 @@ Moonshine stay on CPU.
   the slider). *Est. size* under the bitrate control learns from your past
   burns: every successful burn records its actual-vs-predicted ratio per
   speed (`burn_size.json`), so manual-kbps estimates calibrate to your
-  content and settings — including unpredictable NVENC modes. With no
-  history for a speed it says `-- no historical data --` instead of
-  guessing; size-match mode simply shows ≈ source size. Subtitle size is adjustable (12–32) with an instant
+  content and settings — including unpredictable NVENC modes. With 2+ burns
+  at a speed the estimate becomes a target box: type MB and the bitrate
+  snaps to the exact kbps (1kbps precision, same for CPU and NVENC); drag
+  the slider and the box follows back. The slider stays the coarse control
+  and always wins on drag. With no history for a speed it says
+  `-- no historical data --` instead of guessing; size-match mode simply
+  shows ≈ source size. Subtitle size is adjustable (12–32) with an instant
   single-frame **Preview** before the full encode. Latin burns use Arial
   with outline; Japanese/Chinese/Korean burns automatically switch to
   MS Gothic (the only CJK setup this renderer draws — verified).
