@@ -272,7 +272,18 @@ requirements*.txt  dependency pins (base / Canary / Whisper)
 
 ## Changelog
 
-### v1.2.4 (latest)
+### v1.2.5 (latest)
+
+- HEVC codec switch (H.264 / HEVC): NVENC speeds encode HEVC at the same
+  GPU speed (≈30% smaller), CPU speeds switch x264/x265 (≈30–40% smaller,
+  slower); per-codec learned history, estimate, and compensation.
+  CPU-only boxes list CPU speeds only; the ⓘ button compares everything.
+- NVENC quality hardening: explicit VBR rate control plus lookahead and
+  adaptive quantization (same size, better bit distribution).
+- Light-theme readability fixes (option menus, buttons, tab strip,
+  scroll gaps) and a no-scroll tab flow (queue → actions → progress).
+
+### v1.2.4
 
 - Hotfix #2: MB target box is editable from the first burn (analytic
   fallback when uncalibrated, self-sharpening with history); empty input
