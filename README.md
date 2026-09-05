@@ -236,7 +236,24 @@ requirements*.txt  dependency pins (base / Canary / Whisper)
 
 ## Changelog
 
-### v1.0.8 (latest)
+### v1.0.9 (latest)
+
+- Carries the v1.0.8 menu fix: all 6 burn speeds show (verified in this
+  build, including label round-trips for every speed id)
+- Audio boost toggle: optional loudnorm pass before SRT transcription for
+  quiet/uneven recordings (burns re-encode from the original, unaffected)
+- One-button SRT/MP4 flow: the action slot morphs Generate SRT <->
+  Convert to MP4 with the queue; *Burn MP4 automatically after SRT*
+  generates + hardcodes in one run (audio-only / SRT-less / already-burned
+  files are marked skipped, never failed or overwritten)
+- Finish behavior: *Shut down PC when done* (fully successful jobs only,
+  60s delay, `shutdown /a` aborts) or a one-shot pop-up + window focus
+- Reliability: Moonshine engine unloads on switch (RAM reclaim for all
+  three engines), live progress during model loads, Compute selector
+  stores `gpu` consistently (survives restart, menu + burn note agree),
+  burn fps stats recovered on fast encodes
+
+### v1.0.8
 
 - Fixed Burn speed menu `NameError` in `gui.py` (imported as `_BSL` but read
   as `BURN_SPEED_LABELS`): menu silently fell back to 3 CPU entries, hiding
