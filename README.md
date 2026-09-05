@@ -217,8 +217,9 @@ overwriting (all / per-file / abort); the app remembers your last tab.
 
 ```text
 moonshine_stt.py   main app: F2 hook, live queue, SRT jobs, config
-gui.py             customtkinter dark UI (Live + SRT File tabs)
+gui.py             customtkinter dark UI (Live + SRT File + Note tabs)
 engine.py          Moonshine v2 wrapper
+note_engine.py     Note-mode chunked recorder + async transcriber
 recorder.py        microphone capture (16 kHz)
 input_sim.py       clipboard + Ctrl+V insertion
 srt.py             SRT backend: ffmpeg extract, VAD, word-anchored cue packing,
@@ -272,7 +273,28 @@ requirements*.txt  dependency pins (base / Canary / Whisper)
 
 ## Changelog
 
-### v1.2.5 (latest)
+### v1.2.8 (latest)
+
+- Note-tab engine (`note_engine.py`): chunked recording with adaptive
+  silence detection (40–80s chunks cut at natural pauses) + async worker
+  — the v1.2.7 Note tab required this module to record at all
+- Post-processing lockout fixes: Clear works after a job (progress reset),
+  finished queues auto-reset so the same files can be dropped again,
+  `set_srt_running`/`srt_done` re-enable every widget individually
+- Fixed Save-as-TXT (`pathlib.Path` import was missing in `gui.py`)
+
+### v1.2.7
+
+- Note tab: record/transcribe in 40–80s chunks with timer, save TXT,
+  copy-all (uses current Live-tab engine)
+- Button-state hardening: per-widget try/except so one failure cannot
+  leave Clear/Browse/start stuck disabled
+
+### v1.2.6
+
+- Critical concurrency fixes, language routing, codebase cleanup
+
+### v1.2.5
 
 - HEVC codec switch (H.264 / HEVC): NVENC speeds encode HEVC at the same
   GPU speed (≈30% smaller), CPU speeds switch x264/x265 (≈30–40% smaller,

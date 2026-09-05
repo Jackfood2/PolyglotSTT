@@ -3,6 +3,7 @@ import customtkinter as ctk
 import threading
 import time
 import math
+from pathlib import Path
 from typing import Optional, Callable, Tuple
 ACCENT = "#6C5CE7"
 ACCENT_DARK = "#5A4BD1"
