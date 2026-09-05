@@ -2300,8 +2300,11 @@ def burn_subtitles(src_path: str, srt_path: str, out_path: str, ffmpeg: str,
         if use_nvenc:
             # NVENC VBR with headroom caps (multipass flag added at run time
             # below for the 2-pass mode). -threads is x264-only; NVENC
-            # scales internally.
+            # scales internally. -rc vbr is stated explicitly: without it
+            # some builds fall back to a quality mode that silently ignores
+            # -b:v/-maxrate (observed: ~3x oversize, immune to kbps cuts).
             base += ["-c:v", "h264_nvenc", "-preset", preset, "-tune", _tune,
+                     "-rc", "vbr",
                      "-b:v", f"{vbps}k",
                      "-maxrate", f"{int(vbps * 1.5)}k",
                      "-bufsize", f"{int(vbps * 2)}k",
