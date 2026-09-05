@@ -14,6 +14,8 @@ __pycache__/
 moonshine_config.json
 # Aggregated SRT timing baseline (auto-created from successful jobs).
 srt_eta.json
+# Learned burn-size ratios per speed (auto-created from successful burns).
+burn_size.json
 # SRT job temp files.
 *.srt_tmp16k.wav
 *.tmp
