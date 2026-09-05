@@ -2228,6 +2228,24 @@ def burn_subtitles(src_path: str, srt_path: str, out_path: str, ffmpeg: str,
         # (quotes/brackets/unicode in real filenames) entirely.
         vf = stage_subtitles_filter(srtp, font_size, tmpd)
         vbps = max(100, int(video_kbps))
+        # Closed-loop overshoot compensation: some encoders (notably NVENC
+        # 1-pass) systematically overshoot the requested rate, so without
+        # this a speed that runs x1.4 hot stays x1.4 hot forever no matter
+        # what kbps is set. With 2+ past burns at this speed, request
+        # proportionally less so the file lands on target instead.
+        # Undershoot is never compensated (smaller-than-target harms
+        # nothing); x264 2-pass measures ~1.00 and is unaffected.
+        try:
+            _fudge, _fudge_n = burn_size_fudge(_spd_id)
+            if _fudge_n >= 2 and _fudge is not None and _fudge > 1.02:
+                _vbps_req = vbps
+                vbps = max(100, int(round(vbps / _fudge)))
+                if log_cb:
+                    log_cb(f"overshoot compensation: target {_vbps_req}k, "
+                           f"encoding {vbps}k (learned x{_fudge:.2f} from "
+                           f"{_fudge_n} burns)")
+        except Exception:
+            pass
         base = [ffmpeg, "-hide_banner", "-y", "-v", "info", "-i", str(src),
                 "-map", "0:v:0", "-map", "0:a:0?"]
         if use_nvenc:
@@ -2367,13 +2385,14 @@ def burn_subtitles(src_path: str, srt_path: str, out_path: str, ffmpeg: str,
             pass
         try:
             # Feed the size learner: probed audio rate when copied, the AAC
-            # rate otherwise (video_kbps arrives in kbps units).
+            # rate otherwise. Record the COMPENSATED kbps actually requested
+            # (not the pre-compensation target) so the learned ratio keeps
+            # measuring the encoder - not our own correction - and converges
+            # instead of oscillating.
             _aeff = int(info.get("audio_bps") or 0) if audio_copy else \
                 max(32, int(audio_kbps)) * 1000
-            record_burn_sample(_spd_id, max(100, int(video_kbps)), _aeff,
+            record_burn_sample(_spd_id, vbps, _aeff,
                                float(info.get("duration") or 0), out_bytes)
-        except Exception:
-            pass
         except Exception:
             pass
         return str(out), in_bytes, out_bytes

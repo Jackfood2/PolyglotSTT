@@ -92,7 +92,12 @@ Moonshine stay on CPU.
   the slider and the box follows back. The slider stays the coarse control
   and always wins on drag. With no history for a speed it says
   `-- no historical data --` instead of guessing; size-match mode simply
-  shows ≈ source size. Subtitle size is adjustable (12–32) with an instant
+  shows ≈ source size. Burns also self-correct: with 2+ past burns at a
+  speed, a learned systematic overshoot (typical for NVENC 1-pass) is
+  compensated by requesting proportionally less, so repeat burns land on
+  target instead of running hot forever — the log states the adjustment
+  (`overshoot compensation: …`), x264 2-pass measures ≈1.00 and is
+  untouched, and undershoot is never compensated. Subtitle size is adjustable (12–32) with an instant
   single-frame **Preview** before the full encode. Latin burns use Arial
   with outline; Japanese/Chinese/Korean burns automatically switch to
   MS Gothic (the only CJK setup this renderer draws — verified).
