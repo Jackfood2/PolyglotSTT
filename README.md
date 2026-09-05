@@ -261,7 +261,15 @@ requirements*.txt  dependency pins (base / Canary / Whisper)
 
 ## Changelog
 
-### v1.2.2 (latest)
+### v1.2.3 (latest)
+
+- Hotfix: closed-loop overshoot compensation — burns at speeds with 2+
+  learned samples and a measured overshoot now request proportionally less
+  bitrate, so NVENC 1-pass (and any hot speed) lands on target instead of
+  always oversizing. Logged per burn; x264 2-pass unaffected; the learner
+  records against the requested rate so it converges instead of oscillating.
+
+### v1.2.2
 
 - Two-way target size: with 2+ burns at a speed the estimate becomes an
   editable MB box — type a size and the bitrate snaps to the exact kbps
