@@ -84,9 +84,9 @@ Moonshine stay on CPU.
   (`<name>.burned.mp4`, any input: mp4/mkv/ts/…) with x264 two-pass sized
   to match the original file (audio copied when possible, CPU threads from
   the slider). The *Codec* switch (H.264 / HEVC) applies to the NVENC
-  speeds: HEVC is ≈30% smaller at the same visual quality and the same GPU
-  speed, needing ~2016+ playback (H.264 plays on everything; CPU speeds
-  stay x264). Without an NVIDIA GPU the menu offers CPU speeds only. The
+  speeds (same GPU speed, ≈30% smaller, needs ~2016+ playback) and to the
+  CPU speeds via x265 (≈30–40% smaller, much slower — yes, CPU does H.265).
+  Without an NVIDIA GPU the menu offers CPU speeds only. The
   ⓘ button compares every speed × codec (accuracy, speed, playback,
   best-for) without trial burns. *Est. size* under the bitrate control learns from your past
   burns: every successful burn records its actual-vs-predicted ratio per

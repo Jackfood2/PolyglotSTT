@@ -1761,11 +1761,12 @@ def normalize_burn_codec(codec) -> str:
 
 
 def _burn_history_key(speed_id, codec="h264") -> str:
-    """Size-history key (burn_size.json). HEVC NVENC speeds learn separately
-    (different efficiency!); everything else keeps the long-standing bare
-    speed id so all existing history keeps working."""
+    """Size-history key (burn_size.json). HEVC speeds learn separately
+    (different efficiency!) - any hevc encode, CPU or NVENC, gets its own
+    +hevc key; H.264 keeps the long-standing bare speed id so all existing
+    history keeps working."""
     sid = _burn_speed_id(speed_id)
-    if normalize_burn_codec(codec) == "hevc" and sid.startswith("nvenc_"):
+    if normalize_burn_codec(codec) == "hevc":
         return f"{sid}+hevc"
     return sid
 
@@ -1775,7 +1776,7 @@ def _burn_eta_key(speed_id, codec="h264") -> str:
     under the long-standing "burn:" namespace (family fallback and the
     clear-burn filter both key off that prefix)."""
     sid = _burn_speed_id(speed_id)
-    if normalize_burn_codec(codec) == "hevc" and sid.startswith("nvenc_"):
+    if normalize_burn_codec(codec) == "hevc":
         return f"burn:{sid}+hevc"
     return f"burn:{sid}"
 
@@ -1783,8 +1784,9 @@ def _burn_eta_key(speed_id, codec="h264") -> str:
 def resolve_burn_speed(speed, codec="h264") -> dict:
     """Full speed config dict; unknown/empty -> exact-match mode.
 
-    encoder: "cpu" | "nvenc" (H.264) | "nvenc_hevc". The codec only
-    affects NVENC speeds; CPU speeds always resolve to x264."""
+    encoder: "cpu" (x264) | "cpu_hevc" (x265) | "nvenc" (H.264) |
+    "nvenc_hevc". The codec switches both CPU (x264/x265) and NVENC
+    (H.264/HEVC) outputs."""
     try:
         key = str(speed or "match").strip().lower()
     except Exception:
@@ -1794,8 +1796,11 @@ def resolve_burn_speed(speed, codec="h264") -> dict:
         cfg = BURN_SPEEDS["match"]
         key = "match"
     out = dict(cfg)
-    if out.get("encoder") == "nvenc" and normalize_burn_codec(codec) == "hevc":
-        out["encoder"] = "nvenc_hevc"
+    if normalize_burn_codec(codec) == "hevc":
+        if out.get("encoder") == "nvenc":
+            out["encoder"] = "nvenc_hevc"
+        elif out.get("encoder") == "cpu":
+            out["encoder"] = "cpu_hevc"
     return out
 
 
@@ -2368,6 +2373,14 @@ def burn_subtitles(src_path: str, srt_path: str, out_path: str, ffmpeg: str,
                 # hvc1 (not hev1) brand: required by Apple players, harmless
                 # everywhere else.
                 base += ["-tag:v", "hvc1"]
+        elif _enc == "cpu_hevc":
+            # x265 mirrors the x264 flags 1:1 (same presets, same 2-pass
+            # stats discipline, same -threads). ≈30-40% smaller, much slower.
+            base += ["-c:v", "libx265", "-b:v", f"{vbps}k",
+                     "-preset", preset, "-pix_fmt", "yuv420p",
+                     "-tag:v", "hvc1"]
+            if threads and int(threads) > 0:
+                base += ["-threads", str(int(threads))]
         else:
             base += ["-c:v", "libx264", "-b:v", f"{vbps}k",
                      "-preset", preset, "-pix_fmt", "yuv420p"]

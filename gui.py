@@ -25,6 +25,12 @@ BTN_GO_HOVER = "#00916E"
 BTN_DANGER_HOVER = "#C0392B"
 BTN_BURN = "#B5651D"
 BTN_BURN_HOVER = "#8E4E15"
+# Button face text: a hair off pure white ON PURPOSE - the theme walker
+# maps by value, and plain #FFFFFF means "primary text" (which must turn
+# dark in light mode). #FEFEFE is visually identical but maps to itself,
+# so button faces stay put on their saturated fills in both themes.
+# Never use FG_PRIMARY for text on a colored button.
+BTN_TEXT = "#FEFEFE"
 
 # ---------------- Themes (dark default, light optional) ----------------
 # Every color in this file flows from the names above, so a theme switch =
@@ -42,6 +48,7 @@ THEMES = {
         "BTN_DIM": "#2D3748", "BTN_DIM_HOVER": "#4A5568",
         "BTN_GO_HOVER": "#00916E", "BTN_DANGER_HOVER": "#C0392B",
         "BTN_BURN": "#B5651D", "BTN_BURN_HOVER": "#8E4E15",
+        "BTN_TEXT": "#FEFEFE",
     },
     "light": {
         "ACCENT": "#5A48D6", "ACCENT_DARK": "#4A38B8",
@@ -53,6 +60,7 @@ THEMES = {
         "BTN_DIM": "#CBD2DC", "BTN_DIM_HOVER": "#B6BECB",
         "BTN_GO_HOVER": "#00755C", "BTN_DANGER_HOVER": "#A93226",
         "BTN_BURN": "#A05A18", "BTN_BURN_HOVER": "#7E4A12",
+        "BTN_TEXT": "#FEFEFE",
     },
 }
 THEME_MODE = "dark"
@@ -146,10 +154,10 @@ BURN_COMPARE_ROWS = (
      "best GPU quality per minute"),
 )
 BURN_COMPARE_CODEC_NOTE = (
-    "Codec switch (NVENC speeds): HEVC (H.265) ≈30% smaller than H.264 at "
-    "the same visual quality, at the same GPU speed. Needs ~2016+ playback "
-    "hardware; H.264 plays on everything. CPU speeds are x264 always - the "
-    "codec switch does not touch them. Learned estimates, the MB box, and "
+    "Codec switch: HEVC (H.265) ≈30% smaller than H.264 at the same visual "
+    "quality - via NVENC at the same GPU speed, or via x265 on CPU "
+    "(≈30–40% smaller but much slower). Needs ~2016+ playback hardware; "
+    "H.264 plays on everything. Learned estimates, the MB box, and "
     "overshoot compensation track each speed+codec separately."
 )
 
@@ -455,6 +463,7 @@ class MoonshineGUI(ctk.CTk):
         self.record_btn = ctk.CTkButton(
             btn_frame, text="\u25CF  RECORD", font=("Segoe UI", 13, "bold"),
             fg_color=ACCENT, hover_color=ACCENT_DARK, height=40,
+            text_color=BTN_TEXT,
             corner_radius=10, command=self._toggle_record)
         self.record_btn.grid(row=0, column=0, padx=(16, 4), sticky="ew")
 
@@ -561,6 +570,10 @@ class MoonshineGUI(ctk.CTk):
         self._footer_label.pack()
 
         self._build_srt_tab(srt_tab)
+        try:
+            self._fix_menu_text()
+        except Exception:
+            pass
 
     def set_footer_version(self, version: str):
         """Append the build version to the footer (identifies the checkout
@@ -619,7 +632,7 @@ class MoonshineGUI(ctk.CTk):
         self.srt_file_list = _tk.Listbox(
             _listrow, height=5, font=("Segoe UI", 10),
             bg=BG_INPUT, fg=FG_PRIMARY, selectbackground=ACCENT,
-            selectforeground=FG_PRIMARY, highlightthickness=0,
+            selectforeground=BTN_TEXT, highlightthickness=0,
             relief="flat", activestyle="none")
         self.srt_file_list.grid(row=0, column=0, sticky="ew")
         try:
@@ -640,7 +653,7 @@ class MoonshineGUI(ctk.CTk):
         fbtn.grid_columnconfigure(1, weight=1)
         self.srt_browse_btn = ctk.CTkButton(fbtn, text="Browse Files...", font=("Segoe UI", 12),
                       fg_color=ACCENT, hover_color=ACCENT_DARK, height=36,
-                      corner_radius=8, command=self._srt_browse_file)
+                      corner_radius=8, text_color=BTN_TEXT, command=self._srt_browse_file)
         self.srt_browse_btn.grid(row=0, column=0, padx=(0, 4), sticky="ew")
         self.srt_clear_btn = ctk.CTkButton(fbtn, text="Clear", font=("Segoe UI", 12),
                       fg_color=BTN_DIM, hover_color=BTN_DIM_HOVER, height=36,
@@ -650,7 +663,7 @@ class MoonshineGUI(ctk.CTk):
 
         # Output dir card (default = source folder)
         out_card = ctk.CTkFrame(scroll, fg_color=BG_CARD, corner_radius=12)
-        out_card.grid(row=1, column=0, sticky="ew", padx=4, pady=(0, 6))
+        out_card.grid(row=5, column=0, sticky="ew", padx=4, pady=(0, 6))
         out_card.grid_columnconfigure(0, weight=1)
         ctk.CTkLabel(out_card, text="Output Folder  (empty = same folder as video)",
                      font=("Segoe UI", 11, "bold"), text_color=FG_DIM
@@ -671,7 +684,7 @@ class MoonshineGUI(ctk.CTk):
 
         # Engine + CPU card
         perf_card = ctk.CTkFrame(scroll, fg_color=BG_CARD, corner_radius=12)
-        perf_card.grid(row=2, column=0, sticky="ew", padx=4, pady=(0, 6))
+        perf_card.grid(row=6, column=0, sticky="ew", padx=4, pady=(0, 6))
         perf_card.grid_columnconfigure(1, weight=1)
         ctk.CTkLabel(perf_card, text="Engine:", font=("Segoe UI", 10, "bold"),
                      text_color=FG_DIM).grid(row=0, column=0, sticky="w", padx=(12, 4), pady=(8, 2))
@@ -742,7 +755,7 @@ class MoonshineGUI(ctk.CTk):
 
         # Language card (SRT input/output - only for engines with language choice)
         lang_card = ctk.CTkFrame(scroll, fg_color=BG_CARD, corner_radius=12)
-        lang_card.grid(row=3, column=0, sticky="ew", padx=4, pady=(0, 6))
+        lang_card.grid(row=7, column=0, sticky="ew", padx=4, pady=(0, 6))
         lang_card.grid_columnconfigure(1, weight=1)
         lang_card.grid_columnconfigure(3, weight=1)
         ctk.CTkLabel(lang_card, text="Input Language:",
@@ -773,7 +786,7 @@ class MoonshineGUI(ctk.CTk):
 
         # Burn style card (subtitle size + frame preview before full encode)
         style_card = ctk.CTkFrame(scroll, fg_color=BG_CARD, corner_radius=12)
-        style_card.grid(row=4, column=0, sticky="ew", padx=4, pady=(0, 6))
+        style_card.grid(row=8, column=0, sticky="ew", padx=4, pady=(0, 6))
         style_card.grid_columnconfigure(1, weight=1)
         ctk.CTkLabel(style_card, text="Subtitle size:",
                      font=("Segoe UI", 10, "bold"), text_color=FG_DIM
@@ -954,7 +967,7 @@ class MoonshineGUI(ctk.CTk):
 
         # Progress card
         prog_card = ctk.CTkFrame(scroll, fg_color=BG_CARD, corner_radius=12)
-        prog_card.grid(row=5, column=0, sticky="ew", padx=4, pady=(0, 6))
+        prog_card.grid(row=4, column=0, sticky="ew", padx=4, pady=(0, 6))
         prog_card.grid_columnconfigure(0, weight=1)
         toprow = ctk.CTkFrame(prog_card, fg_color="transparent")
         toprow.pack(fill="x", padx=12, pady=(8, 2))
@@ -992,23 +1005,26 @@ class MoonshineGUI(ctk.CTk):
 
         # Action buttons - one row: primary action | Cancel | Open Folder.
         abtn = ctk.CTkFrame(scroll, fg_color="transparent")
-        abtn.grid(row=6, column=0, sticky="ew", padx=4, pady=(0, 6))
+        abtn.grid(row=1, column=0, sticky="ew", padx=4, pady=(0, 6))
         abtn.grid_columnconfigure(0, weight=3)
         abtn.grid_columnconfigure(1, weight=1)
         abtn.grid_columnconfigure(2, weight=1)
         self.srt_start_btn = ctk.CTkButton(
             abtn, text="\u25B6  Generate SRT", font=("Segoe UI", 13, "bold"),
             fg_color=SUCCESS, hover_color=BTN_GO_HOVER, height=36,
+            text_color=BTN_TEXT,
             corner_radius=10, command=self._on_srt_start)
         self.srt_start_btn.grid(row=0, column=0, padx=(0, 4), sticky="ew")
         self.srt_cancel_btn = ctk.CTkButton(
             abtn, text="Cancel", font=("Segoe UI", 12),
             fg_color=DANGER, hover_color=BTN_DANGER_HOVER, height=36,
+            text_color=BTN_TEXT,
             corner_radius=10, state="disabled", command=self._on_srt_cancel)
         self.srt_cancel_btn.grid(row=0, column=1, padx=(4, 0), sticky="ew")
         self.srt_burn_btn = ctk.CTkButton(
             abtn, text="Burn SRT into MP4", font=("Segoe UI", 12, "bold"),
             fg_color=BTN_BURN, hover_color=BTN_BURN_HOVER, height=36,
+            text_color=BTN_TEXT,
             corner_radius=10, command=self._on_srt_burn)
         self.srt_burn_btn.grid(row=1, column=0, padx=(0, 4), pady=(8, 0), sticky="ew")
         ctk.CTkButton(abtn, text="Open Folder", font=("Segoe UI", 12),
@@ -1027,12 +1043,12 @@ class MoonshineGUI(ctk.CTk):
             variable=self.burn_after_var, font=("Segoe UI", 11),
             text_color=FG_PRIMARY, fg_color=ACCENT,
             command=self._on_srt_opt_toggled)
-        self.burn_after_check.grid(row=7, column=0, sticky="w", padx=16, pady=(0, 2))
+        self.burn_after_check.grid(row=2, column=0, sticky="w", padx=16, pady=(0, 2))
         # Finish behavior: checked shutdown powers the PC off 60s after a
         # FULLY successful job (abort with `shutdown /a`); otherwise an
         # optional pop-up + window focus fires once per finished job.
         finrow = ctk.CTkFrame(scroll, fg_color="transparent")
-        finrow.grid(row=8, column=0, sticky="ew", padx=16, pady=(0, 6))
+        finrow.grid(row=3, column=0, sticky="ew", padx=16, pady=(0, 6))
         self.shutdown_var = ctk.BooleanVar(value=False)
         self.shutdown_check = ctk.CTkCheckBox(
             finrow, text="Shut down PC when done",
@@ -1072,6 +1088,24 @@ class MoonshineGUI(ctk.CTk):
                 self.tabs.set(name)
         except Exception:
             pass
+
+    def _fix_menu_text(self):
+        """Option menus are built without text colors (CTk's baked default
+        is near-invisible on light inputs), so pin them to palette names
+        here in one place instead of at a dozen creation sites. Values are
+        palette names, so the theme walker remaps them on toggle."""
+        for _mn in ("engine_menu", "canary_task_menu", "canary_lang_menu",
+                    "method_menu", "suffix_menu", "model_menu",
+                    "compute_menu", "srt_input_lang_menu",
+                    "srt_output_lang_menu", "sample_len_menu",
+                    "burn_speed_menu", "burn_codec_menu"):
+            try:
+                _w = getattr(self, _mn, None)
+                if _w is not None:
+                    _w.configure(text_color=FG_PRIMARY,
+                                 dropdown_text_color=FG_PRIMARY)
+            except Exception:
+                pass
 
     def set_theme_callback(self, cb: Optional[Callable]):
         self._theme_callback = cb if callable(cb) else None
@@ -1129,6 +1163,33 @@ class MoonshineGUI(ctk.CTk):
             self._remap_theme(self, forward)
         except Exception:
             pass
+        # Scrollable frames: the interior frame + canvas carry a bg baked
+        # at build (plain tkinter canvas-window items, invisible to the
+        # traversal above) - without this the card gaps keep last theme's
+        # color as dark rules between light cards.
+        try:
+            for _w in self._walk_widgets(self):
+                try:
+                    import customtkinter as _ctk
+                    _is_scroll = isinstance(_w, _ctk.CTkScrollableFrame)
+                except Exception:
+                    _is_scroll = False
+                if not _is_scroll:
+                    continue
+                try:
+                    # Plain tkinter configure: CTk's own configure() rejects
+                    # (or drops) the raw "bg" key, but underneath this IS a
+                    # tkinter.Frame whose bg paints the card gaps.
+                    import tkinter as _tk
+                    _tk.Frame.configure(_w, bg=BG_DARK)
+                except Exception:
+                    pass
+                try:
+                    _w._parent_canvas.configure(bg=BG_DARK)
+                except Exception:
+                    pass
+        except Exception:
+            pass
         # The tab strip is invisible to winfo_children traversal (verified:
         # .!ctktabview.!ctksegmentedbutton is never yielded), so the walker
         # above cannot reach it - configure it explicitly from the already
@@ -1170,6 +1231,23 @@ class MoonshineGUI(ctk.CTk):
         except Exception:
             pass
         return mode
+
+    def _walk_widgets(self, widget):
+        """Yield widget + all descendants (winfo_children traversal)."""
+        try:
+            yield widget
+        except Exception:
+            return
+        try:
+            kids = list(widget.winfo_children())
+        except Exception:
+            return
+        for ch in kids:
+            try:
+                for sub in self._walk_widgets(ch):
+                    yield sub
+            except Exception:
+                continue
 
     def _remap_theme(self, widget, mapping):
         """Depth-first recolor: any known color option currently holding a
@@ -1598,6 +1676,7 @@ class MoonshineGUI(ctk.CTk):
 
         ctk.CTkButton(foot, text="Delete all downloaded", font=("Segoe UI", 12),
                       fg_color=DANGER, hover_color=BTN_DANGER_HOVER, height=38,
+                      text_color=BTN_TEXT,
                       corner_radius=8, command=_ask_delete_all
                       ).grid(row=0, column=0, padx=(0, 4), sticky="ew")
         ctk.CTkButton(foot, text="Close", font=("Segoe UI", 12),
@@ -2162,18 +2241,11 @@ class MoonshineGUI(ctk.CTk):
             pass
 
     def _refresh_burn_codec_state(self):
-        """Codec menu applies to NVENC speeds only (CPU speeds are x264 by
-        definition) and needs an HEVC-capable NVENC box for the HEVC side."""
+        """Codec menu is always available now: NVENC speeds switch
+        H.264/HEVC hardware encode, CPU speeds switch x264/x265 software
+        encode. (NVENC speeds themselves still need a GPU to run.)"""
         try:
-            from srt import BURN_SPEED_IDS as _BSI
-            sid = _BSI.get((self.burn_speed_var.get() or "").strip(), "match")
-        except Exception:
-            sid = "match"
-        try:
-            ok = bool(getattr(self, "_has_nvenc", False)
-                      and getattr(self, "_has_nvenc_hevc", False)
-                      and sid.startswith("nvenc_"))
-            self.burn_codec_menu.configure(state="normal" if ok else "disabled")
+            self.burn_codec_menu.configure(state="normal")
         except Exception:
             pass
 
@@ -2589,12 +2661,18 @@ class MoonshineGUI(ctk.CTk):
             try:
                 from srt import BURN_SPEED_IDS as _BSI2
                 _sid2 = _BSI2.get(label, "match")
-                if self.get_burn_codec() == "hevc" and _sid2.startswith("nvenc_"):
+                _is_nvenc = _sid2.startswith("nvenc_")
+                if self.get_burn_codec() == "hevc" and _is_nvenc:
                     text += (" HEVC ≈30% smaller than H.264 at the same "
                              "visual quality, same GPU speed (needs ~2016+ "
                              "playback).")
-                elif _sid2.startswith("nvenc_"):
+                elif self.get_burn_codec() == "hevc":
+                    text += (" HEVC via x265: ≈30–40% smaller, much slower "
+                             "(needs ~2016+ playback).")
+                elif _is_nvenc:
                     text += " Switch codec to HEVC for ≈30% smaller files."
+                else:
+                    text += " Switch codec to HEVC (x265) for ≈30–40% smaller files."
             except Exception:
                 pass
         try:
