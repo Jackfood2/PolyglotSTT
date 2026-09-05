@@ -34,6 +34,9 @@ except Exception as e:
 
 RECORD_KEY = keyboard.Key.f2
 SAMPLE_RATE = 16000
+# Build version shown in the footer + startup log (bump per release so a
+# screenshot always identifies the checkout).
+APP_VERSION = "1.2.0"
 CONFIG_PATH = os.path.join(os.path.dirname(__file__), "moonshine_config.json")
 _CONFIG_LOCK = threading.RLock()  # reentrant: callers may hold it while save_local_config() re-acquires
 
@@ -451,6 +454,11 @@ class MoonshineSTTApp:
                     self.gui.set_theme_callback(self._on_theme_changed)
                 except Exception:
                     pass
+                # Footer carries the build version from here on.
+                try:
+                    self.gui.set_footer_version(APP_VERSION)
+                except Exception:
+                    pass
                 self.gui.protocol("WM_DELETE_WINDOW", self._on_close)
                 self.gui.update_idletasks()
                 # Reopen on the previously selected tab.
@@ -469,6 +477,12 @@ class MoonshineSTTApp:
                 self.gui = None
 
         self.recorder.set_level_callback(self._level_callback)
+        try:
+            self._log(f"PolyglotSTT v{APP_VERSION} (engine={self.config.get('engine', '?')}, "
+                      f"compute={self.config.get('compute', '?')}, "
+                      f"theme={self.config.get('theme', '?')})")
+        except Exception:
+            pass
 
     def _save_srt_opts(self, opts):
         """Persist SRT-tab switch toggles (normalize / burn-after /

@@ -388,6 +388,20 @@ class MoonshineGUI(ctk.CTk):
         live.grid_rowconfigure(3, weight=1)
         srt_tab.grid_columnconfigure(0, weight=1)
         srt_tab.grid_rowconfigure(0, weight=1)
+        # Explicit segmented-button colors as palette names (the theme
+        # walker remaps them on toggle). CTk defaults would otherwise
+        # freeze the tab strip in its build-time appearance, leaving a
+        # dark bar with unreadable text in light mode. NOTE: fg_color is
+        # left alone - this widget rejects "transparent" for it.
+        try:
+            _sb = self.tabs._segmented_button
+            _sb.configure(selected_color=ACCENT,
+                          selected_hover_color=ACCENT_DARK,
+                          unselected_color=BG_CARD,
+                          unselected_hover_color=BG_INPUT,
+                          text_color=FG_PRIMARY)
+        except Exception:
+            pass
 
         record_card = ctk.CTkFrame(live, fg_color=BG_CARD, corner_radius=16)
         record_card.grid(row=0, column=0, sticky="ew", padx=8, pady=(0, 6))
@@ -508,10 +522,23 @@ class MoonshineGUI(ctk.CTk):
 
         footer = ctk.CTkFrame(self, fg_color="transparent")
         footer.grid(row=3, column=0, sticky="ew", padx=20, pady=(0, 12))
-        ctk.CTkLabel(footer, text="Moonshine v2 + Canary-1B + Whisper Large v3 \u2022 On-device \u2022 No API keys",
-                     font=("Segoe UI", 10), text_color=FG_DIM).pack()
+        self._footer_label = ctk.CTkLabel(
+            footer, text="Moonshine v2 + Canary-1B + Whisper Large v3 \u2022 On-device \u2022 No API keys",
+            font=("Segoe UI", 10), text_color=FG_DIM)
+        self._footer_label.pack()
 
         self._build_srt_tab(srt_tab)
+
+    def set_footer_version(self, version: str):
+        """Append the build version to the footer (identifies the checkout
+        at a glance - no more guessing which release a screenshot runs)."""
+        try:
+            base = "Moonshine v2 + Canary-1B + Whisper Large v3 \u2022 On-device \u2022 No API keys"
+            v = str(version or "").strip()
+            self._footer_label.configure(
+                text=f"{base} \u2022 v{v}" if v else base)
+        except Exception:
+            pass
 
     # ---------------- SRT File tab ----------------
     def _build_srt_tab(self, tab):
@@ -1014,6 +1041,21 @@ class MoonshineGUI(ctk.CTk):
             pass
         try:
             self._remap_theme(self, forward)
+        except Exception:
+            pass
+        # The tab strip is invisible to winfo_children traversal (verified:
+        # .!ctktabview.!ctksegmentedbutton is never yielded), so the walker
+        # above cannot reach it - configure it explicitly from the already
+        # swapped globals (correct in both directions).
+        try:
+            _sb2 = getattr(getattr(self, "tabs", None),
+                           "_segmented_button", None)
+            if _sb2 is not None:
+                _sb2.configure(selected_color=ACCENT,
+                               selected_hover_color=ACCENT_DARK,
+                               unselected_color=BG_CARD,
+                               unselected_hover_color=BG_INPUT,
+                               text_color=FG_PRIMARY)
         except Exception:
             pass
         THEME_MODE = mode

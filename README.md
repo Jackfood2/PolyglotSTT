@@ -252,7 +252,17 @@ requirements*.txt  dependency pins (base / Canary / Whisper)
 
 ## Changelog
 
-### v1.1.1 (latest)
+### v1.2.0 (latest)
+
+- Dark / light theme (☀/☾ header toggle, instant, persisted) — including
+  the tab strip, which is now explicitly themed (it stayed dark before)
+- Learned-history reset: ↺ SRT and ↺ Burn buttons in the Progress header
+- One-row action buttons (Generate/Convert + Cancel + Open Folder) and a
+  tighter layout throughout (same controls, less scrolling)
+- Footer + startup log carry the build version, so any screenshot or log
+  identifies the exact checkout
+
+### v1.1.1
 
 - Learned burn-size estimates: every successful burn records its
   actual-vs-predicted ratio per speed (`burn_size.json`), and the burn card
