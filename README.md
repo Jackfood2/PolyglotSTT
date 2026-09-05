@@ -241,7 +241,23 @@ requirements*.txt  dependency pins (base / Canary / Whisper)
 
 ## Changelog
 
-### v1.0.9 (latest)
+### v1.1.0 (latest)
+
+- Accurate ETAs: history is now keyed per Whisper model size and per burn
+  speed (`whisper:tiny` vs `whisper:large-v3`, `burn:match` vs
+  `burn:fastest` no longer poison each other); existing shared history is
+  reused as fallback, with sane first-run defaults per size/speed
+- Per-file total time in the log: `Total: … for … audio (…x realtime)` for
+  SRT jobs and `Burn total: …` for burns
+- Fixed invalid SRT timestamps at minute boundaries (`00:00:60,000` → total
+  millisecond arithmetic in both the writer and the sample-shift path)
+- Preview transcriptions now honor the audio-boost toggle, matching what
+  Generate will hear
+- Starting a new job aborts a pending auto-shutdown instead of letting the
+  PC die mid-job
+- Drag-dropping files mid-run no longer clobbers the live progress message
+
+### v1.0.9
 
 - Carries the v1.0.8 menu fix: all 6 burn speeds show (verified in this
   build, including label round-trips for every speed id)
