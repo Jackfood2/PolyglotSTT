@@ -19,6 +19,63 @@ BG_INPUT = "#0F3460"
 FG_PRIMARY = "#FFFFFF"
 FG_SECONDARY = "#B2BEC3"
 FG_DIM = "#636E72"
+BTN_DIM = "#2D3748"
+BTN_DIM_HOVER = "#4A5568"
+BTN_GO_HOVER = "#00916E"
+BTN_DANGER_HOVER = "#C0392B"
+BTN_BURN = "#B5651D"
+BTN_BURN_HOVER = "#8E4E15"
+
+# ---------------- Themes (dark default, light optional) ----------------
+# Every color in this file flows from the names above, so a theme switch =
+# reassign the globals (widgets created later build correctly) + remap the
+# live widgets' current color options (existing widgets follow). Literal
+# hex must never appear at creation sites - use the BTN_* names.
+THEMES = {
+    "dark": {
+        "ACCENT": "#6C5CE7", "ACCENT_DARK": "#5A4BD1",
+        "ACCENT_GLOW": "#A29BFE", "SUCCESS": "#00B894",
+        "WARNING": "#FDCB6E", "DANGER": "#E17055",
+        "BG_DARK": "#1A1A2E", "BG_CARD": "#16213E", "BG_INPUT": "#0F3460",
+        "FG_PRIMARY": "#FFFFFF", "FG_SECONDARY": "#B2BEC3",
+        "FG_DIM": "#636E72",
+        "BTN_DIM": "#2D3748", "BTN_DIM_HOVER": "#4A5568",
+        "BTN_GO_HOVER": "#00916E", "BTN_DANGER_HOVER": "#C0392B",
+        "BTN_BURN": "#B5651D", "BTN_BURN_HOVER": "#8E4E15",
+    },
+    "light": {
+        "ACCENT": "#5A48D6", "ACCENT_DARK": "#4A38B8",
+        "ACCENT_GLOW": "#4A38B8", "SUCCESS": "#00755C",
+        "WARNING": "#8A5A00", "DANGER": "#C0392B",
+        "BG_DARK": "#E9EDF2", "BG_CARD": "#FFFFFF", "BG_INPUT": "#DCE2EA",
+        "FG_PRIMARY": "#16181D", "FG_SECONDARY": "#3E4450",
+        "FG_DIM": "#687182",
+        "BTN_DIM": "#CBD2DC", "BTN_DIM_HOVER": "#B6BECB",
+        "BTN_GO_HOVER": "#00755C", "BTN_DANGER_HOVER": "#A93226",
+        "BTN_BURN": "#A05A18", "BTN_BURN_HOVER": "#7E4A12",
+    },
+}
+THEME_MODE = "dark"
+_DARK_TO_LIGHT = {v.upper(): THEMES["light"][k]
+                  for k, v in THEMES["dark"].items()}
+_LIGHT_TO_DARK = {v.upper(): THEMES["dark"][k]
+                  for k, v in THEMES["light"].items()}
+
+
+def theme_color(value):
+    """Map a possibly stale (other-theme) color into the active theme.
+
+    The app binds these names once at import; after a toggle it may still
+    pass dark values into set_status() - this heals them without touching
+    callers. Unknown values pass through untouched. Never raises."""
+    try:
+        v = str(value or "")
+        if not v:
+            return value
+        m = _DARK_TO_LIGHT if THEME_MODE == "light" else _LIGHT_TO_DARK
+        return m.get(v.upper(), value)
+    except Exception:
+        return value
 
 # Model size choices - maps display label -> arch int (from catalog 0-5)
 MODEL_CHOICES = {
@@ -137,7 +194,7 @@ class LevelMeter(ctk.CTkCanvas):
     def _draw(self):
         self.delete("all")
         self.create_rectangle(0, 0, self.meter_width, self.meter_height,
-                              fill="#2D3748", outline="")
+                              fill=BTN_DIM, outline="")
         if self.level > 0.01:
             w = self.meter_width * self.level
             if self.level < 0.6:
@@ -219,6 +276,7 @@ class StatusBadge(ctk.CTkFrame):
         self.label.pack(side="left")
 
     def set_status(self, text: str, color: str):
+        color = theme_color(color)
         self.label.configure(text=text, text_color=color)
         self.indicator.configure(text_color=color)
 
@@ -279,6 +337,8 @@ class MoonshineGUI(ctk.CTk):
         self._on_record_start: Optional[Callable] = None
         self._on_record_stop: Optional[Callable] = None
         self._is_recording = False
+        self._theme_callback = None
+        self._theme_mode = "dark"
 
         self._build_ui()
 
@@ -303,6 +363,13 @@ class MoonshineGUI(ctk.CTk):
         self.status_badge.grid(row=0, column=1, sticky="e")
         self.status_badge.set_status("Initializing", WARNING)
 
+        header.grid_columnconfigure(2, weight=0)
+        self._theme_btn = ctk.CTkButton(
+            header, text="☀", width=40, height=28, font=("Segoe UI", 13),
+            fg_color="transparent", hover_color=BG_CARD, text_color=FG_DIM,
+            corner_radius=8, command=self._on_theme_toggled)
+        self._theme_btn.grid(row=0, column=2, sticky="e", padx=(8, 0))
+
         subtitle = ctk.CTkLabel(self, text="Hold F2 to record \u2022 Release to transcribe",
                                 font=("Segoe UI", 11), text_color=FG_DIM)
         subtitle.grid(row=1, column=0, padx=20, pady=(6, 8), sticky="w")
@@ -323,17 +390,17 @@ class MoonshineGUI(ctk.CTk):
         srt_tab.grid_rowconfigure(0, weight=1)
 
         record_card = ctk.CTkFrame(live, fg_color=BG_CARD, corner_radius=16)
-        record_card.grid(row=0, column=0, sticky="ew", padx=8, pady=(0, 8))
+        record_card.grid(row=0, column=0, sticky="ew", padx=8, pady=(0, 6))
         record_card.grid_columnconfigure(0, weight=1)
 
         self.meter = LevelMeter(record_card, width=420, height=10)
-        self.meter.grid(row=0, column=0, padx=20, pady=(16, 4), sticky="ew")
+        self.meter.grid(row=0, column=0, padx=20, pady=(12, 4), sticky="ew")
 
         self.waveform = WaveformDisplay(record_card, width=420, height=70)
         self.waveform.grid(row=1, column=0, padx=16, pady=(8, 4), sticky="ew")
 
         btn_frame = ctk.CTkFrame(record_card, fg_color="transparent")
-        btn_frame.grid(row=2, column=0, pady=(12, 16), sticky="ew")
+        btn_frame.grid(row=2, column=0, pady=(8, 12), sticky="ew")
         btn_frame.grid_columnconfigure(0, weight=1)
         btn_frame.grid_columnconfigure(1, weight=1)
         btn_frame.grid_columnconfigure(2, weight=1)
@@ -346,20 +413,20 @@ class MoonshineGUI(ctk.CTk):
 
         self.clear_btn = ctk.CTkButton(
             btn_frame, text="Clear", font=("Segoe UI", 12),
-            fg_color="#2D3748", hover_color="#4A5568", height=40,
+            fg_color=BTN_DIM, hover_color=BTN_DIM_HOVER, height=40,
             corner_radius=10, text_color=FG_SECONDARY,
             command=self._clear_history)
         self.clear_btn.grid(row=0, column=1, padx=4, sticky="ew")
 
         self.copy_last_btn = ctk.CTkButton(
             btn_frame, text="Copy", font=("Segoe UI", 12),
-            fg_color="#2D3748", hover_color="#4A5568", height=40,
+            fg_color=BTN_DIM, hover_color=BTN_DIM_HOVER, height=40,
             corner_radius=10, text_color=FG_SECONDARY,
             command=self._copy_last)
         self.copy_last_btn.grid(row=0, column=2, padx=(4, 16), sticky="ew")
 
         output_card = ctk.CTkFrame(live, fg_color=BG_CARD, corner_radius=16)
-        output_card.grid(row=1, column=0, sticky="ew", padx=8, pady=(0, 8))
+        output_card.grid(row=1, column=0, sticky="ew", padx=8, pady=(0, 6))
         output_card.grid_columnconfigure(0, weight=1)
 
         ctk.CTkLabel(output_card, text="Last Transcription",
@@ -381,11 +448,11 @@ class MoonshineGUI(ctk.CTk):
                      ).pack(side="left")
 
         self.history = HistoryPanel(live, height=140)
-        self.history.grid(row=3, column=0, sticky="nsew", padx=8, pady=(0, 8))
+        self.history.grid(row=3, column=0, sticky="nsew", padx=8, pady=(0, 6))
 
         # Engine selector - new for Canary-1B portable
         engine_frame = ctk.CTkFrame(live, fg_color=BG_CARD, corner_radius=10)
-        engine_frame.grid(row=4, column=0, sticky="ew", padx=8, pady=(0, 8))
+        engine_frame.grid(row=4, column=0, sticky="ew", padx=8, pady=(0, 6))
         ctk.CTkLabel(engine_frame, text="Engine:", font=("Segoe UI", 10, "bold"), text_color=FG_DIM).pack(side="left", padx=(12, 4), pady=8)
         self.engine_var = ctk.StringVar(value="Moonshine v2")
         self.engine_menu = ctk.CTkOptionMenu(engine_frame, variable=self.engine_var, values=ENGINE_CHOICES, width=150, fg_color=BG_INPUT, button_color=ACCENT, command=self._on_engine_changed)
@@ -404,7 +471,7 @@ class MoonshineGUI(ctk.CTk):
 
         # Settings row - ported from test.py typing method / suffix
         settings_frame = ctk.CTkFrame(live, fg_color=BG_CARD, corner_radius=10)
-        settings_frame.grid(row=6, column=0, sticky="ew", padx=8, pady=(0, 8))
+        settings_frame.grid(row=6, column=0, sticky="ew", padx=8, pady=(0, 6))
         ctk.CTkLabel(settings_frame, text="Insert via:", font=("Segoe UI", 10), text_color=FG_DIM).pack(side="left", padx=(12, 4), pady=8)
         self.method_var = ctk.StringVar(value="clipboard")
         self.method_menu = ctk.CTkOptionMenu(settings_frame, variable=self.method_var, values=["clipboard", "unicode"], width=110, fg_color=BG_INPUT, button_color=ACCENT, command=self._on_method_changed)
@@ -419,7 +486,7 @@ class MoonshineGUI(ctk.CTk):
         # Model size selector - paired directly under Engine (same card flow):
         # the options + title always belong to the active engine.
         model_frame = ctk.CTkFrame(live, fg_color=BG_CARD, corner_radius=10)
-        model_frame.grid(row=5, column=0, sticky="ew", padx=8, pady=(0, 8))
+        model_frame.grid(row=5, column=0, sticky="ew", padx=8, pady=(0, 6))
         self.model_title_label = ctk.CTkLabel(model_frame, text="Model:",
                                               font=("Segoe UI", 10, "bold"), text_color=FG_DIM)
         self.model_title_label.pack(side="left", padx=(12, 4), pady=8)
@@ -428,7 +495,7 @@ class MoonshineGUI(ctk.CTk):
         self.model_menu.pack(side="left", padx=4, pady=8, fill="x", expand=True)
         self.model_manage_btn = ctk.CTkButton(
             model_frame, text="Manage…", width=80, font=("Segoe UI", 12),
-            fg_color="#2D3748", hover_color="#4A5568", height=32,
+            fg_color=BTN_DIM, hover_color=BTN_DIM_HOVER, height=32,
             corner_radius=8, text_color=FG_SECONDARY,
             command=self._on_model_manage)
         self.model_manage_btn.pack(side="left", padx=4, pady=8)
@@ -470,11 +537,11 @@ class MoonshineGUI(ctk.CTk):
 
         # File drop card (batch queue)
         file_card = ctk.CTkFrame(scroll, fg_color=BG_CARD, corner_radius=12)
-        file_card.grid(row=0, column=0, sticky="ew", padx=4, pady=(0, 8))
+        file_card.grid(row=0, column=0, sticky="ew", padx=4, pady=(0, 6))
         file_card.grid_columnconfigure(0, weight=1)
         ctk.CTkLabel(file_card, text="Video / Audio Files  (queue - runs one by one)",
                      font=("Segoe UI", 11, "bold"), text_color=FG_DIM
-                     ).pack(anchor="w", padx=12, pady=(10, 2))
+                     ).pack(anchor="w", padx=12, pady=(8, 2))
         self.srt_drop = ctk.CTkTextbox(file_card, font=("Segoe UI", 11),
                                        fg_color=BG_INPUT, text_color=FG_SECONDARY,
                                        corner_radius=8, height=44,
@@ -516,18 +583,18 @@ class MoonshineGUI(ctk.CTk):
                       corner_radius=8, command=self._srt_browse_file)
         self.srt_browse_btn.grid(row=0, column=0, padx=(0, 4), sticky="ew")
         self.srt_clear_btn = ctk.CTkButton(fbtn, text="Clear", font=("Segoe UI", 12),
-                      fg_color="#2D3748", hover_color="#4A5568", height=36,
+                      fg_color=BTN_DIM, hover_color=BTN_DIM_HOVER, height=36,
                       corner_radius=8, text_color=FG_SECONDARY,
                       command=self._srt_clear_file)
         self.srt_clear_btn.grid(row=0, column=1, padx=(4, 0), sticky="ew")
 
         # Output dir card (default = source folder)
         out_card = ctk.CTkFrame(scroll, fg_color=BG_CARD, corner_radius=12)
-        out_card.grid(row=1, column=0, sticky="ew", padx=4, pady=(0, 8))
+        out_card.grid(row=1, column=0, sticky="ew", padx=4, pady=(0, 6))
         out_card.grid_columnconfigure(0, weight=1)
         ctk.CTkLabel(out_card, text="Output Folder  (empty = same folder as video)",
                      font=("Segoe UI", 11, "bold"), text_color=FG_DIM
-                     ).pack(anchor="w", padx=12, pady=(10, 2))
+                     ).pack(anchor="w", padx=12, pady=(8, 2))
         orow = ctk.CTkFrame(out_card, fg_color="transparent")
         orow.pack(fill="x", padx=10, pady=(0, 10))
         orow.grid_columnconfigure(0, weight=1)
@@ -537,23 +604,23 @@ class MoonshineGUI(ctk.CTk):
                                           placeholder_text="Same folder as video (default)")
         self.srt_out_entry.grid(row=0, column=0, sticky="ew", padx=(0, 6))
         ctk.CTkButton(orow, text="Browse...", width=90, font=("Segoe UI", 12),
-                      fg_color="#2D3748", hover_color="#4A5568", height=34,
+                      fg_color=BTN_DIM, hover_color=BTN_DIM_HOVER, height=34,
                       corner_radius=8, text_color=FG_SECONDARY,
                       command=self._srt_browse_outdir
                       ).grid(row=0, column=1, sticky="e")
 
         # Engine + CPU card
         perf_card = ctk.CTkFrame(scroll, fg_color=BG_CARD, corner_radius=12)
-        perf_card.grid(row=2, column=0, sticky="ew", padx=4, pady=(0, 8))
+        perf_card.grid(row=2, column=0, sticky="ew", padx=4, pady=(0, 6))
         perf_card.grid_columnconfigure(1, weight=1)
         ctk.CTkLabel(perf_card, text="Engine:", font=("Segoe UI", 10, "bold"),
-                     text_color=FG_DIM).grid(row=0, column=0, sticky="w", padx=(12, 4), pady=(10, 2))
+                     text_color=FG_DIM).grid(row=0, column=0, sticky="w", padx=(12, 4), pady=(8, 2))
         self.srt_engine_label = ctk.CTkLabel(perf_card, text="Moonshine v2",
                                              font=("Segoe UI", 11), text_color=ACCENT_GLOW)
-        self.srt_engine_label.grid(row=0, column=1, sticky="w", padx=4, pady=(10, 2))
+        self.srt_engine_label.grid(row=0, column=1, sticky="w", padx=4, pady=(8, 2))
         ctk.CTkLabel(perf_card, text="(change in Live tab)",
                      font=("Segoe UI", 9), text_color=FG_DIM
-                     ).grid(row=0, column=2, sticky="e", padx=(4, 12), pady=(10, 2))
+                     ).grid(row=0, column=2, sticky="e", padx=(4, 12), pady=(8, 2))
         self.srt_cpu_info = ctk.CTkLabel(
             perf_card, text=f"CPU: {self._srt_max_cpu} cores detected (CPU-only)",
             font=("Segoe UI", 10), text_color=FG_DIM)
@@ -564,7 +631,7 @@ class MoonshineGUI(ctk.CTk):
             number_of_steps=max(1, self._srt_max_cpu - 1),
             button_color=ACCENT, progress_color=ACCENT,
             command=self._on_srt_cpu_changed)
-        self.srt_cpu_slider.grid(row=2, column=0, columnspan=2, sticky="ew", padx=12, pady=(2, 10))
+        self.srt_cpu_slider.grid(row=2, column=0, columnspan=2, sticky="ew", padx=12, pady=(2, 8))
         self.srt_cpu_slider.set(def_cpu)
         if self._srt_max_cpu <= 1:
             # from_==to_==1 is a degenerate slider (Tcl error risk) - lock it.
@@ -574,11 +641,11 @@ class MoonshineGUI(ctk.CTk):
                 pass
         self.srt_cpu_value = ctk.CTkLabel(perf_card, text=f"{def_cpu} threads",
                                           font=("Segoe UI", 11, "bold"), text_color=FG_PRIMARY)
-        self.srt_cpu_value.grid(row=2, column=2, sticky="e", padx=(4, 12), pady=(2, 10))
+        self.srt_cpu_value.grid(row=2, column=2, sticky="e", padx=(4, 12), pady=(2, 8))
         # Compute device for Whisper/Canary inference (Moonshine is CPU-only).
         # Greyed to "CPU only" when no NVIDIA dGPU is present.
         ctk.CTkLabel(perf_card, text="Compute:", font=("Segoe UI", 10, "bold"),
-                     text_color=FG_DIM).grid(row=3, column=0, sticky="w", padx=(12, 4), pady=(2, 10))
+                     text_color=FG_DIM).grid(row=3, column=0, sticky="w", padx=(12, 4), pady=(2, 8))
         try:
             import gpu as _gpumod2
             _has_dgpu = _gpumod2.best_gpu() is not None
@@ -591,7 +658,7 @@ class MoonshineGUI(ctk.CTk):
             values=_compute_vals, width=110,
             fg_color=BG_INPUT, button_color=ACCENT,
             command=self._on_compute_changed)
-        self.compute_menu.grid(row=3, column=1, sticky="w", padx=4, pady=(2, 10))
+        self.compute_menu.grid(row=3, column=1, sticky="w", padx=4, pady=(2, 8))
         if not _has_dgpu:
             try:
                 self.compute_menu.configure(state="disabled")
@@ -607,67 +674,67 @@ class MoonshineGUI(ctk.CTk):
             text_color=FG_DIM, fg_color=ACCENT,
             command=self._on_srt_opt_toggled)
         self.srt_norm_check.grid(row=4, column=0, columnspan=3, sticky="w",
-                                 padx=12, pady=(2, 10))
+                                 padx=12, pady=(2, 8))
         ctk.CTkLabel(perf_card, text="(Whisper/Canary)",
                      font=("Segoe UI", 9), text_color=FG_DIM
-                     ).grid(row=3, column=2, sticky="e", padx=(4, 12), pady=(2, 10))
+                     ).grid(row=3, column=2, sticky="e", padx=(4, 12), pady=(2, 8))
         self._compute_callback = None
 
         # Language card (SRT input/output - only for engines with language choice)
         lang_card = ctk.CTkFrame(scroll, fg_color=BG_CARD, corner_radius=12)
-        lang_card.grid(row=3, column=0, sticky="ew", padx=4, pady=(0, 8))
+        lang_card.grid(row=3, column=0, sticky="ew", padx=4, pady=(0, 6))
         lang_card.grid_columnconfigure(1, weight=1)
         lang_card.grid_columnconfigure(3, weight=1)
         ctk.CTkLabel(lang_card, text="Input Language:",
                      font=("Segoe UI", 10, "bold"), text_color=FG_DIM
-                     ).grid(row=0, column=0, sticky="w", padx=(12, 4), pady=(10, 2))
+                     ).grid(row=0, column=0, sticky="w", padx=(12, 4), pady=(8, 2))
         self.srt_input_lang_var = ctk.StringVar(value="Japanese")
         self.srt_input_lang_menu = ctk.CTkOptionMenu(
             lang_card, variable=self.srt_input_lang_var, values=SRT_LANG_DISPLAY,
             width=170, fg_color=BG_INPUT, button_color=ACCENT,
             command=self._on_srt_input_lang_changed)
-        self.srt_input_lang_menu.grid(row=0, column=1, sticky="ew", padx=4, pady=(10, 2))
+        self.srt_input_lang_menu.grid(row=0, column=1, sticky="ew", padx=4, pady=(8, 2))
         ctk.CTkLabel(lang_card, text="Output Language:",
                      font=("Segoe UI", 10, "bold"), text_color=FG_DIM
-                     ).grid(row=0, column=2, sticky="w", padx=(12, 4), pady=(10, 2))
+                     ).grid(row=0, column=2, sticky="w", padx=(12, 4), pady=(8, 2))
         self.srt_output_lang_var = ctk.StringVar(value="English")
         self.srt_output_lang_menu = ctk.CTkOptionMenu(
             lang_card, variable=self.srt_output_lang_var, values=SRT_LANG_DISPLAY,
             width=170, fg_color=BG_INPUT, button_color=ACCENT,
             command=self._on_srt_output_lang_changed)
-        self.srt_output_lang_menu.grid(row=0, column=3, sticky="ew", padx=4, pady=(10, 2))
+        self.srt_output_lang_menu.grid(row=0, column=3, sticky="ew", padx=4, pady=(8, 2))
         self.srt_lang_hint = ctk.CTkLabel(
             lang_card, text="Only Whisper Large v3 and Canary-1B support language selection",
             font=("Segoe UI", 9), text_color=FG_DIM)
-        self.srt_lang_hint.grid(row=1, column=0, columnspan=4, sticky="w", padx=12, pady=(2, 10))
+        self.srt_lang_hint.grid(row=1, column=0, columnspan=4, sticky="w", padx=12, pady=(2, 8))
         self._srt_input_lang_cb = None
         self._srt_output_lang_cb = None
         self.lang_card = lang_card
 
         # Burn style card (subtitle size + frame preview before full encode)
         style_card = ctk.CTkFrame(scroll, fg_color=BG_CARD, corner_radius=12)
-        style_card.grid(row=4, column=0, sticky="ew", padx=4, pady=(0, 8))
+        style_card.grid(row=4, column=0, sticky="ew", padx=4, pady=(0, 6))
         style_card.grid_columnconfigure(1, weight=1)
         ctk.CTkLabel(style_card, text="Subtitle size:",
                      font=("Segoe UI", 10, "bold"), text_color=FG_DIM
-                     ).grid(row=0, column=0, sticky="w", padx=(12, 4), pady=(10, 2))
+                     ).grid(row=0, column=0, sticky="w", padx=(12, 4), pady=(8, 2))
         self.burn_font_size_var = ctk.IntVar(value=18)
         self.burn_font_slider = ctk.CTkSlider(
             style_card, from_=12, to=32, number_of_steps=20,
             button_color=ACCENT, progress_color=ACCENT,
             command=self._on_burn_fontsize_changed)
-        self.burn_font_slider.grid(row=0, column=1, sticky="ew", padx=4, pady=(10, 2))
+        self.burn_font_slider.grid(row=0, column=1, sticky="ew", padx=4, pady=(8, 2))
         self.burn_font_slider.set(18)
         self.burn_font_value = ctk.CTkLabel(style_card, text="18",
                                             font=("Segoe UI", 11, "bold"),
                                             text_color=FG_PRIMARY)
-        self.burn_font_value.grid(row=0, column=2, sticky="e", padx=(4, 6), pady=(10, 2))
+        self.burn_font_value.grid(row=0, column=2, sticky="e", padx=(4, 6), pady=(8, 2))
         self.srt_preview_btn = ctk.CTkButton(
             style_card, text="Preview Frame", font=("Segoe UI", 12),
-            fg_color="#2D3748", hover_color="#4A5568", height=34,
+            fg_color=BTN_DIM, hover_color=BTN_DIM_HOVER, height=34,
             corner_radius=8, text_color=FG_SECONDARY,
             command=self._on_srt_preview)
-        self.srt_preview_btn.grid(row=0, column=3, sticky="e", padx=(6, 12), pady=(10, 2))
+        self.srt_preview_btn.grid(row=0, column=3, sticky="e", padx=(6, 12), pady=(8, 2))
         try:
             import gpu as _gpumod
             _ggpu = _gpumod.best_gpu()
@@ -682,14 +749,14 @@ class MoonshineGUI(ctk.CTk):
                      text="Preview burns one frame with the current size - instant check before the full encode." + _ghint,
                      font=("Segoe UI", 9), text_color=FG_DIM, wraplength=420,
                      justify="left").grid(row=5, column=0, columnspan=4,
-                                          sticky="w", padx=12, pady=(2, 10))
+                                          sticky="w", padx=12, pady=(2, 8))
         # Learned output-size estimate (per-speed history; manual kbps only).
         self.burn_est_value = ctk.CTkLabel(
             style_card, text="Est. size: —",
             font=("Segoe UI", 10, "bold"), text_color=FG_PRIMARY,
             wraplength=420, justify="left")
         self.burn_est_value.grid(row=6, column=0, columnspan=4,
-                                 sticky="w", padx=12, pady=(2, 10))
+                                 sticky="w", padx=12, pady=(2, 8))
         self._burn_probe_cache = {}
         self._burn_est_token = 0
         self._burn_est_sig = None
@@ -774,17 +841,28 @@ class MoonshineGUI(ctk.CTk):
 
         # Progress card
         prog_card = ctk.CTkFrame(scroll, fg_color=BG_CARD, corner_radius=12)
-        prog_card.grid(row=5, column=0, sticky="ew", padx=4, pady=(0, 8))
+        prog_card.grid(row=5, column=0, sticky="ew", padx=4, pady=(0, 6))
         prog_card.grid_columnconfigure(0, weight=1)
         toprow = ctk.CTkFrame(prog_card, fg_color="transparent")
-        toprow.pack(fill="x", padx=12, pady=(10, 2))
+        toprow.pack(fill="x", padx=12, pady=(8, 2))
         ctk.CTkLabel(toprow, text="Progress",
                      font=("Segoe UI", 11, "bold"), text_color=FG_DIM).pack(side="left")
         self.srt_pct = ctk.CTkLabel(toprow, text="0%",
                                     font=("Segoe UI", 11, "bold"), text_color=FG_SECONDARY)
         self.srt_pct.pack(side="right")
+        # Learned-history reset: SRT timing vs burn timing+size estimates.
+        self.burn_hist_btn = ctk.CTkButton(
+            toprow, text="↺ Burn", width=66, height=24, font=("Segoe UI", 10),
+            fg_color=BTN_DIM, hover_color=BTN_DIM_HOVER, text_color=FG_SECONDARY,
+            corner_radius=6, command=self._on_clear_burn_hist)
+        self.burn_hist_btn.pack(side="right", padx=(0, 6))
+        self.srt_hist_btn = ctk.CTkButton(
+            toprow, text="↺ SRT", width=60, height=24, font=("Segoe UI", 10),
+            fg_color=BTN_DIM, hover_color=BTN_DIM_HOVER, text_color=FG_SECONDARY,
+            corner_radius=6, command=self._on_clear_srt_hist)
+        self.srt_hist_btn.pack(side="right", padx=(0, 6))
         self.srt_bar = ctk.CTkProgressBar(prog_card, fg_color=BG_INPUT,
-                                          progress_color=ACCENT, height=14,
+                                           progress_color=ACCENT, height=12,
                                           corner_radius=7)
         self.srt_bar.pack(fill="x", padx=12, pady=(0, 4))
         self.srt_bar.set(0)
@@ -793,37 +871,38 @@ class MoonshineGUI(ctk.CTk):
                                        wraplength=400, justify="left")
         self.srt_status.pack(anchor="w", padx=12, pady=(0, 4))
         self.srt_log_box = ctk.CTkTextbox(prog_card, font=("Consolas", 10),
-                                          fg_color=BG_INPUT, text_color=FG_SECONDARY,
-                                          corner_radius=8, height=110, wrap="word")
+                                           fg_color=BG_INPUT, text_color=FG_SECONDARY,
+                                           corner_radius=8, height=88, wrap="word")
         self.srt_log_box.pack(fill="x", padx=10, pady=(0, 6))
         self.srt_log_box.insert("1.0", "SRT log ready.\n")
         self.srt_log_box.configure(state="disabled")
 
-        # Action buttons - always visible at bottom of tab
+        # Action buttons - one row: primary action | Cancel | Open Folder.
         abtn = ctk.CTkFrame(scroll, fg_color="transparent")
-        abtn.grid(row=6, column=0, sticky="ew", padx=4, pady=(0, 8))
-        abtn.grid_columnconfigure(0, weight=2)
+        abtn.grid(row=6, column=0, sticky="ew", padx=4, pady=(0, 6))
+        abtn.grid_columnconfigure(0, weight=3)
         abtn.grid_columnconfigure(1, weight=1)
+        abtn.grid_columnconfigure(2, weight=1)
         self.srt_start_btn = ctk.CTkButton(
             abtn, text="\u25B6  Generate SRT", font=("Segoe UI", 13, "bold"),
-            fg_color=SUCCESS, hover_color="#00916E", height=42,
+            fg_color=SUCCESS, hover_color=BTN_GO_HOVER, height=36,
             corner_radius=10, command=self._on_srt_start)
         self.srt_start_btn.grid(row=0, column=0, padx=(0, 4), sticky="ew")
         self.srt_cancel_btn = ctk.CTkButton(
             abtn, text="Cancel", font=("Segoe UI", 12),
-            fg_color=DANGER, hover_color="#C0392B", height=42,
+            fg_color=DANGER, hover_color=BTN_DANGER_HOVER, height=36,
             corner_radius=10, state="disabled", command=self._on_srt_cancel)
         self.srt_cancel_btn.grid(row=0, column=1, padx=(4, 0), sticky="ew")
         self.srt_burn_btn = ctk.CTkButton(
             abtn, text="Burn SRT into MP4", font=("Segoe UI", 12, "bold"),
-            fg_color="#B5651D", hover_color="#8E4E15", height=42,
+            fg_color=BTN_BURN, hover_color=BTN_BURN_HOVER, height=36,
             corner_radius=10, command=self._on_srt_burn)
         self.srt_burn_btn.grid(row=1, column=0, padx=(0, 4), pady=(8, 0), sticky="ew")
         ctk.CTkButton(abtn, text="Open Folder", font=("Segoe UI", 12),
-                      fg_color="#2D3748", hover_color="#4A5568", height=42,
+                      fg_color=BTN_DIM, hover_color=BTN_DIM_HOVER, height=36,
                       corner_radius=10, text_color=FG_SECONDARY,
                       command=self._on_srt_open_folder
-                      ).grid(row=1, column=1, padx=(4, 0), pady=(8, 0), sticky="ew")
+                      ).grid(row=0, column=2, padx=(4, 0), sticky="ew")
         self._srt_burn_cb = None
         self._srt_mode = "generate"  # single-button rule: generate | burn
         self._srt_running_mode = "generate"
@@ -840,7 +919,7 @@ class MoonshineGUI(ctk.CTk):
         # FULLY successful job (abort with `shutdown /a`); otherwise an
         # optional pop-up + window focus fires once per finished job.
         finrow = ctk.CTkFrame(scroll, fg_color="transparent")
-        finrow.grid(row=8, column=0, sticky="ew", padx=16, pady=(0, 8))
+        finrow.grid(row=8, column=0, sticky="ew", padx=16, pady=(0, 6))
         self.shutdown_var = ctk.BooleanVar(value=False)
         self.shutdown_check = ctk.CTkCheckBox(
             finrow, text="Shut down PC when done",
@@ -881,6 +960,127 @@ class MoonshineGUI(ctk.CTk):
         except Exception:
             pass
 
+    def set_theme_callback(self, cb: Optional[Callable]):
+        self._theme_callback = cb if callable(cb) else None
+
+    def _on_theme_toggled(self):
+        try:
+            cur = getattr(self, "_theme_mode", None) or THEME_MODE
+            nxt = "light" if cur != "light" else "dark"
+        except Exception:
+            nxt = "dark"
+        try:
+            self.set_theme(nxt)
+        except Exception:
+            pass
+        cb = getattr(self, "_theme_callback", None)
+        if cb:
+            try:
+                cb(nxt)
+            except Exception:
+                pass
+
+    def set_theme(self, mode: str = "dark"):
+        """Swap the whole UI between dark/light, live (no restart).
+
+        Reassigns the palette globals (widgets created later build
+        correctly) and remaps every live widget's current color options
+        (existing widgets follow). Unknown values pass through. The ☀/☾
+        button and canvases refresh as part of the swap. Never raises."""
+        global THEME_MODE
+        mode = "light" if str(mode or "").lower() == "light" else "dark"
+        pal = THEMES[mode]
+        try:
+            old_vals = {k: globals().get(k) for k in pal}
+        except Exception:
+            old_vals = {}
+        for k, v in pal.items():
+            try:
+                globals()[k] = v
+            except Exception:
+                pass
+        try:
+            forward = {str(old_vals.get(k, v)).upper(): v
+                       for k, v in pal.items()}
+        except Exception:
+            forward = {}
+        try:
+            ctk.set_appearance_mode("Light" if mode == "light" else "Dark")
+        except Exception:
+            pass
+        try:
+            self.configure(fg_color=pal["BG_DARK"])
+        except Exception:
+            pass
+        try:
+            self._remap_theme(self, forward)
+        except Exception:
+            pass
+        THEME_MODE = mode
+        try:
+            self._theme_mode = mode
+            self._theme_btn.configure(text="☾" if mode == "light" else "☀")
+        except Exception:
+            pass
+        # Canvases read globals per redraw - force one now so nothing
+        # keeps last theme's pixels until the next level update. Their bg
+        # is set explicitly: the generic walker only covers options the
+        # widget reports via cget.
+        try:
+            if getattr(self, "meter", None) is not None:
+                try:
+                    self.meter.configure(bg=BG_CARD)
+                except Exception:
+                    pass
+                self.meter.set_level(float(getattr(self.meter, "level", 0.0)))
+        except Exception:
+            pass
+        try:
+            _wf = getattr(self, "waveform", None)
+            if _wf is not None and getattr(_wf, "canvas", None) is not None:
+                _wf.canvas.configure(bg=BG_INPUT)
+        except Exception:
+            pass
+        return mode
+
+    def _remap_theme(self, widget, mapping):
+        """Depth-first recolor: any known color option currently holding a
+        mapped value is switched. Transparent/unknown values are skipped."""
+        try:
+            kids = list(widget.winfo_children())
+        except Exception:
+            kids = []
+        for ch in kids:
+            try:
+                self._remap_theme(ch, mapping)
+            except Exception:
+                pass
+        if not mapping:
+            return
+        for opt in ("fg_color", "bg_color", "bg", "fg", "text_color",
+                    "button_color", "button_hover_color", "hover_color",
+                    "border_color", "progress_color",
+                    "scrollbar_button_color", "scrollbar_button_hover_color",
+                    "selectbackground", "selectforeground",
+                    "dropdown_fg_color", "dropdown_hover_color",
+                    "dropdown_text_color", "segmented_button_fg_color",
+                    "segmented_button_selected_color",
+                    "segmented_button_unselected_color",
+                    "checkmark_color"):
+            try:
+                cur = widget.cget(opt)
+            except Exception:
+                continue
+            try:
+                key = str(cur).upper()
+            except Exception:
+                continue
+            if key in mapping:
+                try:
+                    widget.configure(**{opt: mapping[key]})
+                except Exception:
+                    pass
+
     def _toggle_record(self):
         if self._is_recording:
             self._is_recording = False
@@ -910,7 +1110,7 @@ class MoonshineGUI(ctk.CTk):
         self._is_recording = recording
         if recording:
             self.record_btn.configure(text="\u25A0  STOP", fg_color=DANGER,
-                                       hover_color="#C0392B")
+                                       hover_color=BTN_DANGER_HOVER)
             self.status_badge.set_status("Recording", DANGER)
             self.waveform.start_animation()
         else:
@@ -1177,7 +1377,7 @@ class MoonshineGUI(ctk.CTk):
                                      font=("Segoe UI", 11, "bold"),
                                      text_color=ACCENT_GLOW
                                      ).grid(row=row, column=0, columnspan=3,
-                                            sticky="w", padx=8, pady=(10, 2))
+                                            sticky="w", padx=8, pady=(8, 2))
                         row += 1
                     name = str(it.get("label", it.get("id", "?")))
                     if it.get("downloaded"):
@@ -1200,8 +1400,8 @@ class MoonshineGUI(ctk.CTk):
                     btn = ctk.CTkButton(
                         card, text="Delete", width=80, height=30,
                         font=("Segoe UI", 11),
-                        fg_color=DANGER if can_del else "#2D3748",
-                        hover_color="#C0392B" if can_del else "#2D3748",
+                        fg_color=DANGER if can_del else BTN_DIM,
+                        hover_color=BTN_DANGER_HOVER if can_del else BTN_DIM,
                         text_color=FG_PRIMARY if can_del else FG_DIM,
                         state="normal" if can_del else "disabled",
                         command=lambda e=eng, k=it.get("kind"),
@@ -1269,11 +1469,11 @@ class MoonshineGUI(ctk.CTk):
             _rebuild()
 
         ctk.CTkButton(foot, text="Delete all downloaded", font=("Segoe UI", 12),
-                      fg_color=DANGER, hover_color="#C0392B", height=38,
+                      fg_color=DANGER, hover_color=BTN_DANGER_HOVER, height=38,
                       corner_radius=8, command=_ask_delete_all
                       ).grid(row=0, column=0, padx=(0, 4), sticky="ew")
         ctk.CTkButton(foot, text="Close", font=("Segoe UI", 12),
-                      fg_color="#2D3748", hover_color="#4A5568", height=38,
+                      fg_color=BTN_DIM, hover_color=BTN_DIM_HOVER, height=38,
                       corner_radius=8, text_color=FG_SECONDARY,
                       command=win.destroy
                       ).grid(row=0, column=1, padx=(4, 0), sticky="ew")
@@ -2351,10 +2551,42 @@ class MoonshineGUI(ctk.CTk):
         except Exception:
             pass
 
+    def _on_clear_srt_hist(self):
+        """Reset learned SRT timing (per-model ETA restarts from defaults)."""
+        try:
+            from srt import clear_eta_history as _clr
+            n = int(_clr("srt") or 0)
+            word = "entry" if n == 1 else "entries"
+            self.srt_log(f"SRT timing history cleared ({n} {word}); estimates restart from defaults")
+        except Exception as e:
+            try:
+                self.srt_log(f"Clear SRT history failed: {e}")
+            except Exception:
+                pass
+
+    def _on_clear_burn_hist(self):
+        """Reset learned burn timing + size estimates (est-size shows
+        no-data until the next burn recalibrates)."""
+        try:
+            from srt import (clear_eta_history as _clr,
+                             clear_burn_size_history as _clrb)
+            n = int(_clr("burn") or 0)
+            m = int(_clrb() or 0)
+            self.srt_log(f"Burn history cleared ({n} timing + {m} size entries); recalibrates on next burn")
+            try:
+                self._refresh_burn_est()
+            except Exception:
+                pass
+        except Exception as e:
+            try:
+                self.srt_log(f"Clear burn history failed: {e}")
+            except Exception:
+                pass
+
     def srt_done(self, ok: bool, msg: str):
         self.set_srt_running(False)
         try:
-            self.srt_status.configure(text=msg, text_color=SUCCESS if ok else DANGER)
+            self.srt_status.configure(text=msg, text_color=theme_color(SUCCESS if ok else DANGER))
         except Exception:
             pass
         self.srt_log(f"{'DONE' if ok else 'FAILED'}: {msg}")

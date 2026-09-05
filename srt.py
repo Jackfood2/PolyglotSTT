@@ -130,6 +130,41 @@ def _eta_safe_key(part: str, fallback: str = "") -> str:
     return s[:40] or str(fallback or "")
 
 
+def clear_eta_history(which: str = "all") -> int:
+    """Delete learned ETA baselines so estimates restart from defaults.
+
+    which: "srt" (whisper/canary/moonshine keys), "burn" ("burn"/"burn:*"
+    keys), or "all". The burn-size learner is separate (see
+    clear_burn_size_history). Returns the number of keys removed. Never
+    raises (a missing/corrupt file counts as 0)."""
+    removed = 0
+    with _ETA_LOCK:
+        try:
+            stats = _load_eta_stats()
+            if not stats:
+                return 0
+            if (which or "all") == "all":
+                removed = len(stats)
+                stats = {}
+            else:
+                want_burn = (which == "burn")
+                for k in list(stats):
+                    kb = (k == "burn" or str(k).startswith("burn:"))
+                    if kb == want_burn:
+                        try:
+                            del stats[k]
+                            removed += 1
+                        except Exception:
+                            pass
+            tmp = str(ETA_PATH) + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(stats, f, indent=1)
+            os.replace(tmp, str(ETA_PATH))
+        except Exception:
+            pass
+    return removed
+
+
 # ---------------- Burn-size history (learned output estimates) ----------------
 # GPU (NVENC) and 1-pass sizes are hard to predict analytically: rate-control
 # overshoot varies by content and preset. So every successful burn records
@@ -201,6 +236,29 @@ def burn_size_fudge(speed_id):
     except Exception:
         pass
     return None, 0
+
+
+def clear_burn_size_history() -> int:
+    """Delete the learned burn-size ratios (est-size recalibrates from
+    scratch). Returns the number of speed entries removed. Never raises."""
+    removed = 0
+    with _BURN_LOCK:
+        try:
+            try:
+                with open(str(BURN_SIZE_PATH), "r", encoding="utf-8") as f:
+                    stats = json.load(f)
+                if isinstance(stats, dict):
+                    removed = len(stats)
+            except Exception:
+                removed = 0
+            try:
+                if BURN_SIZE_PATH.exists():
+                    BURN_SIZE_PATH.unlink()
+            except Exception:
+                pass
+        except Exception:
+            pass
+    return removed
 
 
 def estimate_burn_batch(entries, speed_id, vbr_auto, vbr_kbps):

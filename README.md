@@ -70,6 +70,12 @@ Moonshine stay on CPU.
   generates the missing SRTs and hardcodes everything burnable (audio-only
   files, SRT-less failures, and already-burned videos are marked skipped,
   never failed — use Convert to MP4 with its overwrite prompts to redo).
+  Generate/Convert, Cancel, and Open Folder share a single compact row.
+- **Learned-history reset** — the ↺ SRT and ↺ Burn buttons in the Progress
+  header wipe the timing/size baselines (per-model ETA, per-speed size
+  estimates) back to defaults; they recalibrate on the next run.
+- **Dark / light theme** — the ☀/☾ button in the header swaps the whole UI
+  instantly (persisted across restarts, no rebuild needed).
 - **Finish behavior** — *Shut down PC when done* force-powers off 60s after
   a fully successful job only (nothing on cancel/failure; abort any time
   with `shutdown /a`); otherwise an optional pop-up + window focus fires

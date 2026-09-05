@@ -65,6 +65,7 @@ DEFAULT_CONFIG = {
     "burn_after": False,            # burn MP4 automatically after SRT generation
     "auto_shutdown": False,         # force-shutdown the PC once a job fully completes
     "completion_alert": True,       # pop-up + focus the window once a job finishes
+    "theme": "dark",                # UI theme: dark | light
 }
 
 def load_local_config():
@@ -173,6 +174,15 @@ class MoonshineSTTApp:
         # whisper-only key is retained only so old files still validate.
         if self.config.get("compute") not in ("auto", "cpu", "gpu"):
             self.config["compute"] = "auto"
+            needs_save = True
+        try:
+            _th = str(self.config.get("theme", "dark")).lower()
+        except Exception:
+            _th = "dark"
+        if _th not in ("dark", "light"):
+            _th = "dark"
+        if self.config.get("theme") != _th:
+            self.config["theme"] = _th
             needs_save = True
         # Validate SRT language codes
         try:
@@ -435,6 +445,12 @@ class MoonshineSTTApp:
                         self._save_srt_opts)
                 except Exception:
                     pass
+                # UI theme (applies instantly, no restart).
+                try:
+                    self.gui.set_theme(self.config.get("theme", "dark"))
+                    self.gui.set_theme_callback(self._on_theme_changed)
+                except Exception:
+                    pass
                 self.gui.protocol("WM_DELETE_WINDOW", self._on_close)
                 self.gui.update_idletasks()
                 # Reopen on the previously selected tab.
@@ -466,6 +482,15 @@ class MoonshineSTTApp:
                             self.config[k] = bool(opts[k])
                     except Exception:
                         pass
+                save_local_config(self.config)
+        except Exception:
+            pass
+
+    def _on_theme_changed(self, mode):
+        """Persist the UI theme toggle (the GUI applies it live)."""
+        try:
+            with _CONFIG_LOCK:
+                self.config["theme"] = "light" if str(mode).lower() == "light" else "dark"
                 save_local_config(self.config)
         except Exception:
             pass
