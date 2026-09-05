@@ -1139,7 +1139,8 @@ def run_srt_job(src_path: str, out_dir: str, engine_kind: str,
         raise ValueError(f"Unsupported type {src.suffix}. Supported: {', '.join(SUPPORTED_EXTS)}")
 
     workers = configure_cpu(cpu_workers)
-    log(f"CPU: {cpu_count()} cores detected, using {workers} threads (80% default, CPU-only)")
+    log(f"CPU: {cpu_count()} cores detected, using {workers} threads "
+        f"for audio prep (inference device is on the Transcribing line)")
     # Normalize language codes (GUI already validates, this is belt-and-braces
     # for direct API callers). translate tasks always output English.
     srt_input_lang = (srt_input_lang or "auto").strip().lower()
