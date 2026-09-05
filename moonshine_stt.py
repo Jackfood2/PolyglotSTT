@@ -63,6 +63,7 @@ DEFAULT_CONFIG = {
     "burn_vbr_auto": True,          # burn bitrate: size-match budget when True
     "burn_vbr_kbps": 2000,          # manual video kbps when burn_vbr_auto False
     "burn_speed": "match",          # match (2-pass) | fast | fastest | nvenc_*
+    "burn_codec": "h264",           # burn video codec for NVENC speeds: h264 | hevc
     "srt_tab": "Live",              # last open tab (Live | SRT File)
     "srt_norm": False,              # boost quiet audio (loudnorm) before SRT transcription
     "burn_after": False,            # burn MP4 automatically after SRT generation
@@ -262,9 +263,18 @@ class MoonshineSTTApp:
             self.config["burn_vbr_kbps"] = _vk
             needs_save = True
         if self.config.get("burn_speed") not in ("match", "fast", "fastest",
-                                                   "nvenc_draft", "nvenc_turbo",
-                                                   "nvenc_balanced"):
+                                                 "nvenc_draft", "nvenc_turbo",
+                                                 "nvenc_balanced"):
             self.config["burn_speed"] = "match"
+            needs_save = True
+        try:
+            _bc = str(self.config.get("burn_codec", "h264")).strip().lower()
+        except Exception:
+            _bc = "h264"
+        if _bc not in ("h264", "hevc"):
+            _bc = "h264"
+        if self.config.get("burn_codec") != _bc:
+            self.config["burn_codec"] = _bc
             needs_save = True
         if self.config.get("srt_tab") not in ("Live", "SRT File"):
             self.config["srt_tab"] = "Live"
@@ -452,6 +462,11 @@ class MoonshineSTTApp:
                 try:
                     self.gui.set_theme(self.config.get("theme", "dark"))
                     self.gui.set_theme_callback(self._on_theme_changed)
+                except Exception:
+                    pass
+                # Burn codec menu restores from config (H.264 default).
+                try:
+                    self.gui.set_burn_codec(self.config.get("burn_codec", "h264"))
                 except Exception:
                     pass
                 # Footer carries the build version from here on.
@@ -1589,7 +1604,8 @@ class MoonshineSTTApp:
                    srt_in: str = "", srt_out: str = "", srt_task: str = "",
                    normalize_audio: bool = False, burn_after: bool = False,
                    burn_font_size: int = 0, burn_speed: str = "match",
-                   vbr_auto: bool = True, vbr_kbps: int = 2000):
+                   vbr_auto: bool = True, vbr_kbps: int = 2000,
+                   burn_codec: str = "h264"):
         # Atomic check-and-set: two rapid Starts must not launch two jobs.
         # Self-heal: if a previous job thread died without clearing the flag
         # (must never happen, but a stuck "already running" bricks the tab),
@@ -1667,6 +1683,13 @@ class MoonshineSTTApp:
                     _bspd = "match"
                 self.config["burn_speed"] = _bspd
                 try:
+                    _bcode = str(burn_codec or "h264").strip().lower()
+                except Exception:
+                    _bcode = "h264"
+                if _bcode not in ("h264", "hevc"):
+                    _bcode = "h264"
+                self.config["burn_codec"] = _bcode
+                try:
                     _bauto = bool(vbr_auto) if vbr_auto is not None else True
                     _bkbps = max(300, min(10000, int(vbr_kbps or 2000)))
                 except Exception:
@@ -1693,6 +1716,7 @@ class MoonshineSTTApp:
                     "burn_speed": _bspd,
                     "burn_vbr_auto": _bauto,
                     "burn_vbr_kbps": _bkbps,
+                    "burn_codec": _bcode,
                 }
             if job["engine_kind"] not in ("Moonshine v2", "Canary-1B", "Whisper Large v3"):
                 job["engine_kind"] = "Moonshine v2"
@@ -1945,12 +1969,15 @@ class MoonshineSTTApp:
                                           "nvenc_balanced"):
             try:
                 import gpu as _gpumod
-                _nv_ok = bool(_gpumod.nvenc_available(ffmpeg))
+                _bcode = str(bjob.get("burn_codec", "h264")).strip().lower()
+                _enc = "hevc_nvenc" if _bcode == "hevc" else "h264_nvenc"
+                _nv_ok = bool(_gpumod.nvenc_available(ffmpeg, _enc))
             except Exception:
                 _nv_ok = False
+                _enc = "h264_nvenc"
             if not _nv_ok:
                 raise RuntimeError(
-                    "NVENC burn needs an NVIDIA GPU + h264_nvenc encoder - "
+                    f"NVENC burn needs an NVIDIA GPU + {_enc} encoder - "
                     "none detected. Pick a CPU burn speed instead.")
         try:
             _bres = srtmod.reserve_burn_names(
@@ -2001,7 +2028,8 @@ class MoonshineSTTApp:
                 acopy, bjob["cpu_workers"], bjob["font_size"],
                 bjob["speed"],
                 progress_cb=progress_cb, log_cb=log_cb,
-                cancel_event=self._srt_cancel)
+                cancel_event=self._srt_cancel,
+                codec=bjob.get("burn_codec", "h264"))
 
         def _file_cb(kind, path, info):
             # Batch positions -> GUI queue rows via the order map.
@@ -2125,7 +2153,8 @@ class MoonshineSTTApp:
                     "font_size": int(job.get("burn_font_size") or 18),
                     "speed": job.get("burn_speed") or "match",
                     "vbr_auto": job.get("burn_vbr_auto", True),
-                    "vbr_kbps": job.get("burn_vbr_kbps", 2000)}
+                    "vbr_kbps": job.get("burn_vbr_kbps", 2000),
+                    "burn_codec": job.get("burn_codec", "h264")}
             _results, _cancelled, _ok, _msg = self._execute_burn(bjob)
             return _msg, bool(_cancelled)
         except Exception as e:
@@ -2136,7 +2165,7 @@ class MoonshineSTTApp:
     def _burn_start(self, input_paths, order=None, out_dir: str = "",
                     cpu_workers: int = 1, font_size: int = 0,
                     speed: str = "match", vbr_auto: bool = True,
-                    vbr_kbps: int = 2000):
+                    vbr_kbps: int = 2000, burn_codec: str = "h264"):
         # Same single-flight machinery as SRT: one heavy job at a time, same
         # Cancel button/event, same running UI state.
         with self._srt_lock:
@@ -2185,6 +2214,13 @@ class MoonshineSTTApp:
                     _spd = "match"
                 self.config["burn_speed"] = _spd
                 try:
+                    _bcode = str(burn_codec or "h264").strip().lower()
+                except Exception:
+                    _bcode = "h264"
+                if _bcode not in ("h264", "hevc"):
+                    _bcode = "h264"
+                self.config["burn_codec"] = _bcode
+                try:
                     _vauto = bool(vbr_auto) if vbr_auto is not None else True
                     _vkbps = max(300, min(10000, int(vbr_kbps or 2000)))
                 except Exception:
@@ -2195,7 +2231,8 @@ class MoonshineSTTApp:
                 job = {"paths": paths, "out_dir": out_dir,
                        "cpu_workers": int(cpu_workers), "font_size": _fs,
                        "speed": _spd, "order": order,
-                       "vbr_auto": _vauto, "vbr_kbps": _vkbps}
+                       "vbr_auto": _vauto, "vbr_kbps": _vkbps,
+                       "burn_codec": _bcode}
             self._srt_cancel.clear()
             if self._abort_shutdown():
                 self._gui_queue.put(

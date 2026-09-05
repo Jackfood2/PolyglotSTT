@@ -169,9 +169,10 @@ def describe() -> str:
         return f"GPU: probe failed ({e})"
 
 
-def nvenc_available(ffmpeg=None) -> bool:
-    """Can this box burn with h264_nvenc? Needs BOTH an NVIDIA dGPU and
-    the encoder in the ffmpeg build. Cached per binary. Never raises."""
+def nvenc_available(ffmpeg=None, encoder: str = "h264_nvenc") -> bool:
+    """Can this box burn with the given NVENC encoder? Needs BOTH an NVIDIA
+    dGPU and the encoder in the ffmpeg build. Cached per (binary, encoder).
+    Never raises."""
     try:
         if best_gpu() is None:
             return False
@@ -186,7 +187,11 @@ def nvenc_available(ffmpeg=None) -> bool:
             return False
     if not exe:
         return False
-    key = str(exe)
+    try:
+        enc = str(encoder or "h264_nvenc").strip().lower() or "h264_nvenc"
+    except Exception:
+        enc = "h264_nvenc"
+    key = (str(exe), enc)
     with _cache_lock:
         if key in _nvenc_cache:
             return bool(_nvenc_cache[key])
@@ -198,7 +203,7 @@ def nvenc_available(ffmpeg=None) -> bool:
             stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
             text=True, errors="replace", timeout=30)
         out = proc.stdout or ""
-        ok = bool(_re.search(r"\bh264_nvenc\b", out))
+        ok = bool(_re.search(r"\b" + _re.escape(enc) + r"\b", out))
     except Exception:
         ok = False
     with _cache_lock:

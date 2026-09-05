@@ -121,6 +121,39 @@ BURN_SPEED_HELP = {
 }
 
 
+# Speed × codec comparison for the ⓘ popup. Figures are typical VMAF-matched
+# ballparks (your content moves them; the learner calibrates to your box),
+# not promises: (mode, encoder, size accuracy, relative speed, plays on,
+# best for).
+BURN_COMPARE_ROWS = (
+    ("Match size (2-pass)", "x264 CPU", "±1–3% (exact)",
+     "1× baseline (slow)", "everything incl. old devices",
+     "archival keeps, exact-size needs"),
+    ("Fast (1-pass)", "x264 CPU", "~±10%",
+     "~2×", "everything incl. old devices",
+     "quick CPU burns"),
+    ("Fastest (ultrafast 1-pass)", "x264 CPU", "~±10%, visibly softer",
+     "~4–6×", "everything incl. old devices",
+     "drafts and checks"),
+    ("Draft (NVENC 1-pass)", "NVENC GPU", "~±10% (VBR)",
+     "very fast (100s of fps)", "modern devices (~2016+)",
+     "fast GPU burns"),
+    ("Turbo (NVENC ultra-fast)", "NVENC GPU", "~±10%, a touch softer",
+     "fastest", "modern devices (~2016+)",
+     "speed runs, previews"),
+    ("Balanced (NVENC 2-pass)", "NVENC GPU", "~±5–10%",
+     "fast", "modern devices (~2016+)",
+     "best GPU quality per minute"),
+)
+BURN_COMPARE_CODEC_NOTE = (
+    "Codec switch (NVENC speeds): HEVC (H.265) ≈30% smaller than H.264 at "
+    "the same visual quality, at the same GPU speed. Needs ~2016+ playback "
+    "hardware; H.264 plays on everything. CPU speeds are x264 always - the "
+    "codec switch does not touch them. Learned estimates, the MB box, and "
+    "overshoot compensation track each speed+codec separately."
+)
+
+
 def apply_badge_map(values, status_fn=None):
     """Build (display_list, {display: base}) with ✓/↓ download badges.
 
@@ -842,14 +875,49 @@ class MoonshineGUI(ctk.CTk):
                            "Fastest (ultrafast 1-pass)"]
         if not _speed_vals:
             _speed_vals = ["Match size (2-pass)"]
+        try:
+            import gpu as _gpumod0
+            from srt import get_ffmpeg_exe as _ff0
+            try:
+                _exe0 = _ff0()
+            except Exception:
+                _exe0 = None
+            _nv_any = bool(_gpumod0.nvenc_available(_exe0, "h264_nvenc"))
+            _nv_hevc = bool(_gpumod0.nvenc_available(_exe0, "hevc_nvenc"))
+        except Exception:
+            _nv_any, _nv_hevc = False, False
+        self._has_nvenc = bool(_nv_any or _nv_hevc)
+        self._has_nvenc_hevc = bool(_nv_hevc)
+        if not self._has_nvenc:
+            # CPU-only box: offer CPU speeds only instead of dangling GPU
+            # rows that would just revert on pick.
+            _cpu_only = [v for v in _speed_vals if "NVENC" not in v]
+            if _cpu_only:
+                _speed_vals = _cpu_only
         self.burn_speed_var = ctk.StringVar(value=_speed_vals[0])
         self.burn_speed_menu = ctk.CTkOptionMenu(
             style_card, variable=self.burn_speed_var,
-            values=_speed_vals, width=220,
+            values=_speed_vals, width=200,
             fg_color=BG_INPUT, button_color=ACCENT,
             command=self._on_burn_speed_changed)
-        self.burn_speed_menu.grid(row=2, column=1, columnspan=3, sticky="w",
+        self.burn_speed_menu.grid(row=2, column=1, sticky="ew",
                                   padx=4, pady=(2, 2))
+        # Codec axis: H.264 vs HEVC applies to the NVENC speeds only (CPU
+        # speeds are x264 by definition). The ⓘ button compares everything.
+        self.burn_codec_var = ctk.StringVar(value="H.264")
+        self.burn_codec_menu = ctk.CTkOptionMenu(
+            style_card, variable=self.burn_codec_var,
+            values=["H.264", "HEVC (H.265)"], width=130,
+            fg_color=BG_INPUT, button_color=ACCENT,
+            command=self._on_burn_codec_changed)
+        self.burn_codec_menu.grid(row=2, column=2, sticky="e",
+                                  padx=4, pady=(2, 2))
+        self.burn_compare_btn = ctk.CTkButton(
+            style_card, text="ⓘ", width=32, height=28, font=("Segoe UI", 13),
+            fg_color=BTN_DIM, hover_color=BTN_DIM_HOVER, text_color=FG_SECONDARY,
+            corner_radius=8, command=self.show_burn_compare)
+        self.burn_compare_btn.grid(row=2, column=3, sticky="e",
+                                   padx=(4, 12), pady=(2, 2))
         self.burn_speed_desc = ctk.CTkLabel(
             style_card, text="", font=("Segoe UI", 10),
             text_color=ACCENT_GLOW, wraplength=420, justify="left")
@@ -2063,6 +2131,147 @@ class MoonshineGUI(ctk.CTk):
             return False, min(10000, exact)
         return False, self._slider_kbps()
 
+    def get_burn_codec(self) -> str:
+        """'hevc' or 'h264'. Only meaningful for NVENC speeds (CPU speeds
+        always resolve to x264 downstream); the menu itself is disabled
+        for them."""
+        try:
+            v = (self.burn_codec_var.get() or "").strip().lower()
+        except Exception:
+            return "h264"
+        return "hevc" if ("hevc" in v or v == "h265") else "h264"
+
+    def set_burn_codec(self, code: str):
+        """Restore the codec menu from config at startup. Never raises."""
+        try:
+            want = "HEVC (H.265)" if str(code or "").strip().lower() == "hevc" else "H.264"
+            vals = list(self.burn_codec_menu.cget("values"))
+            if want in vals:
+                self.burn_codec_var.set(want)
+        except Exception:
+            pass
+
+    def _on_burn_codec_changed(self, value=None):
+        try:
+            self._refresh_burn_speed_desc()
+        except Exception:
+            pass
+        try:
+            self._refresh_burn_est()
+        except Exception:
+            pass
+
+    def _refresh_burn_codec_state(self):
+        """Codec menu applies to NVENC speeds only (CPU speeds are x264 by
+        definition) and needs an HEVC-capable NVENC box for the HEVC side."""
+        try:
+            from srt import BURN_SPEED_IDS as _BSI
+            sid = _BSI.get((self.burn_speed_var.get() or "").strip(), "match")
+        except Exception:
+            sid = "match"
+        try:
+            ok = bool(getattr(self, "_has_nvenc", False)
+                      and getattr(self, "_has_nvenc_hevc", False)
+                      and sid.startswith("nvenc_"))
+            self.burn_codec_menu.configure(state="normal" if ok else "disabled")
+        except Exception:
+            pass
+
+    def show_burn_compare(self):
+        """ⓘ popup: speed × codec comparison matrix (accuracy, speed,
+        playback, best-for) so the trade-offs are visible without trial
+        burns. Read-only dialog, same look as the model manager."""
+        try:
+            _old = getattr(self, "_burn_compare_win", None)
+            if _old is not None:
+                try:
+                    if _old.winfo_exists():
+                        _old.lift()
+                        try:
+                            _old.focus_force()
+                        except Exception:
+                            pass
+                        return
+                except Exception:
+                    pass
+        except Exception:
+            pass
+        try:
+            win = ctk.CTkToplevel(self)
+        except Exception:
+            return
+        self._burn_compare_win = win
+        try:
+            win.title("Burn speeds compared")
+            win.geometry("680x430")
+            win.minsize(560, 360)
+            win.configure(fg_color=BG_DARK)
+            try:
+                win.transient(self)
+            except Exception:
+                pass
+        except Exception:
+            pass
+        try:
+            ctk.CTkLabel(win, text="Which burn to pick",
+                         font=("Segoe UI", 15, "bold"),
+                         text_color=FG_PRIMARY).pack(anchor="w", padx=16,
+                                                     pady=(14, 2))
+            ctk.CTkLabel(win, text="Typical figures — your content moves them; "
+                                   "the learner calibrates to your machine.",
+                         font=("Segoe UI", 10), text_color=FG_DIM,
+                         wraplength=640, justify="left").pack(anchor="w",
+                                                              padx=16, pady=(0, 6))
+        except Exception:
+            pass
+        try:
+            grid = ctk.CTkScrollableFrame(win, fg_color="transparent")
+            grid.pack(fill="both", expand=True, padx=12, pady=4)
+            headers = ("Mode", "Encoder", "Size accuracy", "Speed",
+                       "Plays on", "Best for")
+            for c, h in enumerate(headers):
+                try:
+                    ctk.CTkLabel(grid, text=h, font=("Segoe UI", 10, "bold"),
+                                 text_color=ACCENT_GLOW).grid(
+                                     row=0, column=c, sticky="w",
+                                     padx=6, pady=(4, 2))
+                except Exception:
+                    pass
+            for r, row in enumerate(BURN_COMPARE_ROWS, start=1):
+                for c, val in enumerate(row):
+                    try:
+                        ctk.CTkLabel(grid, text=str(val),
+                                     font=("Segoe UI", 10),
+                                     text_color=FG_PRIMARY if c == 0 else FG_SECONDARY,
+                                     wraplength=150, justify="left").grid(
+                                         row=r, column=c, sticky="nw",
+                                         padx=6, pady=2)
+                    except Exception:
+                        pass
+            try:
+                ctk.CTkLabel(grid, text=BURN_COMPARE_CODEC_NOTE,
+                             font=("Segoe UI", 10), text_color=ACCENT_GLOW,
+                             wraplength=640, justify="left").grid(
+                                 row=len(BURN_COMPARE_ROWS) + 1, column=0,
+                                 columnspan=6, sticky="w", padx=6, pady=(8, 2))
+            except Exception:
+                pass
+        except Exception:
+            pass
+        try:
+            ctk.CTkButton(win, text="Close", font=("Segoe UI", 12),
+                          fg_color=BTN_DIM, hover_color=BTN_DIM_HOVER,
+                          height=36, corner_radius=8, text_color=FG_SECONDARY,
+                          command=win.destroy).pack(fill="x", padx=16,
+                                                    pady=(4, 14))
+        except Exception:
+            pass
+        try:
+            win.lift()
+            win.focus_force()
+        except Exception:
+            pass
+
     def _refresh_burn_est(self):
         """Recompute the learned output-size estimate (kbps/speed/queue
         changed, or history just grew). Probing runs on a daemon worker -
@@ -2083,6 +2292,10 @@ class MoonshineGUI(ctk.CTk):
         except Exception:
             vauto, vkbps = True, 0
         try:
+            vcodec = self.get_burn_codec()
+        except Exception:
+            vcodec = "h264"
+        try:
             paths = list(self.get_srt_input_paths() or [])
             out_dir = self._srt_out_dir()
         except Exception:
@@ -2090,12 +2303,14 @@ class MoonshineGUI(ctk.CTk):
         try:
             import threading as _th
             _th.Thread(target=self._burn_est_work,
-                       args=(token, paths, out_dir, speed, vauto, vkbps),
+                       args=(token, paths, out_dir, speed, vauto, vkbps,
+                             vcodec),
                        daemon=True).start()
         except Exception:
             pass
 
-    def _burn_est_work(self, token, paths, out_dir, speed, vauto, vkbps):
+    def _burn_est_work(self, token, paths, out_dir, speed, vauto, vkbps,
+                       vcodec="h264"):
         try:
             import os as _os
             from pathlib import Path as _P
@@ -2135,16 +2350,18 @@ class MoonshineGUI(ctk.CTk):
                         entries.append(hit)
                 except Exception:
                     continue
-            res = _est(entries, speed, vauto, vkbps)
+            res = _est(entries, speed, vauto, vkbps, vcodec)
             try:
                 from srt import burn_size_fudge as _fg
-                _fn = _fg(speed)[1]
+                _fn = _fg(speed, vcodec)[1]
             except Exception:
                 _fn = 0
             try:
-                ctx = {"entries": entries, "speed": speed, "fudge_n": _fn}
+                ctx = {"entries": entries, "speed": speed,
+                       "codec": vcodec, "fudge_n": _fn}
             except Exception:
-                ctx = {"entries": [], "speed": speed, "fudge_n": 0}
+                ctx = {"entries": [], "speed": speed, "codec": vcodec,
+                       "fudge_n": 0}
         except Exception:
             res = {"mode": "none"}
             ctx = {"entries": [], "speed": "match"}
@@ -2257,11 +2474,12 @@ class MoonshineGUI(ctk.CTk):
         try:
             from srt import BURN_SPEED_IDS as _BSI, solve_burn_kbps as _solve
             speed = _BSI.get((self.burn_speed_var.get() or "").strip(), "match")
+            codec = self.get_burn_codec()
         except Exception:
             return
         try:
             ctx = getattr(self, "_burn_est_ctx", None) or {}
-            if ctx.get("speed") != speed:
+            if ctx.get("speed") != speed or ctx.get("codec", "h264") != codec:
                 # Queue/speed moved under us - refresh and let the user retry.
                 try:
                     self._refresh_burn_est()
@@ -2284,7 +2502,7 @@ class MoonshineGUI(ctk.CTk):
             else:
                 raw = raw.replace(",", "")
             mb = float(raw)
-            kbps = _solve(ctx.get("entries") or [], speed, mb)
+            kbps = _solve(ctx.get("entries") or [], speed, mb, codec)
             if kbps is None:
                 self.srt_log("Size target needs a target above the audio floor "
                              "(type MB, e.g. 850)")
@@ -2366,8 +2584,25 @@ class MoonshineGUI(ctk.CTk):
                     text += " Not available on this machine."
             except Exception:
                 pass
+            # Codec dimension: HEVC is a different efficiency class, not a
+            # different speed - say so right where the choice is made.
+            try:
+                from srt import BURN_SPEED_IDS as _BSI2
+                _sid2 = _BSI2.get(label, "match")
+                if self.get_burn_codec() == "hevc" and _sid2.startswith("nvenc_"):
+                    text += (" HEVC ≈30% smaller than H.264 at the same "
+                             "visual quality, same GPU speed (needs ~2016+ "
+                             "playback).")
+                elif _sid2.startswith("nvenc_"):
+                    text += " Switch codec to HEVC for ≈30% smaller files."
+            except Exception:
+                pass
         try:
             self.burn_speed_desc.configure(text=text)
+        except Exception:
+            pass
+        try:
+            self._refresh_burn_codec_state()
         except Exception:
             pass
 
@@ -2567,6 +2802,10 @@ class MoonshineGUI(ctk.CTk):
                 _bvauto, _bvk = self.get_burn_vbr()
             except Exception:
                 _bvauto, _bvk = True, 2000
+            try:
+                _bcodec = self.get_burn_codec()
+            except Exception:
+                _bcodec = "h264"
             self._srt_running_mode = "generate"
             threading.Thread(target=self._srt_start_cb,
                              args=([paths[i] for i in order], order,
@@ -2574,7 +2813,7 @@ class MoonshineGUI(ctk.CTk):
                                    srt_in, srt_out, srt_task,
                                    bool(opts.get("srt_norm", False)),
                                    bool(opts.get("burn_after", False)),
-                                   _bfont, _bspd, _bvauto, _bvk),
+                                   _bfont, _bspd, _bvauto, _bvk, _bcodec),
                              daemon=True).start()
 
     def _on_srt_cancel(self):
@@ -2665,11 +2904,15 @@ class MoonshineGUI(ctk.CTk):
                 vbr_auto, vbr_kbps = self.get_burn_vbr()
             except Exception:
                 vbr_auto, vbr_kbps = True, 2000
+            try:
+                _bcodec = self.get_burn_codec()
+            except Exception:
+                _bcodec = "h264"
             self._srt_running_mode = "burn"
             threading.Thread(target=self._srt_burn_cb,
                              args=([paths[i] for i in order], order, out_dir, cpu,
                                    self.get_burn_font_size(), speed,
-                                   vbr_auto, vbr_kbps),
+                                   vbr_auto, vbr_kbps, _bcodec),
                              daemon=True).start()
 
     def _on_srt_open_folder(self):

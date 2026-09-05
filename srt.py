@@ -178,7 +178,7 @@ _BURN_LOCK = threading.Lock()
 
 
 def record_burn_sample(speed_id, video_kbps, audio_bps, duration_s,
-                       actual_bytes):
+                       actual_bytes, codec="h264"):
     """Fold one successful burn into per-speed size history. Never raises."""
     try:
         vkbps = float(video_kbps)
@@ -195,7 +195,7 @@ def record_burn_sample(speed_id, video_kbps, audio_bps, duration_s,
     ratio = act / raw
     if not (0.2 < ratio < 5.0):
         return  # aborted/partial/corrupt write - must not poison history
-    key = _burn_speed_id(speed_id)
+    key = _burn_history_key(speed_id, codec)
     with _BURN_LOCK:
         try:
             try:
@@ -222,12 +222,13 @@ def record_burn_sample(speed_id, video_kbps, audio_bps, duration_s,
             pass
 
 
-def burn_size_fudge(speed_id):
-    """(mean actual/analytic-raw ratio or None, sample count) for a speed."""
+def burn_size_fudge(speed_id, codec="h264"):
+    """(mean actual/analytic-raw ratio or None, sample count) for a
+    speed+codec."""
     try:
         with open(str(BURN_SIZE_PATH), "r", encoding="utf-8") as f:
             stats = json.load(f)
-        node = (stats or {}).get(_burn_speed_id(speed_id))
+        node = (stats or {}).get(_burn_history_key(speed_id, codec))
         if isinstance(node, dict):
             n = int(node.get("n", 0) or 0)
             s = float(node.get("sum", 0.0) or 0.0)
@@ -261,7 +262,8 @@ def clear_burn_size_history() -> int:
     return removed
 
 
-def estimate_burn_batch(entries, speed_id, vbr_auto, vbr_kbps):
+def estimate_burn_batch(entries, speed_id, vbr_auto, vbr_kbps,
+                        codec="h264"):
     """Estimate total burn output for queued files.
 
     entries: [{duration (s), audio_bps, src_bytes}]. vbr_auto=True means
@@ -300,7 +302,7 @@ def estimate_burn_batch(entries, speed_id, vbr_auto, vbr_kbps):
             raw += (vkbps * 1000.0 + abps) / 8.0 * float(e.get("duration"))
         except Exception:
             continue
-    fudge, n = burn_size_fudge(speed_id)
+    fudge, n = burn_size_fudge(speed_id, codec)
     calibrated = fudge is not None and n >= 1 and fudge > 0
     if not calibrated:
         fudge = 1.0
@@ -308,7 +310,7 @@ def estimate_burn_batch(entries, speed_id, vbr_auto, vbr_kbps):
             "files": len(files), "calibrated": calibrated}
 
 
-def solve_burn_kbps(entries, speed_id, target_mb):
+def solve_burn_kbps(entries, speed_id, target_mb, codec="h264"):
     """Invert the size model: manual video kbps (1kbps precision) expected
     to produce target_mb for these entries.
 
@@ -331,7 +333,7 @@ def solve_burn_kbps(entries, speed_id, target_mb):
         return None
     if not files:
         return None
-    fudge, n = burn_size_fudge(speed_id)
+    fudge, n = burn_size_fudge(speed_id, codec)
     if fudge is None or not (fudge > 0):
         # No history yet: pure analytic inversion (fudge 1.0). The box
         # stays usable from the first burn; samples sharpen it later.
@@ -1743,17 +1745,58 @@ BURN_SPEEDS = {
 BURN_SPEED_LABELS = {k: v["label"] for k, v in BURN_SPEEDS.items()}
 BURN_SPEED_IDS = {v: k for k, v in BURN_SPEED_LABELS.items()}
 
+# Video codec axis (orthogonal to speed). HEVC applies to the NVENC
+# speeds only - the CPU speeds are x264 by definition (x265 lives behind
+# a future "CPU codec" switch, not this one). ~30% smaller than H.264 at
+# equal quality on typical content; needs ~2016+ playback hardware.
+BURN_CODECS = {"h264": "H.264", "hevc": "HEVC (H.265)"}
 
-def resolve_burn_speed(speed) -> dict:
-    """Full speed config dict; unknown/empty -> exact-match mode."""
+
+def normalize_burn_codec(codec) -> str:
+    """'hevc' or 'h264' (anything else -> h264). Never raises."""
+    try:
+        return "hevc" if str(codec or "").strip().lower() == "hevc" else "h264"
+    except Exception:
+        return "h264"
+
+
+def _burn_history_key(speed_id, codec="h264") -> str:
+    """Size-history key (burn_size.json). HEVC NVENC speeds learn separately
+    (different efficiency!); everything else keeps the long-standing bare
+    speed id so all existing history keeps working."""
+    sid = _burn_speed_id(speed_id)
+    if normalize_burn_codec(codec) == "hevc" and sid.startswith("nvenc_"):
+        return f"{sid}+hevc"
+    return sid
+
+
+def _burn_eta_key(speed_id, codec="h264") -> str:
+    """ETA-history key (srt_eta.json). Same split as the size history, but
+    under the long-standing "burn:" namespace (family fallback and the
+    clear-burn filter both key off that prefix)."""
+    sid = _burn_speed_id(speed_id)
+    if normalize_burn_codec(codec) == "hevc" and sid.startswith("nvenc_"):
+        return f"burn:{sid}+hevc"
+    return f"burn:{sid}"
+
+
+def resolve_burn_speed(speed, codec="h264") -> dict:
+    """Full speed config dict; unknown/empty -> exact-match mode.
+
+    encoder: "cpu" | "nvenc" (H.264) | "nvenc_hevc". The codec only
+    affects NVENC speeds; CPU speeds always resolve to x264."""
     try:
         key = str(speed or "match").strip().lower()
     except Exception:
         key = "match"
     cfg = BURN_SPEEDS.get(key)
-    if isinstance(cfg, dict):
-        return dict(cfg)
-    return dict(BURN_SPEEDS["match"])
+    if not isinstance(cfg, dict):
+        cfg = BURN_SPEEDS["match"]
+        key = "match"
+    out = dict(cfg)
+    if out.get("encoder") == "nvenc" and normalize_burn_codec(codec) == "hevc":
+        out["encoder"] = "nvenc_hevc"
+    return out
 
 
 def _burn_speed_id(speed) -> str:
@@ -2213,13 +2256,16 @@ def burn_subtitles(src_path: str, srt_path: str, out_path: str, ffmpeg: str,
                    font_size: int = 18, speed: str = "match",
                    progress_cb: Optional[Callable[[float, str], None]] = None,
                    log_cb: Optional[Callable[[str], None]] = None,
-                   cancel_event: Optional[threading.Event] = None):
+                   cancel_event: Optional[threading.Event] = None,
+                   codec: str = "h264"):
     """Burn an SRT into a new MP4 at a fixed video bitrate (size targeting
     lives in plan_burn_bitrates). Same resolution/fps as the source.
     speed: "match" (x264 medium 2-pass, size within ~1-3%), "fast"
     (veryfast 1-pass, ~half the time, size within ~±10%), "fastest"
     (ultrafast 1-pass, several times faster, visibly softer). Unknown
-    speeds fall back to "match". Returns (out_path, in_bytes, out_bytes)."""
+    speeds fall back to "match". codec "hevc" switches the NVENC speeds
+    to hevc_nvenc (~30% smaller, same GPU speed); CPU speeds stay x264.
+    Returns (out_path, in_bytes, out_bytes)."""
     import tempfile as _tf
     src, srtp, out = Path(src_path), Path(srt_path), Path(out_path)
     if not srtp.exists():
@@ -2236,24 +2282,27 @@ def burn_subtitles(src_path: str, srt_path: str, out_path: str, ffmpeg: str,
                    f"using {float(info.get('duration') or 0):.0f}s")
         except Exception:
             pass
-    _spd = resolve_burn_speed(speed)
+    _spd = resolve_burn_speed(speed, codec)
     preset, passes = _spd["preset"], _spd["passes"]
     _tune = _spd.get("tune") or "hq"
     _spd_id = _burn_speed_id(speed)
-    use_nvenc = (_spd.get("encoder") == "nvenc")
+    _codec = normalize_burn_codec(codec)
+    _enc = _spd.get("encoder") or "cpu"
+    use_nvenc = _enc.startswith("nvenc")
+    _nvenc_name = "hevc_nvenc" if _enc == "nvenc_hevc" else "h264_nvenc"
     if use_nvenc:
         # Defensive at the library layer too (the app pre-checks and the
         # GUI reverts, but direct callers deserve the clear error).
         try:
             import gpu as _gpumod
-            _nv_ok = bool(_gpumod.nvenc_available(ffmpeg))
+            _nv_ok = bool(_gpumod.nvenc_available(ffmpeg, _nvenc_name))
         except Exception:
             _nv_ok = False
         if not _nv_ok:
             raise RuntimeError(
-                "NVENC burn needs an NVIDIA GPU + h264_nvenc encoder - "
+                f"NVENC burn needs an NVIDIA GPU + {_nvenc_name} encoder - "
                 "none detected. Pick a CPU burn speed instead.")
-    beta = EtaTracker("burn:" + _spd_id)
+    beta = EtaTracker(_burn_eta_key(speed, _codec))
     beta.set_duration(info["duration"])
 
     def _bprog(f, m):
@@ -2285,7 +2334,7 @@ def burn_subtitles(src_path: str, srt_path: str, out_path: str, ffmpeg: str,
         # Undershoot is never compensated (smaller-than-target harms
         # nothing); x264 2-pass measures ~1.00 and is unaffected.
         try:
-            _fudge, _fudge_n = burn_size_fudge(_spd_id)
+            _fudge, _fudge_n = burn_size_fudge(_spd_id, _codec)
             if _fudge_n >= 2 and _fudge is not None and _fudge > 1.02:
                 _vbps_req = vbps
                 vbps = max(100, int(round(vbps / _fudge)))
@@ -2306,7 +2355,7 @@ def burn_subtitles(src_path: str, srt_path: str, out_path: str, ffmpeg: str,
             # Lookahead + AQ cost a little speed but spend the SAME bits
             # visibly better (scene-cut awareness, detail-weighted
             # quantization) - free quality at identical file sizes.
-            base += ["-c:v", "h264_nvenc", "-preset", preset, "-tune", _tune,
+            base += ["-c:v", _nvenc_name, "-preset", preset, "-tune", _tune,
                      "-rc", "vbr",
                      "-rc-lookahead", "32",
                      "-spatial-aq", "1", "-aq-strength", "8",
@@ -2315,6 +2364,10 @@ def burn_subtitles(src_path: str, srt_path: str, out_path: str, ffmpeg: str,
                      "-maxrate", f"{int(vbps * 1.5)}k",
                      "-bufsize", f"{int(vbps * 2)}k",
                      "-pix_fmt", "yuv420p"]
+            if _enc == "nvenc_hevc":
+                # hvc1 (not hev1) brand: required by Apple players, harmless
+                # everywhere else.
+                base += ["-tag:v", "hvc1"]
         else:
             base += ["-c:v", "libx264", "-b:v", f"{vbps}k",
                      "-preset", preset, "-pix_fmt", "yuv420p"]
@@ -2363,7 +2416,7 @@ def burn_subtitles(src_path: str, srt_path: str, out_path: str, ffmpeg: str,
                 multi, mlabel = [], "1-pass VBR"
             if log_cb:
                 try:
-                    log_cb(f"burn (nvenc {preset}, {mlabel}, {vbps} kbps video, size approx)...")
+                    log_cb(f"burn ({_nvenc_name} {preset}, {mlabel}, {vbps} kbps video, size approx)...")
                 except Exception:
                     pass
             p = subprocess.Popen(base + multi + [str(out)],
@@ -2450,7 +2503,8 @@ def burn_subtitles(src_path: str, srt_path: str, out_path: str, ffmpeg: str,
             _aeff = int(info.get("audio_bps") or 0) if audio_copy else \
                 max(32, int(audio_kbps)) * 1000
             record_burn_sample(_spd_id, vbps, _aeff,
-                               float(info.get("duration") or 0), out_bytes)
+                               float(info.get("duration") or 0), out_bytes,
+                               _codec)
         except Exception:
             pass
         return str(out), in_bytes, out_bytes

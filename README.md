@@ -83,7 +83,12 @@ Moonshine stay on CPU.
 - **Burn SRT into MP4** — hardcode subtitles into a new `.mp4`
   (`<name>.burned.mp4`, any input: mp4/mkv/ts/…) with x264 two-pass sized
   to match the original file (audio copied when possible, CPU threads from
-  the slider). *Est. size* under the bitrate control learns from your past
+  the slider). The *Codec* switch (H.264 / HEVC) applies to the NVENC
+  speeds: HEVC is ≈30% smaller at the same visual quality and the same GPU
+  speed, needing ~2016+ playback (H.264 plays on everything; CPU speeds
+  stay x264). Without an NVIDIA GPU the menu offers CPU speeds only. The
+  ⓘ button compares every speed × codec (accuracy, speed, playback,
+  best-for) without trial burns. *Est. size* under the bitrate control learns from your past
   burns: every successful burn records its actual-vs-predicted ratio per
   speed (`burn_size.json`), so manual-kbps estimates calibrate to your
   content and settings — including unpredictable NVENC modes. With 2+ burns
