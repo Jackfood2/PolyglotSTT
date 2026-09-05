@@ -267,7 +267,15 @@ requirements*.txt  dependency pins (base / Canary / Whisper)
 
 ## Changelog
 
-### v1.2.3 (latest)
+### v1.2.4 (latest)
+
+- Hotfix #2: MB target box is editable from the first burn (analytic
+  fallback when uncalibrated, self-sharpening with history); empty input
+  no longer logs a false error. Duration probe cross-checks size/bitrate
+  against lying container headers (seen: 67s claimed on a 15min VFR file),
+  fixing Auto budgets, progress, and learned history for such files.
+
+### v1.2.3
 
 - Hotfix: closed-loop overshoot compensation — burns at speeds with 2+
   learned samples and a measured overshoot now request proportionally less
