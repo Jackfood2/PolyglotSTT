@@ -427,14 +427,15 @@ def get_ffmpeg_exe() -> Optional[str]:
 
 
 def format_ts(seconds: float) -> str:
-    seconds = max(0.0, float(seconds))
-    h = int(seconds // 3600)
-    m = int((seconds % 3600) // 60)
-    s = int(seconds % 60)
-    ms = int(round((seconds - int(seconds)) * 1000))
-    if ms >= 1000:
-        s += 1
-        ms -= 1000
+    """SRT timestamp. Total-millisecond arithmetic: the old split-and-carry
+    version emitted 00:00:60,000 at exact minute boundaries (59.9999s)."""
+    try:
+        total_ms = max(0, int(round(float(seconds) * 1000)))
+    except Exception:
+        total_ms = 0
+    h, rem = divmod(total_ms, 3600000)
+    m, rem = divmod(rem, 60000)
+    s, ms = divmod(rem, 1000)
     return f"{h:02d}:{m:02d}:{s:02d},{ms:03d}"
 
 
@@ -1807,15 +1808,8 @@ def offset_srt_file(src_srt, offset_s: float, dst_srt):
         off = 0.0
 
     def _fmt(t: float) -> str:
-        t = max(0.0, t)
-        h, rem = divmod(t, 3600)
-        m, rem2 = divmod(rem, 60)
-        s = int(rem2)
-        ms = int(round((rem2 - s) * 1000))
-        if ms >= 1000:
-            s += 1
-            ms -= 1000
-        return f"{int(h):02d}:{int(m):02d}:{s:02d},{ms:03d}"
+        # format_ts clamps negatives and carries minutes/hours correctly.
+        return format_ts(t)
 
     def _rep(m):
         a = _cue_secs(m.group(1), m.group(2), m.group(3)) + off

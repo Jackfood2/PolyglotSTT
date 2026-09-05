@@ -951,12 +951,8 @@ class MoonshineSTTApp:
                 except Exception:
                     pass
 
-        # ensure active engine is moonshine for model switch
-        if self.config.get("engine") == "Canary-1B":
-            # If user switched model while Canary active, switch back to Moonshine
-            self.config["engine"] = "Moonshine v2"
-            save_local_config(self.config)
-            self.engine = self.moonshine_engine
+        # ensure active engine is moonshine for model switch (the early
+        # return above guarantees engine is Moonshine v2 here)
         self._model_switching = True
         self.engine.switch_model(new_arch, on_ready=_model_switched)
 
@@ -2287,6 +2283,8 @@ class MoonshineSTTApp:
                         "srt_input_lang": self.config.get("srt_input_lang", "auto"),
                         "srt_output_lang": self.config.get("srt_output_lang", "en"),
                         "cpu_workers": int(self.config.get("srt_cpu", 0) or 0),
+                        # Preview must hear what Generate will hear.
+                        "normalize_audio": bool(self.config.get("srt_norm", False)),
                     }
                 if snap["engine_kind"] not in ("Moonshine v2", "Canary-1B", "Whisper Large v3"):
                     snap["engine_kind"] = "Moonshine v2"
@@ -2343,6 +2341,7 @@ class MoonshineSTTApp:
                         get_whisper_engine=lambda: self._get_whisper_engine(False),
                         srt_input_lang=snap["srt_input_lang"],
                         srt_output_lang=snap["srt_output_lang"],
+                        normalize_audio=snap["normalize_audio"],
                     )
                     shifted = tmpd / "sample_shifted.srt"
                     srtmod.offset_srt_file(sample_srt, sample_origin, shifted)

@@ -1387,7 +1387,7 @@ class MoonshineGUI(ctk.CTk):
                 self._srt_file_status[len(self._srt_input_paths) - 1] = "queued"
                 added += 1
             self._refresh_srt_list()
-            if added:
+            if added and not getattr(self, "_srt_running", False):
                 try:
                     last = self._srt_input_paths[-1]
                     import os as _os
