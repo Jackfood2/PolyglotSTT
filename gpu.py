@@ -1,30 +1,19 @@
-"""Dedicated-GPU detection and VRAM-gated device recommendations.
-
-CPU remains the default everywhere; CUDA is used only when a real NVIDIA
-dGPU is present AND free VRAM covers the model. All probes are lazy,
-guarded, and cached - importing this module never touches torch.
-"""
-
+# gpu.py
 import shutil
 import subprocess
 import threading
 import time
-
 _SMI_TIMEOUT = 8
 _cache = {}
 _cache_lock = threading.Lock()
 _nvenc_cache = {}
-
-
 def _smi_gpus():
-    """Parse nvidia-smi into [{name, total_mb, free_mb, driver}] (best first).
-    [] when no NVIDIA driver/GPU. Never raises, never blocks long."""
     if shutil.which("nvidia-smi") is None:
         return []
     try:
         proc = subprocess.run(
             ["nvidia-smi", "--query-gpu=name,memory.total,memory.free,"
-                           "driver_version",
+             "driver_version",
              "--format=csv,noheader,nounits"],
             stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
             text=True, errors="replace", timeout=_SMI_TIMEOUT)
@@ -42,7 +31,6 @@ def _smi_gpus():
             except Exception:
                 continue
             name = parts[0] or "NVIDIA GPU"
-            # Skip virtualized / tiny adapters that would only OOM.
             if total < 1500:
                 continue
             out.append({"name": name, "total_mb": total, "free_mb": free,
@@ -51,10 +39,7 @@ def _smi_gpus():
         return []
     out.sort(key=lambda g: g["free_mb"], reverse=True)
     return out
-
-
 def best_gpu():
-    """Best NVIDIA dGPU dict, or None. Cached for 60s (VRAM changes)."""
     now = time.monotonic()
     with _cache_lock:
         hit = _cache.get("smi")
@@ -65,10 +50,7 @@ def best_gpu():
     with _cache_lock:
         _cache["smi"] = (now, best)
     return best
-
-
 def torch_cuda():
-    """torch CUDA status (lazy import - torch takes seconds to load)."""
     try:
         import torch
     except Exception as e:
@@ -84,11 +66,7 @@ def torch_cuda():
                 "total_mb": int(props.total_memory // (1024 * 1024))}
     except Exception as e:
         return {"ok": False, "reason": str(e)[:120]}
-
-
 def ct2_cuda():
-    """Whether the installed ctranslate2 can run CUDA kernels (no GPU needed
-    to answer - queries supported compute types, not devices)."""
     try:
         import ctranslate2
     except Exception as e:
@@ -100,25 +78,14 @@ def ct2_cuda():
         return {"ok": False, "reason": f"no fp16 CUDA types: {types}"[:120]}
     except Exception as e:
         return {"ok": False, "reason": str(e)[:160]}
-
-
-# FP16 VRAM appetite per Whisper size class (weights + workspace + margin).
 _WHISPER_FP16_MB = {"tiny": 1200, "base": 1200, "small": 1500,
                     "medium": 2600, "large": 5200, "large-v1": 5200,
                     "large-v2": 5200, "large-v3": 5200}
 _WHISPER_INT8_MB = {"tiny": 700, "base": 700, "small": 900,
                     "medium": 1400, "large": 2800, "large-v1": 2800,
                     "large-v2": 2800, "large-v3": 2800}
-_CANARY_CUDA_MIN_MB = 10240  # 3.9GB fp32 weights + activations + overhead
-
-
+_CANARY_CUDA_MIN_MB = 10240
 def recommend_whisper(model_id: str):
-    """(device, compute_type, reason) for a Whisper model id.
-
-    device in ("cuda", "cpu"); compute in ("float16", "int8_float16",
-    "int8"). CPU stays int8 (fast on AVX); CUDA prefers fp16, int8 on
-    smaller cards. Never raises.
-    """
     mid = (model_id or "large-v3").strip() or "large-v3"
     need_fp16 = _WHISPER_FP16_MB.get(mid, 5200)
     need_int8 = _WHISPER_INT8_MB.get(mid, 2800)
@@ -136,10 +103,7 @@ def recommend_whisper(model_id: str):
     return ("cpu", "int8",
             f"only {free}MB VRAM free on {gpu.get('name', 'GPU')} "
             f"(need ~{need_int8}MB)")
-
-
 def recommend_canary():
-    """(use_cuda_bool, reason). Canary is fp32-hungry: 10GB+ free or CPU."""
     gpu = best_gpu()
     if gpu is None:
         return False, "no NVIDIA dGPU detected"
@@ -151,10 +115,7 @@ def recommend_canary():
         return True, f"{gpu['name']} ({free}MB free)"
     return False, (f"only {free}MB VRAM free on {gpu.get('name', 'GPU')} "
                    f"(Canary wants ~{_CANARY_CUDA_MIN_MB}MB)")
-
-
 def describe() -> str:
-    """One-line human summary for logs / troubleshooting."""
     try:
         gpu = best_gpu()
         if gpu is None:
@@ -167,12 +128,7 @@ def describe() -> str:
                 f"ct2-cuda={'yes' if ct.get('ok') else 'no'}")
     except Exception as e:
         return f"GPU: probe failed ({e})"
-
-
 def nvenc_available(ffmpeg=None, encoder: str = "h264_nvenc") -> bool:
-    """Can this box burn with the given NVENC encoder? Needs BOTH an NVIDIA
-    dGPU and the encoder in the ffmpeg build. Cached per (binary, encoder).
-    Never raises."""
     try:
         if best_gpu() is None:
             return False

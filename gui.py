@@ -1,12 +1,9 @@
-"""Professional GUI for MoonshineSTT using customtkinter."""
-
+# gui.py
 import customtkinter as ctk
 import threading
 import time
 import math
 from typing import Optional, Callable, Tuple
-
-
 ACCENT = "#6C5CE7"
 ACCENT_DARK = "#5A4BD1"
 ACCENT_GLOW = "#A29BFE"
@@ -25,18 +22,7 @@ BTN_GO_HOVER = "#00916E"
 BTN_DANGER_HOVER = "#C0392B"
 BTN_BURN = "#B5651D"
 BTN_BURN_HOVER = "#8E4E15"
-# Button face text: a hair off pure white ON PURPOSE - the theme walker
-# maps by value, and plain #FFFFFF means "primary text" (which must turn
-# dark in light mode). #FEFEFE is visually identical but maps to itself,
-# so button faces stay put on their saturated fills in both themes.
-# Never use FG_PRIMARY for text on a colored button.
 BTN_TEXT = "#FEFEFE"
-
-# ---------------- Themes (dark default, light optional) ----------------
-# Every color in this file flows from the names above, so a theme switch =
-# reassign the globals (widgets created later build correctly) + remap the
-# live widgets' current color options (existing widgets follow). Literal
-# hex must never appear at creation sites - use the BTN_* names.
 THEMES = {
     "dark": {
         "ACCENT": "#6C5CE7", "ACCENT_DARK": "#5A4BD1",
@@ -68,14 +54,7 @@ _DARK_TO_LIGHT = {v.upper(): THEMES["light"][k]
                   for k, v in THEMES["dark"].items()}
 _LIGHT_TO_DARK = {v.upper(): THEMES["dark"][k]
                   for k, v in THEMES["light"].items()}
-
-
 def theme_color(value):
-    """Map a possibly stale (other-theme) color into the active theme.
-
-    The app binds these names once at import; after a toggle it may still
-    pass dark values into set_status() - this heals them without touching
-    callers. Unknown values pass through untouched. Never raises."""
     try:
         v = str(value or "")
         if not v:
@@ -84,8 +63,6 @@ def theme_color(value):
         return m.get(v.upper(), value)
     except Exception:
         return value
-
-# Model size choices - maps display label -> arch int (from catalog 0-5)
 MODEL_CHOICES = {
     "Tiny (26MB, fastest)": 0,
     "Tiny Streaming (45MB, light)": 2,
@@ -95,9 +72,6 @@ MODEL_CHOICES = {
     "Medium Streaming (110MB, best)": 5,
 }
 MODEL_CHOICES_REV = {v: k for k, v in MODEL_CHOICES.items()}
-
-# Downloadable Whisper sizes - single source of truth lives in
-# whisper_engine (imported; local fallback only if that import fails).
 try:
     from whisper_engine import (WHISPER_MODEL_CHOICES as _WMC,
                                 WHISPER_MODEL_CHOICES_REV as _WMCR)
@@ -116,9 +90,6 @@ except Exception:
     }
     WHISPER_MODEL_CHOICES_REV = {v: k for k, v in WHISPER_MODEL_CHOICES.items()}
 CANARY_MODEL_LABEL = "Canary-1B (3.9GB, fixed)"
-
-
-# One-line trade-off notes for the burn-speed menu, keyed by menu label.
 BURN_SPEED_HELP = {
     "Match size (2-pass x264)": "Exact size (±1–3%). Slowest — encodes the video twice.",
     "Fast (1-pass x264)": "About half the time, size within ~±10%.",
@@ -127,12 +98,6 @@ BURN_SPEED_HELP = {
     "Turbo (NVENC ultra-fast 1-pass)": "Needs NVIDIA GPU. Lowest-latency tune, a touch softer than Draft.",
     "Balanced (NVENC 2-pass)": "Needs NVIDIA GPU. GPU two-pass, closer size (~±5–10%).",
 }
-
-
-# Speed × codec comparison for the ⓘ popup. Figures are typical VMAF-matched
-# ballparks (your content moves them; the learner calibrates to your box),
-# not promises: (mode, encoder, size accuracy, relative speed, plays on,
-# best for).
 BURN_COMPARE_ROWS = (
     ("Match size (2-pass)", "x264 CPU", "±1–3% (exact)",
      "1× baseline (slow)", "everything incl. old devices",
@@ -160,14 +125,7 @@ BURN_COMPARE_CODEC_NOTE = (
     "H.264 plays on everything. Learned estimates, the MB box, and "
     "overshoot compensation track each speed+codec separately."
 )
-
-
 def apply_badge_map(values, status_fn=None):
-    """Build (display_list, {display: base}) with ✓/↓ download badges.
-
-    Pure function (no widgets) so it is unit-testable. Display strings are
-    uniquified defensively; a failing status_fn degrades to no badges.
-    """
     mapping = {}
     displays = []
     for v in (values or []):
@@ -185,17 +143,12 @@ def apply_badge_map(values, status_fn=None):
         mapping[k] = v
         displays.append(k)
     return displays, mapping
-
 ENGINE_CHOICES = ["Moonshine v2", "Canary-1B", "Whisper Large v3"]
 CANARY_TASKS = ["transcribe", "translate"]
-# Union of Canary + Whisper src langs so one shared Src menu serves both engines.
-# Canary officially uses en/de/es/fr (+ja/zh experimental); Whisper adds ko + more.
 CANARY_LANGS = ["auto", "en", "ja", "zh", "ko", "de", "es", "fr",
                 "it", "pt", "nl", "ru", "ar", "hi", "tr", "id", "uk", "vi", "th"]
 WHISPER_TASKS = ["transcribe", "translate"]
 WHISPER_LANGS = CANARY_LANGS
-# Full language list for SRT input/output dropdowns (superset of all engines).
-# Displayed by FULL NAME only - no "ja - Japanese" code shortcuts.
 SRT_LANGS = ["auto", "en", "ja", "zh", "ko", "de", "es", "fr",
              "it", "pt", "nl", "ru", "ar", "hi", "tr", "id", "uk", "vi", "th"]
 SRT_LANG_NAMES = {
@@ -207,18 +160,11 @@ SRT_LANG_NAMES = {
 }
 SRT_LANG_DISPLAY = [SRT_LANG_NAMES[c] for c in SRT_LANGS]
 SRT_LANG_CODE_FROM_DISPLAY = {v: k for k, v in SRT_LANG_NAMES.items()}
-# Per-engine capability lists. Probed 2026-09-03: canary-1b.nemo only
-# contains <|de|> <|en|> <|es|> <|fr|> - anything else crashes NeMo, so the
-# menus must not offer it while Canary is active. Whisper covers the full
-# list. Output menus exclude "auto" (auto-detect as an OUTPUT is meaningless;
-# Canary would crash on target_lang="auto").
 CANARY_LIVE_SRC_CODES = ["auto", "en", "de", "es", "fr"]
 CANARY_SRT_IN_CODES = ["auto", "en", "de", "es", "fr"]
 CANARY_SRT_OUT_CODES = ["en", "de", "es", "fr"]
 WHISPER_SRT_IN_CODES = list(SRT_LANGS)
 WHISPER_SRT_OUT_CODES = [c for c in SRT_LANGS if c != "auto"]
-
-
 class LevelMeter(ctk.CTkCanvas):
     def __init__(self, master, width=300, height=8, **kwargs):
         super().__init__(master, width=width, height=height,
@@ -227,11 +173,9 @@ class LevelMeter(ctk.CTkCanvas):
         self.meter_height = height
         self.level = 0.0
         self._draw()
-
     def set_level(self, level: float):
         self.level = max(0.0, min(1.0, level))
         self._draw()
-
     def _draw(self):
         self.delete("all")
         self.create_rectangle(0, 0, self.meter_width, self.meter_height,
@@ -244,12 +188,8 @@ class LevelMeter(ctk.CTkCanvas):
                 color = WARNING
             else:
                 color = DANGER
-            # Plain fill only: the old per-pixel sine loop created up to
-            # ~420 canvas objects per redraw and froze the UI at 15Hz.
             self.create_rectangle(0, 0, w, self.meter_height,
                                   fill=color, outline="", width=0)
-
-
 class WaveformDisplay(ctk.CTkFrame):
     def __init__(self, master, width=400, height=80, **kwargs):
         super().__init__(master, width=width, height=height,
@@ -259,16 +199,13 @@ class WaveformDisplay(ctk.CTkFrame):
         self.canvas.pack(padx=2, pady=2, fill="both", expand=True)
         self.amplitude = 0.0
         self._animating = False
-
     def set_amplitude(self, amp: float):
         self.amplitude = max(0.0, min(1.0, amp))
-
     def start_animation(self):
         if self._animating:
-            return  # already looping - a second loop would double-draw forever
+            return
         self._animating = True
         self._animate()
-
     def stop_animation(self):
         self._animating = False
         self.canvas.delete("all")
@@ -276,7 +213,6 @@ class WaveformDisplay(ctk.CTkFrame):
         h = self.canvas.winfo_height() or 80
         self.canvas.create_line(0, h // 2, w, h // 2,
                                 fill=FG_DIM, width=2, dash=(4, 4))
-
     def _animate(self):
         if not self._animating:
             return
@@ -304,45 +240,35 @@ class WaveformDisplay(ctk.CTkFrame):
             self.canvas.create_line(*glow_points, fill=ACCENT, width=1, smooth=True,
                                     dash=(2, 4))
         self.after(33, self._animate)
-
-
 class StatusBadge(ctk.CTkFrame):
     def __init__(self, master, **kwargs):
         super().__init__(master, fg_color="transparent", **kwargs)
         self.indicator = ctk.CTkLabel(self, text="\u25CF", font=("Segoe UI", 12),
-                                       text_color=FG_DIM)
+                                      text_color=FG_DIM)
         self.indicator.pack(side="left", padx=(0, 6))
         self.label = ctk.CTkLabel(self, text="Ready", font=("Segoe UI", 13, "bold"),
-                                   text_color=FG_SECONDARY)
+                                  text_color=FG_SECONDARY)
         self.label.pack(side="left")
-
     def set_status(self, text: str, color: str):
         color = theme_color(color)
         self.label.configure(text=text, text_color=color)
         self.indicator.configure(text_color=color)
-
-
 class HistoryPanel(ctk.CTkScrollableFrame):
-    MAX_ENTRIES = 100  # unbounded history = unbounded widgets/RAM + scroll crawl
-
+    MAX_ENTRIES = 100
     def __init__(self, master, **kwargs):
         super().__init__(master, fg_color=BG_INPUT, corner_radius=12,
                          scrollbar_button_color=ACCENT, **kwargs)
         self._entries = []
-
     def add_entry(self, text: str, timestamp: str):
         entry_frame = ctk.CTkFrame(self, fg_color=BG_CARD, corner_radius=8)
         entry_frame.pack(fill="x", padx=4, pady=3)
-
         ts_label = ctk.CTkLabel(entry_frame, text=timestamp,
                                 font=("Segoe UI", 10), text_color=FG_DIM)
         ts_label.pack(anchor="w", padx=8, pady=(6, 0))
-
         text_label = ctk.CTkLabel(entry_frame, text=text,
                                   font=("Consolas", 12), text_color=FG_PRIMARY,
                                   wraplength=360, justify="left")
         text_label.pack(anchor="w", padx=8, pady=(2, 6))
-
         self._entries.append(entry_frame)
         while len(self._entries) > self.MAX_ENTRIES:
             try:
@@ -356,42 +282,33 @@ class HistoryPanel(ctk.CTkScrollableFrame):
                 self._canvas.yview_moveto(1.0)
             except Exception:
                 pass
-
     def clear(self):
         for entry in self._entries:
             entry.destroy()
         self._entries.clear()
-
-
 class MoonshineGUI(ctk.CTk):
     def __init__(self):
         super().__init__()
         ctk.set_appearance_mode("dark")
         ctk.set_default_color_theme("dark-blue")
-
         self.title("MoonshineSTT")
         self.geometry("480x850")
         self.minsize(440, 750)
         self.configure(fg_color=BG_DARK)
         self.resizable(True, True)
-
         self._on_record_start: Optional[Callable] = None
         self._on_record_stop: Optional[Callable] = None
         self._is_recording = False
         self._theme_callback = None
         self._theme_mode = "dark"
-
         self._build_ui()
-
     def _build_ui(self):
         self.grid_columnconfigure(0, weight=1)
         self.grid_rowconfigure(2, weight=1)
-
         header = ctk.CTkFrame(self, fg_color="transparent")
         header.grid(row=0, column=0, sticky="ew", padx=20, pady=(16, 0))
         header.grid_columnconfigure(0, weight=1)
         header.grid_columnconfigure(1, weight=0)
-
         title_frame = ctk.CTkFrame(header, fg_color="transparent")
         title_frame.grid(row=0, column=0, sticky="w")
         ctk.CTkLabel(title_frame, text="MoonshineSTT",
@@ -399,22 +316,18 @@ class MoonshineGUI(ctk.CTk):
                      text_color=FG_PRIMARY).pack(side="left")
         ctk.CTkLabel(title_frame, text=" v2",
                      font=("Segoe UI", 14), text_color=ACCENT_GLOW).pack(side="left", pady=(6, 0))
-
         self.status_badge = StatusBadge(header)
         self.status_badge.grid(row=0, column=1, sticky="e")
         self.status_badge.set_status("Initializing", WARNING)
-
         header.grid_columnconfigure(2, weight=0)
         self._theme_btn = ctk.CTkButton(
             header, text="☀", width=40, height=28, font=("Segoe UI", 13),
             fg_color="transparent", hover_color=BG_CARD, text_color=FG_DIM,
             corner_radius=8, command=self._on_theme_toggled)
         self._theme_btn.grid(row=0, column=2, sticky="e", padx=(8, 0))
-
         subtitle = ctk.CTkLabel(self, text="Hold F2 to record \u2022 Release to transcribe",
                                 font=("Segoe UI", 11), text_color=FG_DIM)
         subtitle.grid(row=1, column=0, padx=20, pady=(6, 8), sticky="w")
-
         self.tabs = ctk.CTkTabview(self, fg_color="transparent",
                                    segmented_button_fg_color=BG_CARD,
                                    segmented_button_selected_color=ACCENT,
@@ -429,11 +342,6 @@ class MoonshineGUI(ctk.CTk):
         live.grid_rowconfigure(3, weight=1)
         srt_tab.grid_columnconfigure(0, weight=1)
         srt_tab.grid_rowconfigure(0, weight=1)
-        # Explicit segmented-button colors as palette names (the theme
-        # walker remaps them on toggle). CTk defaults would otherwise
-        # freeze the tab strip in its build-time appearance, leaving a
-        # dark bar with unreadable text in light mode. NOTE: fg_color is
-        # left alone - this widget rejects "transparent" for it.
         try:
             _sb = self.tabs._segmented_button
             _sb.configure(selected_color=ACCENT,
@@ -443,52 +351,42 @@ class MoonshineGUI(ctk.CTk):
                           text_color=FG_PRIMARY)
         except Exception:
             pass
-
         record_card = ctk.CTkFrame(live, fg_color=BG_CARD, corner_radius=16)
         record_card.grid(row=0, column=0, sticky="ew", padx=8, pady=(0, 6))
         record_card.grid_columnconfigure(0, weight=1)
-
         self.meter = LevelMeter(record_card, width=420, height=10)
         self.meter.grid(row=0, column=0, padx=20, pady=(12, 4), sticky="ew")
-
         self.waveform = WaveformDisplay(record_card, width=420, height=70)
         self.waveform.grid(row=1, column=0, padx=16, pady=(8, 4), sticky="ew")
-
         btn_frame = ctk.CTkFrame(record_card, fg_color="transparent")
         btn_frame.grid(row=2, column=0, pady=(8, 12), sticky="ew")
         btn_frame.grid_columnconfigure(0, weight=1)
         btn_frame.grid_columnconfigure(1, weight=1)
         btn_frame.grid_columnconfigure(2, weight=1)
-
         self.record_btn = ctk.CTkButton(
             btn_frame, text="\u25CF  RECORD", font=("Segoe UI", 13, "bold"),
             fg_color=ACCENT, hover_color=ACCENT_DARK, height=40,
             text_color=BTN_TEXT,
             corner_radius=10, command=self._toggle_record)
         self.record_btn.grid(row=0, column=0, padx=(16, 4), sticky="ew")
-
         self.clear_btn = ctk.CTkButton(
             btn_frame, text="Clear", font=("Segoe UI", 12),
             fg_color=BTN_DIM, hover_color=BTN_DIM_HOVER, height=40,
             corner_radius=10, text_color=FG_SECONDARY,
             command=self._clear_history)
         self.clear_btn.grid(row=0, column=1, padx=4, sticky="ew")
-
         self.copy_last_btn = ctk.CTkButton(
             btn_frame, text="Copy", font=("Segoe UI", 12),
             fg_color=BTN_DIM, hover_color=BTN_DIM_HOVER, height=40,
             corner_radius=10, text_color=FG_SECONDARY,
             command=self._copy_last)
         self.copy_last_btn.grid(row=0, column=2, padx=(4, 16), sticky="ew")
-
         output_card = ctk.CTkFrame(live, fg_color=BG_CARD, corner_radius=16)
         output_card.grid(row=1, column=0, sticky="ew", padx=8, pady=(0, 6))
         output_card.grid_columnconfigure(0, weight=1)
-
         ctk.CTkLabel(output_card, text="Last Transcription",
                      font=("Segoe UI", 11, "bold"), text_color=FG_DIM
                      ).pack(anchor="w", padx=16, pady=(12, 2))
-
         self.output_text = ctk.CTkTextbox(
             output_card, font=("Consolas", 13), fg_color=BG_INPUT,
             text_color=FG_PRIMARY, corner_radius=8, height=60,
@@ -496,17 +394,13 @@ class MoonshineGUI(ctk.CTk):
         self.output_text.pack(fill="x", padx=12, pady=(0, 12))
         self.output_text.insert("1.0", "Waiting for voice input...")
         self.output_text.configure(state="disabled")
-
         history_label_frame = ctk.CTkFrame(live, fg_color="transparent")
         history_label_frame.grid(row=2, column=0, sticky="ew", padx=12, pady=(8, 4))
         ctk.CTkLabel(history_label_frame, text="Transcription History",
                      font=("Segoe UI", 11, "bold"), text_color=FG_DIM
                      ).pack(side="left")
-
         self.history = HistoryPanel(live, height=140)
         self.history.grid(row=3, column=0, sticky="nsew", padx=8, pady=(0, 6))
-
-        # Engine selector - new for Canary-1B portable
         engine_frame = ctk.CTkFrame(live, fg_color=BG_CARD, corner_radius=10)
         engine_frame.grid(row=4, column=0, sticky="ew", padx=8, pady=(0, 6))
         ctk.CTkLabel(engine_frame, text="Engine:", font=("Segoe UI", 10, "bold"), text_color=FG_DIM).pack(side="left", padx=(12, 4), pady=8)
@@ -524,8 +418,6 @@ class MoonshineGUI(ctk.CTk):
         self._engine_callback = None
         self._canary_task_callback = None
         self._canary_lang_callback = None
-
-        # Settings row - ported from test.py typing method / suffix
         settings_frame = ctk.CTkFrame(live, fg_color=BG_CARD, corner_radius=10)
         settings_frame.grid(row=6, column=0, sticky="ew", padx=8, pady=(0, 6))
         ctk.CTkLabel(settings_frame, text="Insert via:", font=("Segoe UI", 10), text_color=FG_DIM).pack(side="left", padx=(12, 4), pady=8)
@@ -538,9 +430,6 @@ class MoonshineGUI(ctk.CTk):
         self.suffix_menu.pack(side="left", padx=4, pady=8)
         self._method_callback = None
         self._suffix_callback = None
-
-        # Model size selector - paired directly under Engine (same card flow):
-        # the options + title always belong to the active engine.
         model_frame = ctk.CTkFrame(live, fg_color=BG_CARD, corner_radius=10)
         model_frame.grid(row=5, column=0, sticky="ew", padx=8, pady=(0, 6))
         self.model_title_label = ctk.CTkLabel(model_frame, text="Model:",
@@ -561,23 +450,18 @@ class MoonshineGUI(ctk.CTk):
         self._model_value_map = {}
         self.model_frame = model_frame
         self.engine_frame = engine_frame
-
         footer = ctk.CTkFrame(self, fg_color="transparent")
         footer.grid(row=3, column=0, sticky="ew", padx=20, pady=(0, 12))
         self._footer_label = ctk.CTkLabel(
             footer, text="Moonshine v2 + Canary-1B + Whisper Large v3 \u2022 On-device \u2022 No API keys",
             font=("Segoe UI", 10), text_color=FG_DIM)
         self._footer_label.pack()
-
         self._build_srt_tab(srt_tab)
         try:
             self._fix_menu_text()
         except Exception:
             pass
-
     def set_footer_version(self, version: str):
-        """Append the build version to the footer (identifies the checkout
-        at a glance - no more guessing which release a screenshot runs)."""
         try:
             base = "Moonshine v2 + Canary-1B + Whisper Large v3 \u2022 On-device \u2022 No API keys"
             v = str(version or "").strip()
@@ -585,8 +469,6 @@ class MoonshineGUI(ctk.CTk):
                 text=f"{base} \u2022 v{v}" if v else base)
         except Exception:
             pass
-
-    # ---------------- SRT File tab ----------------
     def _build_srt_tab(self, tab):
         import os as _os
         try:
@@ -596,19 +478,15 @@ class MoonshineGUI(ctk.CTk):
         except Exception:
             max_cpu = _os.cpu_count() or 4
             def_cpu = max(1, int(round(max_cpu * 0.8)))
-
         self._srt_max_cpu = max(1, int(max_cpu))
         self._srt_start_cb = None
         self._srt_cancel_cb = None
-        self._srt_input_paths: list = []  # batch queue (ordered, may repeat)
-        self._srt_file_status: dict = {}  # queue index -> status text
+        self._srt_input_paths: list = []
+        self._srt_file_status: dict = {}
         self._srt_running = False
-
         scroll = ctk.CTkScrollableFrame(tab, fg_color="transparent")
         scroll.pack(fill="both", expand=True, padx=4, pady=4)
         scroll.grid_columnconfigure(0, weight=1)
-
-        # File drop card (batch queue)
         file_card = ctk.CTkFrame(scroll, fg_color=BG_CARD, corner_radius=12)
         file_card.grid(row=0, column=0, sticky="ew", padx=4, pady=(0, 6))
         file_card.grid_columnconfigure(0, weight=1)
@@ -620,11 +498,10 @@ class MoonshineGUI(ctk.CTk):
                                        corner_radius=8, height=44,
                                        activate_scrollbars=False, wrap="word")
         self.srt_drop.pack(fill="x", padx=10, pady=(0, 6))
-        self.srt_drop.insert("1.0", "Drag && drop video/audio files here,\nor click Browse Files...")
+        self.srt_drop.insert("1.0", "Drag & drop video/audio files here,\nor click Browse Files...")
         self.srt_drop.configure(state="disabled")
         self._srt_dnd_ok = self._enable_drop(self.srt_drop)
         self._enable_drop(file_card)
-
         import tkinter as _tk
         _listrow = ctk.CTkFrame(file_card, fg_color="transparent")
         _listrow.pack(fill="x", padx=10, pady=(0, 6))
@@ -646,22 +523,19 @@ class MoonshineGUI(ctk.CTk):
             self._enable_drop(self.srt_file_list)
         except Exception:
             pass
-
         fbtn = ctk.CTkFrame(file_card, fg_color="transparent")
         fbtn.pack(fill="x", padx=10, pady=(0, 10))
         fbtn.grid_columnconfigure(0, weight=1)
         fbtn.grid_columnconfigure(1, weight=1)
         self.srt_browse_btn = ctk.CTkButton(fbtn, text="Browse Files...", font=("Segoe UI", 12),
-                      fg_color=ACCENT, hover_color=ACCENT_DARK, height=36,
-                      corner_radius=8, text_color=BTN_TEXT, command=self._srt_browse_file)
+                                            fg_color=ACCENT, hover_color=ACCENT_DARK, height=36,
+                                            corner_radius=8, text_color=BTN_TEXT, command=self._srt_browse_file)
         self.srt_browse_btn.grid(row=0, column=0, padx=(0, 4), sticky="ew")
         self.srt_clear_btn = ctk.CTkButton(fbtn, text="Clear", font=("Segoe UI", 12),
-                      fg_color=BTN_DIM, hover_color=BTN_DIM_HOVER, height=36,
-                      corner_radius=8, text_color=FG_SECONDARY,
-                      command=self._srt_clear_file)
+                                           fg_color=BTN_DIM, hover_color=BTN_DIM_HOVER, height=36,
+                                           corner_radius=8, text_color=FG_SECONDARY,
+                                           command=self._srt_clear_file)
         self.srt_clear_btn.grid(row=0, column=1, padx=(4, 0), sticky="ew")
-
-        # Output dir card (default = source folder)
         out_card = ctk.CTkFrame(scroll, fg_color=BG_CARD, corner_radius=12)
         out_card.grid(row=5, column=0, sticky="ew", padx=4, pady=(0, 6))
         out_card.grid_columnconfigure(0, weight=1)
@@ -681,8 +555,6 @@ class MoonshineGUI(ctk.CTk):
                       corner_radius=8, text_color=FG_SECONDARY,
                       command=self._srt_browse_outdir
                       ).grid(row=0, column=1, sticky="e")
-
-        # Engine + CPU card
         perf_card = ctk.CTkFrame(scroll, fg_color=BG_CARD, corner_radius=12)
         perf_card.grid(row=6, column=0, sticky="ew", padx=4, pady=(0, 6))
         perf_card.grid_columnconfigure(1, weight=1)
@@ -707,7 +579,6 @@ class MoonshineGUI(ctk.CTk):
         self.srt_cpu_slider.grid(row=2, column=0, columnspan=2, sticky="ew", padx=12, pady=(2, 8))
         self.srt_cpu_slider.set(def_cpu)
         if self._srt_max_cpu <= 1:
-            # from_==to_==1 is a degenerate slider (Tcl error risk) - lock it.
             try:
                 self.srt_cpu_slider.configure(state="disabled")
             except Exception:
@@ -715,8 +586,6 @@ class MoonshineGUI(ctk.CTk):
         self.srt_cpu_value = ctk.CTkLabel(perf_card, text=f"{def_cpu} threads",
                                           font=("Segoe UI", 11, "bold"), text_color=FG_PRIMARY)
         self.srt_cpu_value.grid(row=2, column=2, sticky="e", padx=(4, 12), pady=(2, 8))
-        # Compute device for Whisper/Canary inference (Moonshine is CPU-only).
-        # Greyed to "CPU only" when no NVIDIA dGPU is present.
         ctk.CTkLabel(perf_card, text="Compute:", font=("Segoe UI", 10, "bold"),
                      text_color=FG_DIM).grid(row=3, column=0, sticky="w", padx=(12, 4), pady=(2, 8))
         try:
@@ -737,9 +606,6 @@ class MoonshineGUI(ctk.CTk):
                 self.compute_menu.configure(state="disabled")
             except Exception:
                 pass
-        # Volume boost: single-pass loudnorm on the extraction wav so quiet
-        # / uneven recordings transcribe cleaner. Burn is unaffected (it
-        # re-encodes from the original source, never this wav).
         self.srt_norm_var = ctk.BooleanVar(value=False)
         self.srt_norm_check = ctk.CTkCheckBox(
             perf_card, text="Boost quiet audio (normalize before transcription)",
@@ -752,8 +618,6 @@ class MoonshineGUI(ctk.CTk):
                      font=("Segoe UI", 9), text_color=FG_DIM
                      ).grid(row=3, column=2, sticky="e", padx=(4, 12), pady=(2, 8))
         self._compute_callback = None
-
-        # Language card (SRT input/output - only for engines with language choice)
         lang_card = ctk.CTkFrame(scroll, fg_color=BG_CARD, corner_radius=12)
         lang_card.grid(row=7, column=0, sticky="ew", padx=4, pady=(0, 6))
         lang_card.grid_columnconfigure(1, weight=1)
@@ -783,8 +647,6 @@ class MoonshineGUI(ctk.CTk):
         self._srt_input_lang_cb = None
         self._srt_output_lang_cb = None
         self.lang_card = lang_card
-
-        # Burn style card (subtitle size + frame preview before full encode)
         style_card = ctk.CTkFrame(scroll, fg_color=BG_CARD, corner_radius=12)
         style_card.grid(row=8, column=0, sticky="ew", padx=4, pady=(0, 6))
         style_card.grid_columnconfigure(1, weight=1)
@@ -823,9 +685,6 @@ class MoonshineGUI(ctk.CTk):
                      font=("Segoe UI", 9), text_color=FG_DIM, wraplength=420,
                      justify="left").grid(row=5, column=0, columnspan=4,
                                           sticky="w", padx=12, pady=(2, 8))
-        # Target size box (two-way with the kbps slider): type MB to set an
-        # exact manual bitrate, drag the slider to estimate MB back. Active
-        # only with 2+ past burns at this speed; otherwise informative.
         estrow = ctk.CTkFrame(style_card, fg_color="transparent")
         estrow.grid(row=6, column=0, columnspan=4, sticky="ew",
                     padx=12, pady=(2, 10))
@@ -853,8 +712,6 @@ class MoonshineGUI(ctk.CTk):
         self._burn_vbr_exact = None
         self._srt_preview_cb = None
         self._preview_running = False
-        # Sample controls: when no SRT exists yet, Preview transcribes just
-        # this slice (start mm:ss + length) instead of the whole video.
         ctk.CTkLabel(style_card, text="Sample from:",
                      font=("Segoe UI", 10), text_color=FG_DIM
                      ).grid(row=1, column=0, sticky="w", padx=(12, 4), pady=(2, 2))
@@ -873,7 +730,6 @@ class MoonshineGUI(ctk.CTk):
             values=["10s", "15s", "30s", "60s"], width=80,
             fg_color=BG_INPUT, button_color=ACCENT)
         self.sample_len_menu.grid(row=1, column=3, sticky="e", padx=(4, 12), pady=(2, 2))
-        # Burn speed: exact size (2-pass) vs fast / fastest single pass.
         ctk.CTkLabel(style_card, text="Burn speed:",
                      font=("Segoe UI", 10), text_color=FG_DIM
                      ).grid(row=2, column=0, sticky="w", padx=(12, 4), pady=(2, 2))
@@ -902,8 +758,6 @@ class MoonshineGUI(ctk.CTk):
         self._has_nvenc = bool(_nv_any or _nv_hevc)
         self._has_nvenc_hevc = bool(_nv_hevc)
         if not self._has_nvenc:
-            # CPU-only box: offer CPU speeds only instead of dangling GPU
-            # rows that would just revert on pick.
             _cpu_only = [v for v in _speed_vals if "NVENC" not in v]
             if _cpu_only:
                 _speed_vals = _cpu_only
@@ -915,8 +769,6 @@ class MoonshineGUI(ctk.CTk):
             command=self._on_burn_speed_changed)
         self.burn_speed_menu.grid(row=2, column=1, sticky="ew",
                                   padx=4, pady=(2, 2))
-        # Codec axis: H.264 vs HEVC applies to the NVENC speeds only (CPU
-        # speeds are x264 by definition). The ⓘ button compares everything.
         self.burn_codec_var = ctk.StringVar(value="H.264")
         self.burn_codec_menu = ctk.CTkOptionMenu(
             style_card, variable=self.burn_codec_var,
@@ -937,9 +789,6 @@ class MoonshineGUI(ctk.CTk):
         self.burn_speed_desc.grid(row=4, column=0, columnspan=4,
                                   sticky="w", padx=12, pady=(0, 2))
         self._refresh_burn_speed_desc()
-        # Manual video bitrate: Auto (size-match budget) or a fixed kbps.
-        # Manual trades the size guarantee for control - the log reports the
-        # expected total so the trade is explicit before encoding.
         ctk.CTkLabel(style_card, text="Video bitrate:",
                      font=("Segoe UI", 10), text_color=FG_DIM
                      ).grid(row=3, column=0, sticky="w", padx=(12, 4), pady=(2, 2))
@@ -964,8 +813,6 @@ class MoonshineGUI(ctk.CTk):
             self.burn_vbr_slider.configure(state="disabled")
         except Exception:
             pass
-
-        # Progress card
         prog_card = ctk.CTkFrame(scroll, fg_color=BG_CARD, corner_radius=12)
         prog_card.grid(row=4, column=0, sticky="ew", padx=4, pady=(0, 6))
         prog_card.grid_columnconfigure(0, weight=1)
@@ -976,7 +823,6 @@ class MoonshineGUI(ctk.CTk):
         self.srt_pct = ctk.CTkLabel(toprow, text="0%",
                                     font=("Segoe UI", 11, "bold"), text_color=FG_SECONDARY)
         self.srt_pct.pack(side="right")
-        # Learned-history reset: SRT timing vs burn timing+size estimates.
         self.burn_hist_btn = ctk.CTkButton(
             toprow, text="↺ Burn", width=66, height=24, font=("Segoe UI", 10),
             fg_color=BTN_DIM, hover_color=BTN_DIM_HOVER, text_color=FG_SECONDARY,
@@ -988,7 +834,7 @@ class MoonshineGUI(ctk.CTk):
             corner_radius=6, command=self._on_clear_srt_hist)
         self.srt_hist_btn.pack(side="right", padx=(0, 6))
         self.srt_bar = ctk.CTkProgressBar(prog_card, fg_color=BG_INPUT,
-                                           progress_color=ACCENT, height=12,
+                                          progress_color=ACCENT, height=12,
                                           corner_radius=7)
         self.srt_bar.pack(fill="x", padx=12, pady=(0, 4))
         self.srt_bar.set(0)
@@ -997,13 +843,11 @@ class MoonshineGUI(ctk.CTk):
                                        wraplength=400, justify="left")
         self.srt_status.pack(anchor="w", padx=12, pady=(0, 4))
         self.srt_log_box = ctk.CTkTextbox(prog_card, font=("Consolas", 10),
-                                           fg_color=BG_INPUT, text_color=FG_SECONDARY,
-                                           corner_radius=8, height=88, wrap="word")
+                                          fg_color=BG_INPUT, text_color=FG_SECONDARY,
+                                          corner_radius=8, height=88, wrap="word")
         self.srt_log_box.pack(fill="x", padx=10, pady=(0, 6))
         self.srt_log_box.insert("1.0", "SRT log ready.\n")
         self.srt_log_box.configure(state="disabled")
-
-        # Action buttons - one row: primary action | Cancel | Open Folder.
         abtn = ctk.CTkFrame(scroll, fg_color="transparent")
         abtn.grid(row=1, column=0, sticky="ew", padx=4, pady=(0, 6))
         abtn.grid_columnconfigure(0, weight=3)
@@ -1033,10 +877,8 @@ class MoonshineGUI(ctk.CTk):
                       command=self._on_srt_open_folder
                       ).grid(row=0, column=2, padx=(4, 0), sticky="ew")
         self._srt_burn_cb = None
-        self._srt_mode = "generate"  # single-button rule: generate | burn
+        self._srt_mode = "generate"
         self._srt_running_mode = "generate"
-        # One-click hardcode: with SRTs missing, generate them and burn the
-        # MP4s in the same run (files already carrying an SRT burn too).
         self.burn_after_var = ctk.BooleanVar(value=False)
         self.burn_after_check = ctk.CTkCheckBox(
             scroll, text="Burn MP4 automatically after SRT (one-click hardcode)",
@@ -1044,9 +886,6 @@ class MoonshineGUI(ctk.CTk):
             text_color=FG_PRIMARY, fg_color=ACCENT,
             command=self._on_srt_opt_toggled)
         self.burn_after_check.grid(row=2, column=0, sticky="w", padx=16, pady=(0, 2))
-        # Finish behavior: checked shutdown powers the PC off 60s after a
-        # FULLY successful job (abort with `shutdown /a`); otherwise an
-        # optional pop-up + window focus fires once per finished job.
         finrow = ctk.CTkFrame(scroll, fg_color="transparent")
         finrow.grid(row=3, column=0, sticky="ew", padx=16, pady=(0, 6))
         self.shutdown_var = ctk.BooleanVar(value=False)
@@ -1065,10 +904,7 @@ class MoonshineGUI(ctk.CTk):
         self.alert_check.pack(side="left")
         self._srt_opt_callback = None
         self._show_srt_action("generate")
-
     def _on_tab_changed(self, value=None):
-        # CTkTabview calls command() without args on some versions, with the
-        # tab name on others - resolve via get() either way.
         try:
             name = self.tabs.get()
         except Exception:
@@ -1078,22 +914,15 @@ class MoonshineGUI(ctk.CTk):
                 self._tab_callback(name)
             except Exception:
                 pass
-
     def set_tab_callback(self, cb: Callable):
         self._tab_callback = cb if callable(cb) else None
-
     def set_active_tab(self, name: str):
         try:
             if name in ("Live", "SRT File"):
                 self.tabs.set(name)
         except Exception:
             pass
-
     def _fix_menu_text(self):
-        """Option menus are built without text colors (CTk's baked default
-        is near-invisible on light inputs), so pin them to palette names
-        here in one place instead of at a dozen creation sites. Values are
-        palette names, so the theme walker remaps them on toggle."""
         for _mn in ("engine_menu", "canary_task_menu", "canary_lang_menu",
                     "method_menu", "suffix_menu", "model_menu",
                     "compute_menu", "srt_input_lang_menu",
@@ -1106,10 +935,8 @@ class MoonshineGUI(ctk.CTk):
                                  dropdown_text_color=FG_PRIMARY)
             except Exception:
                 pass
-
     def set_theme_callback(self, cb: Optional[Callable]):
         self._theme_callback = cb if callable(cb) else None
-
     def _on_theme_toggled(self):
         try:
             cur = getattr(self, "_theme_mode", None) or THEME_MODE
@@ -1126,14 +953,7 @@ class MoonshineGUI(ctk.CTk):
                 cb(nxt)
             except Exception:
                 pass
-
     def set_theme(self, mode: str = "dark"):
-        """Swap the whole UI between dark/light, live (no restart).
-
-        Reassigns the palette globals (widgets created later build
-        correctly) and remaps every live widget's current color options
-        (existing widgets follow). Unknown values pass through. The ☀/☾
-        button and canvases refresh as part of the swap. Never raises."""
         global THEME_MODE
         mode = "light" if str(mode or "").lower() == "light" else "dark"
         pal = THEMES[mode]
@@ -1163,10 +983,6 @@ class MoonshineGUI(ctk.CTk):
             self._remap_theme(self, forward)
         except Exception:
             pass
-        # Scrollable frames: the interior frame + canvas carry a bg baked
-        # at build (plain tkinter canvas-window items, invisible to the
-        # traversal above) - without this the card gaps keep last theme's
-        # color as dark rules between light cards.
         try:
             for _w in self._walk_widgets(self):
                 try:
@@ -1177,9 +993,6 @@ class MoonshineGUI(ctk.CTk):
                 if not _is_scroll:
                     continue
                 try:
-                    # Plain tkinter configure: CTk's own configure() rejects
-                    # (or drops) the raw "bg" key, but underneath this IS a
-                    # tkinter.Frame whose bg paints the card gaps.
                     import tkinter as _tk
                     _tk.Frame.configure(_w, bg=BG_DARK)
                 except Exception:
@@ -1190,10 +1003,6 @@ class MoonshineGUI(ctk.CTk):
                     pass
         except Exception:
             pass
-        # The tab strip is invisible to winfo_children traversal (verified:
-        # .!ctktabview.!ctksegmentedbutton is never yielded), so the walker
-        # above cannot reach it - configure it explicitly from the already
-        # swapped globals (correct in both directions).
         try:
             _sb2 = getattr(getattr(self, "tabs", None),
                            "_segmented_button", None)
@@ -1211,10 +1020,6 @@ class MoonshineGUI(ctk.CTk):
             self._theme_btn.configure(text="☾" if mode == "light" else "☀")
         except Exception:
             pass
-        # Canvases read globals per redraw - force one now so nothing
-        # keeps last theme's pixels until the next level update. Their bg
-        # is set explicitly: the generic walker only covers options the
-        # widget reports via cget.
         try:
             if getattr(self, "meter", None) is not None:
                 try:
@@ -1231,9 +1036,7 @@ class MoonshineGUI(ctk.CTk):
         except Exception:
             pass
         return mode
-
     def _walk_widgets(self, widget):
-        """Yield widget + all descendants (winfo_children traversal)."""
         try:
             yield widget
         except Exception:
@@ -1248,10 +1051,7 @@ class MoonshineGUI(ctk.CTk):
                     yield sub
             except Exception:
                 continue
-
     def _remap_theme(self, widget, mapping):
-        """Depth-first recolor: any known color option currently holding a
-        mapped value is switched. Transparent/unknown values are skipped."""
         try:
             kids = list(widget.winfo_children())
         except Exception:
@@ -1286,7 +1086,6 @@ class MoonshineGUI(ctk.CTk):
                     widget.configure(**{opt: mapping[key]})
                 except Exception:
                     pass
-
     def _toggle_record(self):
         if self._is_recording:
             self._is_recording = False
@@ -1296,14 +1095,12 @@ class MoonshineGUI(ctk.CTk):
             self._is_recording = True
             if self._on_record_start:
                 threading.Thread(target=self._on_record_start, daemon=True).start()
-
     def _clear_history(self):
         self.history.clear()
         self.output_text.configure(state="normal")
         self.output_text.delete("1.0", "end")
         self.output_text.insert("1.0", "Cleared.")
         self.output_text.configure(state="disabled")
-
     def _copy_last(self):
         from input_sim import copy_to_clipboard
         self.output_text.configure(state="normal")
@@ -1311,23 +1108,20 @@ class MoonshineGUI(ctk.CTk):
         self.output_text.configure(state="disabled")
         if text and text not in ("Waiting for voice input...", "Cleared."):
             copy_to_clipboard(text)
-
     def set_recording_state(self, recording: bool):
         self._is_recording = recording
         if recording:
             self.record_btn.configure(text="\u25A0  STOP", fg_color=DANGER,
-                                       hover_color=BTN_DANGER_HOVER)
+                                      hover_color=BTN_DANGER_HOVER)
             self.status_badge.set_status("Recording", DANGER)
             self.waveform.start_animation()
         else:
             self.record_btn.configure(text="\u25CF  RECORD", fg_color=ACCENT,
-                                       hover_color=ACCENT_DARK)
+                                      hover_color=ACCENT_DARK)
             self.waveform.stop_animation()
             self.meter.set_level(0)
-
     def set_status(self, text: str, color: str = FG_SECONDARY):
         self.status_badge.set_status(text, color)
-
     def set_transcription(self, text: str):
         self.output_text.configure(state="normal")
         self.output_text.delete("1.0", "end")
@@ -1337,39 +1131,31 @@ class MoonshineGUI(ctk.CTk):
             import datetime
             ts = datetime.datetime.now().strftime("%H:%M:%S")
             self.history.add_entry(text, ts)
-
     def update_level(self, level: float):
         self.meter.set_level(level)
         self.waveform.set_amplitude(level)
-
     def _on_method_changed(self, value):
         if self._method_callback:
             self._method_callback(value)
-
     def _on_suffix_changed(self, value):
         if self._suffix_callback:
             self._suffix_callback(value)
-
     def _on_model_changed(self, value):
         try:
             self._refresh_srt_engine_label()
         except Exception:
             pass
         if self._model_callback:
-            # Menu shows badged labels ("Large v3 (3GB, best) ✓"); the app
-            # always gets the BASE label back.
             try:
                 base = (self._model_value_map or {}).get(value, value)
             except Exception:
                 base = value
             self._model_callback(base)
-
     def _refresh_srt_engine_label(self):
         try:
             eng = self.engine_var.get()
             if eng in ("Canary-1B", "Whisper Large v3"):
                 _t = self.canary_task_var.get()
-                # SRT job uses the SRT-tab languages, not the Live-tab Src.
                 try:
                     _s, _o = self.get_srt_lang_codes()
                 except Exception:
@@ -1385,13 +1171,9 @@ class MoonshineGUI(ctk.CTk):
                 self.set_srt_engine_label(f"Moonshine v2 ({_mbase})")
         except Exception:
             pass
-
     def _on_engine_changed(self, value):
-        # Update UI state immediately
         self._refresh_srt_engine_label()
         is_heavy = (value in ("Canary-1B", "Whisper Large v3"))
-        # Moonshine sizes + Whisper downloadable sizes share the Model menu;
-        # Canary-1B has one fixed model. Task/Src serve Canary + Whisper.
         try:
             self.model_menu.configure(state=self._model_menu_state(value))
             self.canary_task_menu.configure(state="normal" if is_heavy else "disabled")
@@ -1400,49 +1182,34 @@ class MoonshineGUI(ctk.CTk):
             pass
         if self._engine_callback:
             self._engine_callback(value)
-        # AFTER the app callback: config now holds the NEW engine, so the
-        # coercion callback below routes to the correct engine's keys.
-        # (Doing it before would save e.g. Whisper's Src under Canary.)
         try:
             self.refresh_lang_options(value)
         except Exception:
             pass
-
     def _on_canary_task_changed(self, value):
         self._refresh_srt_engine_label()
         if self._canary_task_callback:
             self._canary_task_callback(value)
-
     def _on_canary_lang_changed(self, value):
         self._refresh_srt_engine_label()
         if self._canary_lang_callback:
             self._canary_lang_callback(value)
-
     def set_settings(self, method: str, suffix: str, method_cb: Callable, suffix_cb: Callable):
         self._method_callback = method_cb if callable(method_cb) else None
         self._suffix_callback = suffix_cb if callable(suffix_cb) else None
         self.method_var.set(method if method in ["clipboard", "unicode"] else "clipboard")
         self.suffix_var.set(suffix if suffix in ["none", "space", "newline", "period_space"] else "none")
-
     def set_model(self, arch: int, callback: Callable):
         self.set_model_options(
             list(MODEL_CHOICES.keys()),
             MODEL_CHOICES_REV.get(arch, "Medium Streaming (110MB, best)"),
             callback)
-
     @staticmethod
     def _model_menu_state(engine_kind: str) -> str:
-        # Model row is usable for Moonshine sizes and Whisper downloadable
-        # sizes; Canary-1B has a single fixed model.
         return ("normal" if engine_kind in ("Moonshine v2", "Whisper Large v3")
                 else "disabled")
-
     def set_model_options(self, values, current: str, callback: Callable,
                           status_fn: Optional[Callable] = None):
-        """Swap the Model row to another engine's choices (Whisper sizes /
-        Canary fixed label) and select `current`. status_fn(base_label) may
-        return a badge ("✓" downloaded / "↓" needs download); the app
-        callback always receives the BASE label back."""
         self._model_callback = callback if callable(callback) else None
         displays, mapping = apply_badge_map(list(values or []), status_fn)
         self._model_value_map = mapping
@@ -1459,31 +1226,20 @@ class MoonshineGUI(ctk.CTk):
             self.model_var.set(want if want is not None else (displays[0] if displays else ""))
         except Exception:
             pass
-
     def set_model_title(self, engine_name: str):
         try:
             self.model_title_label.configure(text=f"Model ({engine_name}):")
         except Exception:
             pass
-
     def set_model_manage_callback(self, cb: Callable):
         self._model_manage_cb = cb if callable(cb) else None
-
     def _on_model_manage(self):
         if self._model_manage_cb:
             try:
                 self._model_manage_cb()
             except Exception:
                 pass
-
     def show_model_manager(self, get_data, on_delete, on_delete_all):
-        """Model storage dialog.
-
-        get_data() -> {"items": [{engine, kind, id, label, size (bytes|None),
-          downloaded, in_use}], "total": bytes}. on_delete(engine, kind, id)
-        -> (ok, msg); on_delete_all() -> (ok, msg). All guarded; the dialog
-        rebuilds its rows after every action.
-        """
         try:
             from tkinter import messagebox as _mb
         except Exception:
@@ -1516,7 +1272,6 @@ class MoonshineGUI(ctk.CTk):
                 pass
         except Exception:
             pass
-
         header = ctk.CTkFrame(win, fg_color="transparent")
         header.pack(fill="x", padx=16, pady=(14, 4))
         ctk.CTkLabel(header, text="Downloaded models",
@@ -1528,16 +1283,13 @@ class MoonshineGUI(ctk.CTk):
         ctk.CTkLabel(win, text="✓ downloaded   ↓ downloads on first pick",
                      font=("Segoe UI", 10), text_color=FG_DIM
                      ).pack(anchor="w", padx=16)
-
         body = ctk.CTkScrollableFrame(win, fg_color="transparent")
         body.pack(fill="both", expand=True, padx=12, pady=4)
         body.grid_columnconfigure(0, weight=1)
-
         foot = ctk.CTkFrame(win, fg_color="transparent")
         foot.pack(fill="x", padx=16, pady=(4, 14))
         foot.grid_columnconfigure(0, weight=1)
         foot.grid_columnconfigure(1, weight=1)
-
         def _gb(n):
             try:
                 v = float(n or 0)
@@ -1550,7 +1302,6 @@ class MoonshineGUI(ctk.CTk):
             if v > 0:
                 return f"{int(v)} B"
             return "—"
-
         def _rebuild():
             try:
                 for child in body.winfo_children():
@@ -1611,13 +1362,12 @@ class MoonshineGUI(ctk.CTk):
                         text_color=FG_PRIMARY if can_del else FG_DIM,
                         state="normal" if can_del else "disabled",
                         command=lambda e=eng, k=it.get("kind"),
-                                       i=it.get("id"), n=name,
-                                       s=it.get("size"): _ask_delete(e, k, i, n, s))
+                        i=it.get("id"), n=name,
+                        s=it.get("size"): _ask_delete(e, k, i, n, s))
                     btn.grid(row=0, column=1, rowspan=2, padx=10, pady=6, sticky="e")
                     row += 1
                 except Exception:
                     continue
-
         def _ask_delete(eng, kind, ident, name, size):
             if _mb is None:
                 return
@@ -1642,7 +1392,6 @@ class MoonshineGUI(ctk.CTk):
             except Exception:
                 pass
             _rebuild()
-
         def _ask_delete_all():
             if _mb is None:
                 return
@@ -1673,7 +1422,6 @@ class MoonshineGUI(ctk.CTk):
             except Exception:
                 pass
             _rebuild()
-
         ctk.CTkButton(foot, text="Delete all downloaded", font=("Segoe UI", 12),
                       fg_color=DANGER, hover_color=BTN_DANGER_HOVER, height=38,
                       text_color=BTN_TEXT,
@@ -1690,16 +1438,13 @@ class MoonshineGUI(ctk.CTk):
             win.focus_force()
         except Exception:
             pass
-
     def set_engine(self, engine: str, task: str, src_lang: str, engine_cb: Callable, task_cb: Callable, lang_cb: Callable):
         self._engine_callback = engine_cb if callable(engine_cb) else None
         self._canary_task_callback = task_cb if callable(task_cb) else None
         self._canary_lang_callback = lang_cb if callable(lang_cb) else None
         self.engine_var.set(engine if engine in ENGINE_CHOICES else "Moonshine v2")
-        # Shared Task/Src widgets serve Canary + Whisper (both use transcribe/translate)
         self.canary_task_var.set(task if task in CANARY_TASKS else "transcribe")
         self.canary_lang_var.set(src_lang if src_lang in CANARY_LANGS else "auto")
-        # Apply initial enable/disable
         is_heavy = (engine in ("Canary-1B", "Whisper Large v3"))
         try:
             self.model_menu.configure(state=self._model_menu_state(engine))
@@ -1708,38 +1453,30 @@ class MoonshineGUI(ctk.CTk):
         except Exception:
             pass
         self._refresh_srt_engine_label()
-        # Restrict menus to this engine's capabilities (coerces invalid
-        # saved values, e.g. Canary Src "ja" -> "auto")
         try:
             self.refresh_lang_options(engine)
         except Exception:
             pass
-
     def set_model_status(self, text: str, color: str = WARNING):
         self.set_status(text, color)
-
     def set_record_callback(self, on_start: Callable, on_stop: Callable):
         self._on_record_start = on_start if callable(on_start) else None
         self._on_record_stop = on_stop if callable(on_stop) else None
-
-    # ---------------- SRT tab helpers ----------------
     def _enable_drop(self, widget) -> bool:
         try:
             from tkinterdnd2 import DND_FILES
             import tkinterdnd2.TkinterDnD as _dndmod
-            _dndmod._require(widget)  # load tkdnd Tcl extension into this interpreter
+            _dndmod._require(widget)
             _dndmod.DnDWrapper.drop_target_register(widget, DND_FILES)
             _dndmod.DnDWrapper.dnd_bind(widget, "<<Drop>>", self._on_drop_files)
             return True
         except Exception:
             return False
-
     def _parse_drop(self, data: str):
         import re as _re
         data = (data or "").strip()
         if not data:
             return []
-        # tkinterdnd2 wraps space-containing paths in {}
         parts = _re.findall(r"\{([^}]+)\}|(\S+)", data)
         out = []
         for a, b in parts:
@@ -1747,7 +1484,6 @@ class MoonshineGUI(ctk.CTk):
             if p:
                 out.append(p)
         return out
-
     def _on_drop_files(self, event):
         try:
             files = self._parse_drop(event.data)
@@ -1755,7 +1491,6 @@ class MoonshineGUI(ctk.CTk):
                 self.add_srt_files(files)
         except Exception:
             pass
-
     def _srt_browse_file(self):
         try:
             from tkinter import filedialog
@@ -1768,10 +1503,7 @@ class MoonshineGUI(ctk.CTk):
                 self.add_srt_files(list(paths))
         except Exception:
             pass
-
     def add_srt_files(self, paths) -> int:
-        """Append files to the batch queue (skips unsupported types with a
-        notice). Returns the number added."""
         try:
             from srt import SUPPORTED_EXTS as _exts
         except Exception:
@@ -1819,7 +1551,6 @@ class MoonshineGUI(ctk.CTk):
         except Exception:
             pass
         return added
-
     def _refresh_srt_list(self):
         try:
             self.srt_file_list.delete(0, "end")
@@ -1836,33 +1567,27 @@ class MoonshineGUI(ctk.CTk):
             if n:
                 self.srt_drop.insert(
                     "1.0", f"{n} file(s) queued - runs one by one.\n"
-                           "Drop more files or Browse Files... to add.")
+                    "Drop more files or Browse Files... to add.")
             else:
                 self.srt_drop.insert(
-                    "1.0", "Drag && drop video/audio files here,\nor click Browse Files...")
+                    "1.0", "Drag & drop video/audio files here,\nor click Browse Files...")
             self.srt_drop.configure(state="disabled")
         except Exception:
             pass
-
     def get_srt_input_paths(self) -> list:
         return [p for p in list(self._srt_input_paths or []) if p]
-
     def _srt_out_dir(self) -> str:
         try:
             return self.srt_out_entry.get().strip()
         except Exception:
             return ""
-
     @staticmethod
     def _safe_exists(fn, path_obj, out_dir) -> bool:
         try:
             return bool(fn(path_obj, out_dir).exists())
         except Exception:
             return False
-
     def _srt_existing_outputs(self, kind: str):
-        """{queue_index: out_path} for files whose SRT (kind='srt') or burned
-        MP4 (kind='burn') already exists. Pure check, no side effects."""
         found = {}
         try:
             from pathlib import Path as _P
@@ -1880,12 +1605,7 @@ class MoonshineGUI(ctk.CTk):
         except Exception:
             pass
         return found
-
     def _show_srt_action(self, mode: str):
-        """Single-button rule: exactly one primary action is visible.
-
-        "generate" -> big green Generate SRT; "burn" (every queued file
-        already has an SRT) -> the same slot becomes Convert to MP4."""
         try:
             gen, brn = self.srt_start_btn, self.srt_burn_btn
         except Exception:
@@ -1914,16 +1634,12 @@ class MoonshineGUI(ctk.CTk):
             self._srt_mode = mode
         except Exception:
             pass
-
     def _set_burn_after_enabled(self, enabled: bool):
-        """The one-click-hardcode tickbox only makes sense while generating."""
         try:
             self.burn_after_check.configure(state="normal" if enabled else "disabled")
         except Exception:
             pass
-
     def get_srt_options(self) -> dict:
-        """Snapshot of the four SRT-tab switches (GUI thread only)."""
         try:
             norm = bool(self.srt_norm_var.get())
         except Exception:
@@ -1942,9 +1658,7 @@ class MoonshineGUI(ctk.CTk):
             al = True
         return {"srt_norm": norm, "burn_after": after,
                 "auto_shutdown": sd, "completion_alert": al}
-
     def set_srt_options(self, opts=None, callback: Optional[Callable] = None):
-        """Restore the four switches from config at startup. Never raises."""
         o = opts or {}
         for var_name, key, dflt in (("srt_norm_var", "srt_norm", False),
                                     ("burn_after_var", "burn_after", False),
@@ -1957,7 +1671,6 @@ class MoonshineGUI(ctk.CTk):
             except Exception:
                 pass
         self._srt_opt_callback = callback if callable(callback) else None
-
     def _on_srt_opt_toggled(self):
         cb = getattr(self, "_srt_opt_callback", None)
         if cb:
@@ -1965,10 +1678,7 @@ class MoonshineGUI(ctk.CTk):
                 cb(self.get_srt_options())
             except Exception:
                 pass
-
     def notify_completion(self, title: str, msg: str):
-        """One-shot finish alert (GUI thread only): bring the window up and
-        pop a message box. Topmost is flashed, never left on."""
         try:
             self.lift()
         except Exception:
@@ -1990,18 +1700,11 @@ class MoonshineGUI(ctk.CTk):
             self.focus_force()
         except Exception:
             pass
-
     def update_action_states(self, touch_progress: bool = True):
-        """Single-button rule (only when idle - set_srt_running owns states
-        mid-run): every queued file already has an SRT -> the primary slot
-        becomes Convert to MP4; otherwise it is Generate SRT (plus the
-        burn-after tickbox for one-click hardcode)."""
         if getattr(self, "_srt_running", False):
             return
         try:
             paths = self.get_srt_input_paths()
-            # Queue/outdir membership drives the estimate inputs - refresh
-            # only when they actually change (slider/speed refresh directly).
             try:
                 _sig = (tuple(paths), self._srt_out_dir())
             except Exception:
@@ -2051,10 +1754,7 @@ class MoonshineGUI(ctk.CTk):
                     self.set_srt_progress(0, "Ready - Generate SRT first")
         except Exception:
             pass
-
     def set_srt_file_status(self, index: int, status: str):
-        """Update one queue row's status text (safe from any thread via
-        the app's after() pump - but defensive try/except anyway)."""
         try:
             self._srt_file_status[int(index)] = str(status or "")
             self._refresh_srt_list()
@@ -2064,10 +1764,9 @@ class MoonshineGUI(ctk.CTk):
                 pass
         except Exception:
             pass
-
     def _srt_clear_file(self):
         if getattr(self, "_srt_running", False):
-            return  # never wipe the queue mid-run
+            return
         self._srt_input_paths = []
         self._srt_file_status = {}
         self._refresh_srt_list()
@@ -2075,7 +1774,6 @@ class MoonshineGUI(ctk.CTk):
             self.update_action_states()
         except Exception:
             pass
-
     def _srt_browse_outdir(self):
         try:
             from tkinter import filedialog
@@ -2083,24 +1781,19 @@ class MoonshineGUI(ctk.CTk):
             if d:
                 self.srt_out_entry.delete(0, "end")
                 self.srt_out_entry.insert(0, d)
-                # Existence of SRTs depends on the folder - re-evaluate.
                 try:
                     self.update_action_states()
                 except Exception:
                     pass
         except Exception:
             pass
-
     def _on_compute_changed(self, value):
         if self._compute_callback:
             try:
                 self._compute_callback(value)
             except Exception:
                 pass
-
     def set_compute(self, code: str, callback: Callable):
-        """code in auto/cpu/gpu. On boxes without dGPU the menu is a locked
-        'CPU only' row and any code maps to it."""
         self._compute_callback = callback if callable(callback) else None
         try:
             vals = list(self.compute_menu.cget("values"))
@@ -2114,7 +1807,6 @@ class MoonshineGUI(ctk.CTk):
             self.compute_var.set(want)
         except Exception:
             pass
-
     def _on_srt_cpu_changed(self, value):
         try:
             n = max(1, int(round(float(value))))
@@ -2122,7 +1814,6 @@ class MoonshineGUI(ctk.CTk):
             n = 1
         pct = int(round(n / max(1, self._srt_max_cpu) * 100))
         self.srt_cpu_value.configure(text=f"{n} threads ({pct}%)")
-
     def _on_burn_fontsize_changed(self, value):
         try:
             n = max(12, min(32, int(round(float(value)))))
@@ -2132,16 +1823,12 @@ class MoonshineGUI(ctk.CTk):
             self.burn_font_value.configure(text=f"{n}")
         except Exception:
             pass
-
     def _slider_kbps(self) -> int:
-        """Coarse slider value snapped to 100kbps steps."""
         try:
             return max(300, min(10000, int(round(float(self.burn_vbr_slider.get()) / 100.0)) * 100))
         except Exception:
             return 2000
-
     def _update_burn_vbr_display(self):
-        """Bitrate readout: auto, exact typed kbps, or slider value."""
         try:
             auto = bool(self.burn_vbr_auto_var.get())
         except Exception:
@@ -2158,9 +1845,7 @@ class MoonshineGUI(ctk.CTk):
             self.burn_vbr_value.configure(text=text)
         except Exception:
             pass
-
     def _on_burn_vbr_changed(self, value):
-        # A slider drag always wins back control from a typed exact value.
         try:
             self._burn_vbr_exact = None
         except Exception:
@@ -2173,7 +1858,6 @@ class MoonshineGUI(ctk.CTk):
             self._refresh_burn_est()
         except Exception:
             pass
-
     def _on_burn_vbr_toggled(self):
         try:
             auto = bool(self.burn_vbr_auto_var.get())
@@ -2191,11 +1875,7 @@ class MoonshineGUI(ctk.CTk):
             self._refresh_burn_est()
         except Exception:
             pass
-
     def get_burn_vbr(self):
-        """(auto_bool, kbps) manual video-bitrate snapshot. A typed MB
-        target sets an exact 1kbps value that rules until the slider moves
-        again (the slider only speaks in 100kbps steps)."""
         try:
             auto = bool(self.burn_vbr_auto_var.get())
         except Exception:
@@ -2209,19 +1889,13 @@ class MoonshineGUI(ctk.CTk):
         if exact >= 300:
             return False, min(10000, exact)
         return False, self._slider_kbps()
-
     def get_burn_codec(self) -> str:
-        """'hevc' or 'h264'. Only meaningful for NVENC speeds (CPU speeds
-        always resolve to x264 downstream); the menu itself is disabled
-        for them."""
         try:
             v = (self.burn_codec_var.get() or "").strip().lower()
         except Exception:
             return "h264"
         return "hevc" if ("hevc" in v or v == "h265") else "h264"
-
     def set_burn_codec(self, code: str):
-        """Restore the codec menu from config at startup. Never raises."""
         try:
             want = "HEVC (H.265)" if str(code or "").strip().lower() == "hevc" else "H.264"
             vals = list(self.burn_codec_menu.cget("values"))
@@ -2229,7 +1903,6 @@ class MoonshineGUI(ctk.CTk):
                 self.burn_codec_var.set(want)
         except Exception:
             pass
-
     def _on_burn_codec_changed(self, value=None):
         try:
             self._refresh_burn_speed_desc()
@@ -2239,20 +1912,12 @@ class MoonshineGUI(ctk.CTk):
             self._refresh_burn_est()
         except Exception:
             pass
-
     def _refresh_burn_codec_state(self):
-        """Codec menu is always available now: NVENC speeds switch
-        H.264/HEVC hardware encode, CPU speeds switch x264/x265 software
-        encode. (NVENC speeds themselves still need a GPU to run.)"""
         try:
             self.burn_codec_menu.configure(state="normal")
         except Exception:
             pass
-
     def show_burn_compare(self):
-        """ⓘ popup: speed × codec comparison matrix (accuracy, speed,
-        playback, best-for) so the trade-offs are visible without trial
-        burns. Read-only dialog, same look as the model manager."""
         try:
             _old = getattr(self, "_burn_compare_win", None)
             if _old is not None:
@@ -2290,7 +1955,7 @@ class MoonshineGUI(ctk.CTk):
                          text_color=FG_PRIMARY).pack(anchor="w", padx=16,
                                                      pady=(14, 2))
             ctk.CTkLabel(win, text="Typical figures — your content moves them; "
-                                   "the learner calibrates to your machine.",
+                         "the learner calibrates to your machine.",
                          font=("Segoe UI", 10), text_color=FG_DIM,
                          wraplength=640, justify="left").pack(anchor="w",
                                                               padx=16, pady=(0, 6))
@@ -2305,8 +1970,8 @@ class MoonshineGUI(ctk.CTk):
                 try:
                     ctk.CTkLabel(grid, text=h, font=("Segoe UI", 10, "bold"),
                                  text_color=ACCENT_GLOW).grid(
-                                     row=0, column=c, sticky="w",
-                                     padx=6, pady=(4, 2))
+                        row=0, column=c, sticky="w",
+                        padx=6, pady=(4, 2))
                 except Exception:
                     pass
             for r, row in enumerate(BURN_COMPARE_ROWS, start=1):
@@ -2316,16 +1981,16 @@ class MoonshineGUI(ctk.CTk):
                                      font=("Segoe UI", 10),
                                      text_color=FG_PRIMARY if c == 0 else FG_SECONDARY,
                                      wraplength=150, justify="left").grid(
-                                         row=r, column=c, sticky="nw",
-                                         padx=6, pady=2)
+                            row=r, column=c, sticky="nw",
+                            padx=6, pady=2)
                     except Exception:
                         pass
             try:
                 ctk.CTkLabel(grid, text=BURN_COMPARE_CODEC_NOTE,
                              font=("Segoe UI", 10), text_color=ACCENT_GLOW,
                              wraplength=640, justify="left").grid(
-                                 row=len(BURN_COMPARE_ROWS) + 1, column=0,
-                                 columnspan=6, sticky="w", padx=6, pady=(8, 2))
+                    row=len(BURN_COMPARE_ROWS) + 1, column=0,
+                    columnspan=6, sticky="w", padx=6, pady=(8, 2))
             except Exception:
                 pass
         except Exception:
@@ -2343,12 +2008,7 @@ class MoonshineGUI(ctk.CTk):
             win.focus_force()
         except Exception:
             pass
-
     def _refresh_burn_est(self):
-        """Recompute the learned output-size estimate (kbps/speed/queue
-        changed, or history just grew). Probing runs on a daemon worker -
-        Tk is only touched via after() on completion. Stale workers are
-        dropped by token."""
         try:
             token = int(getattr(self, "_burn_est_token", 0) or 0) + 1
             self._burn_est_token = token
@@ -2380,7 +2040,6 @@ class MoonshineGUI(ctk.CTk):
                        daemon=True).start()
         except Exception:
             pass
-
     def _burn_est_work(self, token, paths, out_dir, speed, vauto, vkbps,
                        vcodec="h264"):
         try:
@@ -2441,16 +2100,13 @@ class MoonshineGUI(ctk.CTk):
             self.after(0, lambda: self._apply_burn_est(token, res, ctx))
         except Exception:
             pass
-
     @staticmethod
     def _fmt_est_mb(nbytes) -> str:
-        """Short MB/GB text for the target-size box (matches box precision)."""
         try:
             mb = float(nbytes) / 1e6
         except Exception:
             return ""
         return f"{mb:.0f}" if mb >= 100 else f"{mb:.1f}"
-
     def _set_est_entry(self, text: str, enabled: bool, placeholder: str = ""):
         try:
             self.burn_est_entry.configure(state="normal" if enabled else "disabled")
@@ -2472,11 +2128,10 @@ class MoonshineGUI(ctk.CTk):
             self._burn_est_shown = text or ""
         except Exception:
             pass
-
     def _apply_burn_est(self, token, res, ctx=None):
         try:
             if int(token) != int(getattr(self, "_burn_est_token", 0) or 0):
-                return  # a newer refresh won - drop this stale result
+                return
         except Exception:
             pass
         try:
@@ -2497,8 +2152,6 @@ class MoonshineGUI(ctk.CTk):
             mode = res.get("mode")
             n = int(res.get("basis") or 0)
             if mode == "manual" and res.get("bytes"):
-                # Editable from the first burn: learned fudge with history,
-                # pure analytic without (the box never locks the user out).
                 if n >= 2:
                     basis = f"(learned, {n} burns)"
                 elif n == 1:
@@ -2536,11 +2189,7 @@ class MoonshineGUI(ctk.CTk):
                     self._set_est_entry("", False, "MB")
         except Exception:
             pass
-
     def _on_burn_mb_commit(self, event=None):
-        """MB target -> exact manual kbps (1kbps precision). The typed value
-        rules the encode until the slider moves again (slider drag clears
-        it back to 100kbps steps). Typing a target implies manual mode."""
         if getattr(self, "_srt_running", False):
             return
         try:
@@ -2552,7 +2201,6 @@ class MoonshineGUI(ctk.CTk):
         try:
             ctx = getattr(self, "_burn_est_ctx", None) or {}
             if ctx.get("speed") != speed or ctx.get("codec", "h264") != codec:
-                # Queue/speed moved under us - refresh and let the user retry.
                 try:
                     self._refresh_burn_est()
                 except Exception:
@@ -2562,8 +2210,6 @@ class MoonshineGUI(ctk.CTk):
             if raw.endswith("mb"):
                 raw = raw[:-2].strip()
             if not raw:
-                # Empty box (click in/out, cleared field): nothing to solve,
-                # quietly restore the estimate instead of logging an error.
                 try:
                     self._refresh_burn_est()
                 except Exception:
@@ -2625,10 +2271,7 @@ class MoonshineGUI(ctk.CTk):
                 self._refresh_burn_est()
             except Exception:
                 pass
-
     def _refresh_burn_speed_desc(self):
-        """One-line trade-off note for the selected burn speed. NVENC rows
-        also state availability on this machine."""
         try:
             label = (self.burn_speed_var.get() or "").strip()
         except Exception:
@@ -2656,25 +2299,23 @@ class MoonshineGUI(ctk.CTk):
                     text += " Not available on this machine."
             except Exception:
                 pass
-            # Codec dimension: HEVC is a different efficiency class, not a
-            # different speed - say so right where the choice is made.
-            try:
-                from srt import BURN_SPEED_IDS as _BSI2
-                _sid2 = _BSI2.get(label, "match")
-                _is_nvenc = _sid2.startswith("nvenc_")
-                if self.get_burn_codec() == "hevc" and _is_nvenc:
-                    text += (" HEVC ≈30% smaller than H.264 at the same "
-                             "visual quality, same GPU speed (needs ~2016+ "
-                             "playback).")
-                elif self.get_burn_codec() == "hevc":
-                    text += (" HEVC via x265: ≈30–40% smaller, much slower "
-                             "(needs ~2016+ playback).")
-                elif _is_nvenc:
-                    text += " Switch codec to HEVC for ≈30% smaller files."
-                else:
-                    text += " Switch codec to HEVC (x265) for ≈30–40% smaller files."
-            except Exception:
-                pass
+        try:
+            from srt import BURN_SPEED_IDS as _BSI2
+            _sid2 = _BSI2.get(label, "match")
+            _is_nvenc = _sid2.startswith("nvenc_")
+            if self.get_burn_codec() == "hevc" and _is_nvenc:
+                text += (" HEVC ≈30% smaller than H.264 at the same "
+                         "visual quality, same GPU speed (needs ~2016+ "
+                         "playback).")
+            elif self.get_burn_codec() == "hevc":
+                text += (" HEVC via x265: ≈30–40% smaller, much slower "
+                         "(needs ~2016+ playback).")
+            elif _is_nvenc:
+                text += " Switch codec to HEVC for ≈30% smaller files."
+            else:
+                text += " Switch codec to HEVC (x265) for ≈30–40% smaller files."
+        except Exception:
+            pass
         try:
             self.burn_speed_desc.configure(text=text)
         except Exception:
@@ -2683,7 +2324,6 @@ class MoonshineGUI(ctk.CTk):
             self._refresh_burn_codec_state()
         except Exception:
             pass
-
     def _on_burn_speed_changed(self, value):
         try:
             self._refresh_burn_speed_desc()
@@ -2693,9 +2333,6 @@ class MoonshineGUI(ctk.CTk):
             self._refresh_burn_est()
         except Exception:
             pass
-        # NVENC entries stay visible (discoverability) but refuse without
-        # hardware: revert to exact-match and say why (same pattern as the
-        # Whisper-model busy revert).
         try:
             from srt import BURN_SPEED_IDS as _BSI
             sid = _BSI.get((value or "").strip(), "match")
@@ -2729,15 +2366,12 @@ class MoonshineGUI(ctk.CTk):
                 self.srt_log("NVENC unavailable (no NVIDIA GPU/encoder) - pick a CPU mode.")
             except Exception:
                 pass
-
     def get_burn_font_size(self) -> int:
         try:
             return max(10, min(40, int(round(float(self.burn_font_slider.get())))))
         except Exception:
             return 18
-
     def get_preview_sample(self):
-        """(start_text, length_seconds) snapshot for the sample preview."""
         try:
             start_text = (self.sample_start_var.get() or "").strip()
         except Exception:
@@ -2750,10 +2384,8 @@ class MoonshineGUI(ctk.CTk):
         if length not in (10, 15, 30, 60):
             length = 15
         return start_text, length
-
     def set_srt_preview_callback(self, cb: Callable):
         self._srt_preview_cb = cb if callable(cb) else None
-
     def _on_srt_preview(self):
         if getattr(self, "_preview_running", False):
             return
@@ -2775,14 +2407,12 @@ class MoonshineGUI(ctk.CTk):
                                    self.get_burn_font_size(),
                                    *self.get_preview_sample()),
                              daemon=True).start()
-
     def set_srt_preview_done(self):
         self._preview_running = False
         try:
             self.srt_preview_btn.configure(state="normal")
         except Exception:
             pass
-
     def _on_srt_start(self):
         if self._srt_running:
             return
@@ -2790,9 +2420,6 @@ class MoonshineGUI(ctk.CTk):
         if not paths:
             self.set_srt_progress(0, "Add video/audio files first")
             return
-        # Overwrite guard: existing SRTs ask first (all / per-file / abort).
-        # Skipped rows are marked and EXCLUDED via the order map - the queue
-        # itself is never mutated, so list rows stay truthful.
         order = list(range(len(paths)))
         try:
             from tkinter import messagebox as _mb
@@ -2836,9 +2463,6 @@ class MoonshineGUI(ctk.CTk):
         for i in order:
             self.set_srt_file_status(i, "queued")
         if self._srt_start_cb:
-            # Snapshot ALL Tk state here on the GUI thread. The callback
-            # runs on a worker thread where any widget access risks
-            # Tcl thread errors and torn reads.
             try:
                 out_dir = self.srt_out_entry.get().strip()
             except Exception:
@@ -2851,18 +2475,12 @@ class MoonshineGUI(ctk.CTk):
                 srt_in, srt_out = self.get_srt_lang_codes()
             except Exception:
                 srt_in, srt_out = "auto", "en"
-            # Snapshot the Task widget too: the SRT label is rendered from it,
-            # so the job must use THIS value, not a possibly-diverged config
-            # key (a "translate" label with a "transcribe" job was observed
-            # in the wild - Japanese SRT despite Output: English).
             try:
                 srt_task = (self.canary_task_var.get() or "").strip().lower()
             except Exception:
                 srt_task = ""
             if srt_task not in ("transcribe", "translate"):
                 srt_task = ""
-            # One-click switches + burn settings for a possible auto-burn
-            # phase (same snapshot discipline: worker never touches widgets).
             try:
                 opts = self.get_srt_options()
             except Exception:
@@ -2893,14 +2511,12 @@ class MoonshineGUI(ctk.CTk):
                                    bool(opts.get("burn_after", False)),
                                    _bfont, _bspd, _bvauto, _bvk, _bcodec),
                              daemon=True).start()
-
     def _on_srt_cancel(self):
         if self._srt_cancel_cb:
             try:
                 threading.Thread(target=self._srt_cancel_cb, daemon=True).start()
             except Exception:
                 pass
-
     def _on_srt_burn(self):
         if self._srt_running:
             return
@@ -2908,8 +2524,6 @@ class MoonshineGUI(ctk.CTk):
         if not paths:
             self.set_srt_progress(0, "Add video files first (burn needs the queue)")
             return
-        # Burn pre-checks on the GUI thread: files without SRT cannot burn
-        # (marked, excluded); existing burned outputs ask first.
         order = list(range(len(paths)))
         try:
             from tkinter import messagebox as _mb
@@ -2963,8 +2577,6 @@ class MoonshineGUI(ctk.CTk):
         for i in order:
             self.set_srt_file_status(i, "queued")
         if self._srt_burn_cb:
-            # Same GUI-thread snapshot discipline as Generate: the worker
-            # thread must never touch Tk widgets.
             try:
                 out_dir = self.srt_out_entry.get().strip()
             except Exception:
@@ -2992,7 +2604,6 @@ class MoonshineGUI(ctk.CTk):
                                    self.get_burn_font_size(), speed,
                                    vbr_auto, vbr_kbps, _bcodec),
                              daemon=True).start()
-
     def _on_srt_open_folder(self):
         import os as _os
         import subprocess as _sp
@@ -3014,9 +2625,7 @@ class MoonshineGUI(ctk.CTk):
                 _sp.Popen(["explorer", target])
             except Exception:
                 pass
-
     def set_srt_input(self, path: str):
-        """Compat wrapper (old single-file API): replace queue with one file."""
         try:
             if getattr(self, "_srt_running", False):
                 return
@@ -3025,69 +2634,56 @@ class MoonshineGUI(ctk.CTk):
         except Exception:
             pass
         self.add_srt_files([path])
-
     def set_srt_callbacks(self, on_start: Callable, on_cancel: Callable,
                           on_burn: Optional[Callable] = None):
-        # Coerce non-callables (e.g. a threading.Event wired by mistake -
-        # that once crashed Cancel threads with "Event object is not
-        # callable" while the event itself never got set).
         self._srt_start_cb = on_start if callable(on_start) else None
         self._srt_cancel_cb = on_cancel if callable(on_cancel) else None
         self._srt_burn_cb = on_burn if callable(on_burn) else None
-
     def set_srt_engine_label(self, text: str):
         try:
             self.srt_engine_label.configure(text=text)
         except Exception:
             pass
-
     def set_srt_running(self, running: bool):
         self._srt_running = running
         try:
             if running:
-                # The single-button rule holds mid-run: only the starter stays.
                 try:
                     self._show_srt_action(
                         getattr(self, "_srt_running_mode", None) or "generate")
                 except Exception:
                     pass
-                # Typing a size mid-run can't apply - lock the box until done
-                # (the commit handler refuses while running anyway).
                 try:
                     self.burn_est_entry.configure(state="disabled")
                 except Exception:
                     pass
-            self.srt_start_btn.configure(state="disabled" if running else "normal")
-            self.srt_cancel_btn.configure(state="normal" if running else "disabled")
-            try:
-                self.srt_burn_btn.configure(state="disabled" if running else "normal")
-            except Exception:
-                pass
-            # Freeze the queue itself mid-run (the job owns a snapshot).
-            for w in (getattr(self, "srt_browse_btn", None),
-                      getattr(self, "srt_clear_btn", None)):
+                self.srt_start_btn.configure(state="disabled" if running else "normal")
+                self.srt_cancel_btn.configure(state="normal" if running else "disabled")
                 try:
-                    if w is not None:
-                        w.configure(state="disabled" if running else "normal")
+                    self.srt_burn_btn.configure(state="disabled" if running else "normal")
                 except Exception:
                     pass
-            try:
-                self.srt_file_list.configure(state="disabled" if running else "normal")
-            except Exception:
-                pass
-            if running:
-                self.srt_bar.set(0)
-                self.srt_pct.configure(text="0%")
+                for w in (getattr(self, "srt_browse_btn", None),
+                          getattr(self, "srt_clear_btn", None)):
+                    try:
+                        if w is not None:
+                            w.configure(state="disabled" if running else "normal")
+                    except Exception:
+                        pass
+                try:
+                    self.srt_file_list.configure(state="disabled" if running else "normal")
+                except Exception:
+                    pass
+                if running:
+                    self.srt_bar.set(0)
+                    self.srt_pct.configure(text="0%")
             else:
-                # Job ended: outputs changed on disk - re-apply grey rules
-                # (buttons only; srt_done() owns the final message + bar).
                 try:
                     self.update_action_states(touch_progress=False)
                 except Exception:
                     pass
         except Exception:
             pass
-
     def set_srt_progress(self, frac: float, msg: str = ""):
         try:
             frac = max(0.0, min(1.0, float(frac)))
@@ -3100,13 +2696,10 @@ class MoonshineGUI(ctk.CTk):
                 self.srt_status.configure(text=msg)
         except Exception:
             pass
-
     def srt_log(self, msg: str):
         try:
             self.srt_log_box.configure(state="normal")
             self.srt_log_box.insert("end", str(msg).rstrip() + "\n")
-            # Cap the log: hours-long batches would otherwise grow this
-            # widget unbounded (Tk text slows dramatically past ~1k lines).
             self._srt_log_lines = getattr(self, "_srt_log_lines", 0) + 1
             if self._srt_log_lines >= 20:
                 self._srt_log_lines = 0
@@ -3120,9 +2713,7 @@ class MoonshineGUI(ctk.CTk):
             self.srt_log_box.configure(state="disabled")
         except Exception:
             pass
-
     def _on_clear_srt_hist(self):
-        """Reset learned SRT timing (per-model ETA restarts from defaults)."""
         try:
             from srt import clear_eta_history as _clr
             n = int(_clr("srt") or 0)
@@ -3133,10 +2724,7 @@ class MoonshineGUI(ctk.CTk):
                 self.srt_log(f"Clear SRT history failed: {e}")
             except Exception:
                 pass
-
     def _on_clear_burn_hist(self):
-        """Reset learned burn timing + size estimates (est-size shows
-        no-data until the next burn recalibrates)."""
         try:
             from srt import (clear_eta_history as _clr,
                              clear_burn_size_history as _clrb)
@@ -3152,7 +2740,6 @@ class MoonshineGUI(ctk.CTk):
                 self.srt_log(f"Clear burn history failed: {e}")
             except Exception:
                 pass
-
     def srt_done(self, ok: bool, msg: str):
         self.set_srt_running(False)
         try:
@@ -3160,14 +2747,10 @@ class MoonshineGUI(ctk.CTk):
         except Exception:
             pass
         self.srt_log(f"{'DONE' if ok else 'FAILED'}: {msg}")
-        # A burn just recorded fresh history - refresh the estimate even
-        # though the queue itself did not change.
         try:
             self._refresh_burn_est()
         except Exception:
             pass
-
-    # ---------------- SRT language helpers ----------------
     def _on_srt_input_lang_changed(self, value):
         try:
             self._refresh_srt_engine_label()
@@ -3175,7 +2758,6 @@ class MoonshineGUI(ctk.CTk):
             pass
         if self._srt_input_lang_cb:
             self._srt_input_lang_cb(value)
-
     def _on_srt_output_lang_changed(self, value):
         try:
             self._refresh_srt_engine_label()
@@ -3183,37 +2765,23 @@ class MoonshineGUI(ctk.CTk):
             pass
         if self._srt_output_lang_cb:
             self._srt_output_lang_cb(value)
-
     def set_srt_languages(self, input_lang: str, output_lang: str,
-                          input_cb: Callable, output_cb: Callable):
+                           input_cb: Callable, output_cb: Callable):
         self._srt_input_lang_cb = input_cb
         self._srt_output_lang_cb = output_cb
-        # Convert code -> full display name
         in_display = SRT_LANG_NAMES.get(input_lang, "")
         out_display = SRT_LANG_NAMES.get(output_lang, "")
         if in_display in SRT_LANG_DISPLAY:
             self.srt_input_lang_var.set(in_display)
         if out_display in SRT_LANG_DISPLAY:
             self.srt_output_lang_var.set(out_display)
-
     def get_srt_lang_codes(self) -> Tuple[str, str]:
-        """Return (input_code, output_code) from current full-name selections."""
         in_display = self.srt_input_lang_var.get()
         out_display = self.srt_output_lang_var.get()
         in_code = SRT_LANG_CODE_FROM_DISPLAY.get(in_display, "auto")
         out_code = SRT_LANG_CODE_FROM_DISPLAY.get(out_display, "en")
         return in_code, out_code
-
     def refresh_lang_options(self, engine_kind: str = ""):
-        """Restrict every language menu to what the active engine can do.
-
-        Canary-1B only has <|de|en|es|fr|> tokens - offering Japanese merely
-        produces an error, so it is not offered at all. Selections that
-        become invalid are coerced to a safe default (live Src fires its
-        callback so config + engine stay in sync; SRT widgets are silent
-        because the app restores per-engine values from config on switch
-        and the job snapshots the widgets at start).
-        """
         eng = engine_kind or self.engine_var.get()
         is_canary = (eng == "Canary-1B")
         live_codes = CANARY_LIVE_SRC_CODES if is_canary else CANARY_LANGS
@@ -3231,7 +2799,6 @@ class MoonshineGUI(ctk.CTk):
                 values=[SRT_LANG_NAMES[c] for c in srt_out_codes])
         except Exception:
             pass
-        # Coerce live Src (fires callback -> config + engine follow)
         try:
             if self.canary_lang_var.get() not in live_codes:
                 fallback = "auto" if "auto" in live_codes else live_codes[0]
@@ -3239,8 +2806,6 @@ class MoonshineGUI(ctk.CTk):
                 self._on_canary_lang_changed(fallback)
         except Exception:
             pass
-        # Coerce SRT widgets silently (job snapshots widgets; app restores
-        # each engine's values from config on the next switch)
         try:
             in_code, out_code = self.get_srt_lang_codes()
             if in_code not in srt_in_codes:
@@ -3255,9 +2820,7 @@ class MoonshineGUI(ctk.CTk):
             self._refresh_srt_engine_label()
         except Exception:
             pass
-
     def set_srt_lang_state(self, engine_kind: str):
-        """Enable/disable language dropdowns based on engine. Only Canary+Whisper have real choice."""
         has_lang = engine_kind in ("Canary-1B", "Whisper Large v3")
         try:
             state = "normal" if has_lang else "disabled"

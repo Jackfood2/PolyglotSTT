@@ -1,55 +1,26 @@
-"""Faster-Whisper large-v3 portable wrapper - offline, same interface as CanaryEngine.
-
-Model: large-v3, official Systran conversion (~3GB, JA->EN capable).
-Cache: models_cache/whisper-models/ (portable, travels in zip).
-Backend: faster-whisper (ctranlate2, CPU int8) - no torch CUDA needed.
-
-NOTE (2026-09-03): large-v3-turbo was replaced, and NO turbo conversion can
-fix it: OpenAI fine-tuned turbo on transcription data only, explicitly
-EXCLUDING translation data (openai/whisper#2363), so the <|translate|> token
-is untrained - turbo transcribes instead of translating, silently. Verified
-empirically here with both mobiuslabsgmbh and deepdml conversions (fluent
-Japanese output despite a correct translate prompt; tiny + large-v3
-translate the same clip fine). JA->EN needs the full large-v3.
-"""
-
+# whisper_engine.py
 import threading
 import numpy as np
 import tempfile
 import os
 from pathlib import Path
 from typing import Optional, Callable, List, Tuple
-
 PORTABLE_ROOT = Path(__file__).parent
 WHISPER_MODELS_ROOT = PORTABLE_ROOT / "models_cache" / "whisper-models"
 HF_CACHE = PORTABLE_ROOT / "models_cache" / "huggingface"
-
 os.environ.setdefault("HF_HOME", str(HF_CACHE))
 os.environ.setdefault("HUGGINGFACE_HUB_CACHE", str(HF_CACHE))
 os.environ.setdefault("HF_HUB_OFFLINE", "0")
-
 WHISPER_MODEL_ID = "large-v3"
-
-# Cast-off broken conversion (see module docstring): removed on load so the
-# portable folder does not carry 1.6GB of dead weights after the update.
 STALE_MODEL_DIRS = (
     "models--mobiuslabsgmbh--faster-whisper-large-v3-turbo",
 )
-
-# Tasks: transcribe = keep source language, translate = always to English (Whisper limitation)
 WHISPER_TASKS = ["transcribe", "translate"]
-# Subset of Whisper's ~100 langs - covers translation needs, keeps GUI usable.
-# Full whisper list is much longer; add more codes here if needed (they just pass through).
 WHISPER_SOURCE_LANGS = [
     "auto", "en", "ja", "zh", "ko",
     "de", "fr", "es", "it", "pt", "nl", "ru",
     "ar", "hi", "tr", "id", "uk", "vi", "th",
 ]
-# Downloadable sizes (faster-whisper Systran aliases; auto-fetched on first
-# use when online, then cached offline). Full multilingual ladder.
-# Deliberately NOT offered: large-v3-turbo/turbo (OpenAI excluded
-# translation from turbo training - it silently transcribes instead of
-# translating) and distil-*/.en variants (English-only).
 WHISPER_MODEL_CHOICES = {
     "Tiny (75MB, fastest)": "tiny",
     "Base (145MB)": "base",
@@ -61,8 +32,6 @@ WHISPER_MODEL_CHOICES = {
     "Large v3 (3GB, best)": "large-v3",
 }
 WHISPER_MODEL_CHOICES_REV = {v: k for k, v in WHISPER_MODEL_CHOICES.items()}
-
-
 def _whisper_dir_size(path) -> int:
     import os as _os
     try:
@@ -76,11 +45,7 @@ def _whisper_dir_size(path) -> int:
         return total
     except Exception:
         return 0
-
-
 def whisper_repo_for(model_id: str) -> str:
-    """faster-whisper repo for an id (alias table first, Systran fallback).
-    Note: 'large' and 'large-v3' intentionally share one repo."""
     try:
         from faster_whisper.utils import _MODELS
         repo = (_MODELS or {}).get(model_id)
@@ -101,16 +66,10 @@ def whisper_repo_for(model_id: str) -> str:
     if model_id in fallback:
         return fallback[model_id]
     raise ValueError(f"unknown whisper model: {model_id}")
-
-
 def _whisper_cache_dir(models_root, repo: str) -> Path:
     root = Path(models_root) if models_root else WHISPER_MODELS_ROOT
     return root / ("models--" + repo.replace("/", "--"))
-
-
 def _whisper_repo_complete(repo_dir: Path) -> bool:
-    """A usable snapshot has model.bin of real size (tiny is the smallest
-    at ~75MB; anything far below is a partial/failed download)."""
     try:
         snap = repo_dir / "snapshots"
         if not snap.exists():
@@ -125,11 +84,7 @@ def _whisper_repo_complete(repo_dir: Path) -> bool:
     except Exception:
         pass
     return False
-
-
 def whisper_downloaded_map(models_root=None) -> dict:
-    """{model_id: True} for fully downloaded ids (shared repos count once
-    for every id pointing at them, e.g. large + large-v3)."""
     out = {}
     for mid in WHISPER_MODEL_CHOICES.values():
         try:
@@ -139,10 +94,7 @@ def whisper_downloaded_map(models_root=None) -> dict:
         except Exception:
             pass
     return out
-
-
 def whisper_cache_info(models_root=None) -> dict:
-    """{model_id: bytes on disk} (0 when absent; shared repos repeat)."""
     out = {}
     for mid in WHISPER_MODEL_CHOICES.values():
         try:
@@ -151,11 +103,7 @@ def whisper_cache_info(models_root=None) -> dict:
         except Exception:
             out[mid] = 0
     return out
-
-
 def delete_whisper_model(models_root=None, model_id: str = "large-v3"):
-    """Remove one id's repo dir. Returns (bytes_freed, [affected_ids]) -
-    ids sharing the repo (large + large-v3) go together, by necessity."""
     import shutil
     repo = whisper_repo_for(model_id)
     d = _whisper_cache_dir(models_root, repo)
@@ -166,8 +114,6 @@ def delete_whisper_model(models_root=None, model_id: str = "large-v3"):
     affected = [mid for mid in WHISPER_MODEL_CHOICES.values()
                 if whisper_repo_for(mid) == repo]
     return freed, affected
-
-
 class WhisperEngine:
     def __init__(self, task: str = "translate", source_lang: str = "ja",
                  target_lang: str = "en", model_id: str = WHISPER_MODEL_ID,
@@ -177,9 +123,6 @@ class WhisperEngine:
         self.source_lang = source_lang if source_lang else "auto"
         self.target_lang = "en" if self.task == "translate" else (target_lang or "en")
         self.model_id = model_id or WHISPER_MODEL_ID
-        # "auto" = CUDA when a capable dGPU is present, else CPU.
-        # Explicit "cpu"/"cuda" override (cuda falls back to CPU with a log
-        # when unusable - never crashes).
         self.device = (device or "auto").strip().lower() or "auto"
         self._device_used = "cpu"
         self._compute_used = "int8"
@@ -191,25 +134,20 @@ class WhisperEngine:
         self._infer_lock = threading.Lock()
         self._loading = False
         self._last_error: Optional[str] = None
-        self._switch_cb: Optional[Callable] = None  # one-shot switch_model callback
-
+        self._switch_cb: Optional[Callable] = None
     @property
     def is_ready(self) -> bool:
         return self._ready
-
     @property
     def current_arch_name(self) -> str:
         return f"whisper-{self.model_id} ({self.task} {self.source_lang}->{self.target_lang})"
-
     @property
     def device_info(self) -> str:
         try:
             return f"{self._device_used} {self._compute_used}".strip()
         except Exception:
             return "cpu"
-
     def _resolve_device(self):
-        """(device, compute_type, reason) honoring self.device override."""
         try:
             import gpu as _gpumod
         except Exception:
@@ -219,7 +157,7 @@ class WhisperEngine:
         except Exception:
             d = "auto"
         if d == "gpu":
-            d = "cuda"  # GUI/config naming vs engine naming
+            d = "cuda"
         if d == "cpu" or _gpumod is None:
             return "cpu", "int8", ("forced" if d == "cpu"
                                    else "no gpu probe")
@@ -236,15 +174,12 @@ class WhisperEngine:
             return _gpumod.recommend_whisper(self.model_id)
         except Exception:
             return "cpu", "int8", "probe failed"
-
     def _ensure_dirs(self):
         for p in [WHISPER_MODELS_ROOT, HF_CACHE]:
             try:
                 p.mkdir(parents=True, exist_ok=True)
             except Exception:
                 pass
-        # One-time cleanup of the broken turbo snapshot (exact dir name only,
-        # never anything else).
         try:
             if "mobiuslabsgmbh" not in (self.model_id or ""):
                 import shutil
@@ -255,7 +190,6 @@ class WhisperEngine:
                         shutil.rmtree(d, ignore_errors=True)
         except Exception:
             pass
-
     def _cpu_threads(self) -> int:
         for k in ("OMP_NUM_THREADS", "MKL_NUM_THREADS"):
             try:
@@ -269,14 +203,12 @@ class WhisperEngine:
             return max(1, _os.cpu_count() or 4)
         except Exception:
             return 4
-
     def load(self, on_progress: Optional[Callable] = None):
         with self._lock:
             if self._loading:
                 return
             self._loading = True
             self._ready = False
-
         def _load():
             try:
                 self._ensure_dirs()
@@ -284,9 +216,6 @@ class WhisperEngine:
                 cpu_threads = self._cpu_threads()
                 device, compute, reason = self._resolve_device()
                 print(f"[Whisper] device={device} compute={compute} ({reason})")
-                # Offline-first: try cached only, fallback to download when online.
-                # (local_files_only=False would hit network for a version check
-                # and stall/fail on the offline PC.)
                 last_err = None
                 for local_only in (True, False):
                     try:
@@ -300,8 +229,6 @@ class WhisperEngine:
                         )
                         break
                     except Exception as e:
-                        # A failing CUDA load retries on CPU (same
-                        # cached/online mode) instead of failing the engine.
                         if device == "cuda":
                             print(f"[Whisper] cuda load failed ({e}) - retrying on CPU")
                             try:
@@ -354,40 +281,26 @@ class WhisperEngine:
                         switch_cb(False, str(e))
                     except Exception:
                         pass
-
         threading.Thread(target=_load, daemon=True).start()
-
     def switch_options(self, task: Optional[str] = None,
                        source_lang: Optional[str] = None,
                        target_lang: Optional[str] = None,
                        on_ready: Optional[Callable] = None):
-        """Update task/lang without reloading weights (same model handles all).
-
-        Thread-safe: live transcribe() snapshots options under the same
-        lock, so a GUI change can never tear a read mid-inference.
-        """
         with self._lock:
             if task in WHISPER_TASKS:
                 self.task = task
-                # translate always -> en
                 if task == "translate":
                     self.target_lang = "en"
-                elif target_lang:
-                    self.target_lang = target_lang
+            elif target_lang:
+                self.target_lang = target_lang
             elif target_lang and self.task == "transcribe":
                 self.target_lang = target_lang
             if source_lang:
                 self.source_lang = source_lang
-        if on_ready:
-            on_ready(True, None)
-
+            if on_ready:
+                on_ready(True, None)
     def switch_model(self, model_id: str,
                      on_ready: Optional[Callable] = None):
-        """Switch downloadable size (tiny/base/small/medium/large-v3).
-
-        Drops the loaded weights and reloads (downloading first time when
-        online). In-flight inference sees not-ready and skips cleanly.
-        """
         if not model_id:
             if on_ready:
                 on_ready(False, "empty model id")
@@ -398,12 +311,12 @@ class WhisperEngine:
                 already = True
             else:
                 same_cb, already = None, False
-                self.model_id = model_id
-                self._model = None
-                self._ready = False
-                self._last_error = None
-                self._loading = False
-                self._switch_cb = on_ready
+            self.model_id = model_id
+            self._model = None
+            self._ready = False
+            self._last_error = None
+            self._loading = False
+            self._switch_cb = on_ready
         if already:
             try:
                 same_cb(True, None)
@@ -411,11 +324,7 @@ class WhisperEngine:
                 pass
             return
         self.load()
-
     def unload(self) -> bool:
-        """Drop weights to reclaim RAM (multi-GB) when another engine takes
-        over. Refuses while a load is in flight (the loader thread would
-        resurrect the model after). Returns True when memory was freed."""
         with self._lock:
             if self._loading or self._model is None:
                 return False
@@ -428,17 +337,11 @@ class WhisperEngine:
         except Exception:
             pass
         return True
-
     def _snapshot_opts(self) -> tuple:
-        """Atomic (task, source_lang, target_lang) snapshot for one inference call."""
         with self._lock:
             return self.task, self.source_lang, self.target_lang
-
     def _transcribe_opts(self, task: Optional[str] = None,
                          source_lang: Optional[str] = None) -> dict:
-        # Per-call overrides win; otherwise use the atomic snapshot.
-        # This lets SRT jobs pass their own langs without mutating the
-        # shared live engine (no live/SRT race).
         snap_task, snap_src, _ = self._snapshot_opts()
         eff_task = task if task in WHISPER_TASKS else snap_task
         eff_src = source_lang if source_lang else snap_src
@@ -447,13 +350,11 @@ class WhisperEngine:
             "condition_on_previous_text": False,
             "word_timestamps": False,
         }
-        # auto -> None (whisper auto-detects)
         lang = None if (eff_src or "auto") == "auto" else eff_src
         if lang:
             opts["language"] = lang
         opts["task"] = "translate" if eff_task == "translate" else "transcribe"
         return opts
-
     def _run(self, wav_path: str, with_timestamps: bool = False,
              task: Optional[str] = None,
              source_lang: Optional[str] = None,
@@ -463,14 +364,11 @@ class WhisperEngine:
         if model is None:
             return [], None
         opts = self._transcribe_opts(task=task, source_lang=source_lang)
-        # Word-level alignment costs extra inference but is the only way to
-        # place short/one-word cues exactly (segment stamps are coarse).
         opts["word_timestamps"] = bool(word_timestamps)
         with self._infer_lock:
             segments_gen, info = model.transcribe(wav_path, **opts)
             segs = list(segments_gen)
         return segs, info
-
     @staticmethod
     def _norm_audio(audio_data: np.ndarray) -> np.ndarray:
         arr = np.asarray(audio_data).flatten()
@@ -480,14 +378,13 @@ class WhisperEngine:
             out = arr.astype(np.float32) / 2147483648.0
         else:
             out = arr.astype(np.float32)
-            try:
-                if np.abs(out).max() > 1.5:
-                    out = out / 32768.0
-            except Exception:
-                pass
-            out = np.clip(out, -1.0, 1.0)
+        try:
+            if np.abs(out).max() > 1.5:
+                out = out / 32768.0
+        except Exception:
+            pass
+        out = np.clip(out, -1.0, 1.0)
         return out
-
     def transcribe(self, audio_data: np.ndarray, sample_rate: int = 16000) -> str:
         with self._lock:
             if not self._ready or self._model is None:
@@ -511,14 +408,8 @@ class WhisperEngine:
             import traceback
             traceback.print_exc()
             return f"[Whisper Error: {e}]"
-
     def transcribe_file(self, wav_path: str, task: Optional[str] = None,
                         source_lang: Optional[str] = None) -> str:
-        """Single-chunk text (used by VAD-chunk SRT path).
-
-        Optional per-call task/source_lang overrides let SRT jobs use
-        their own languages without mutating the shared live engine.
-        """
         with self._lock:
             if not self._ready or self._model is None:
                 return ""
@@ -531,11 +422,9 @@ class WhisperEngine:
             import traceback
             traceback.print_exc()
             return f"[Whisper Error: {e}]"
-
     def transcribe_file_segments(self, wav_path: str,
                                  task: Optional[str] = None,
                                  source_lang: Optional[str] = None) -> List[Tuple[float, float, str]]:
-        """Full-file native segments with timestamps (preferred SRT path - one pass)."""
         with self._lock:
             if not self._ready or self._model is None:
                 return []
@@ -551,16 +440,9 @@ class WhisperEngine:
             except Exception:
                 continue
         return out
-
     def transcribe_file_words(self, wav_path: str,
                               task: Optional[str] = None,
                               source_lang: Optional[str] = None):
-        """Native segments PLUS flat word stamps [(w_start, w_end, word)].
-
-        Same single pass (word_timestamps=True adds alignment cost). Words
-        may be [] on models/versions without alignment - callers must fall
-        back to segment/VAD timing then.
-        """
         with self._lock:
             if not self._ready or self._model is None:
                 return [], []
