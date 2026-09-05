@@ -267,14 +267,18 @@ def estimate_burn_batch(entries, speed_id, vbr_auto, vbr_kbps):
     entries: [{duration (s), audio_bps, src_bytes}]. vbr_auto=True means
     size-match (target is the source size - no history needed).
     Returns {"mode": "manual"/"auto"/"none", "bytes": int|None,
-             "basis": n_history_samples, "files": n_counted}."""
+             "basis": n_history_samples, "files": n_counted,
+             "calibrated": bool}. Manual mode always estimates: learned
+    fudge with history, pure analytic (fudge 1.0) without - "calibrated"
+    tells the caller which one it got."""
     try:
         files = [e for e in (entries or [])
                  if float((e or {}).get("duration") or 0) > 1.0]
     except Exception:
         files = []
     if not files:
-        return {"mode": "none", "bytes": None, "basis": 0, "files": 0}
+        return {"mode": "none", "bytes": None, "basis": 0, "files": 0,
+                "calibrated": False}
     if vbr_auto:
         total = 0
         for e in files:
@@ -283,11 +287,12 @@ def estimate_burn_batch(entries, speed_id, vbr_auto, vbr_kbps):
             except Exception:
                 pass
         return {"mode": "auto", "bytes": total or None,
-                "basis": 0, "files": len(files)}
+                "basis": 0, "files": len(files), "calibrated": True}
     try:
         vkbps = max(100, int(vbr_kbps or 0))
     except Exception:
-        return {"mode": "none", "bytes": None, "basis": 0, "files": 0}
+        return {"mode": "none", "bytes": None, "basis": 0, "files": 0,
+                "calibrated": False}
     raw = 0.0
     for e in files:
         try:
@@ -296,22 +301,23 @@ def estimate_burn_batch(entries, speed_id, vbr_auto, vbr_kbps):
         except Exception:
             continue
     fudge, n = burn_size_fudge(speed_id)
-    if fudge is None:
-        return {"mode": "manual", "bytes": None, "basis": 0,
-                "files": len(files)}
+    calibrated = fudge is not None and n >= 1 and fudge > 0
+    if not calibrated:
+        fudge = 1.0
     return {"mode": "manual", "bytes": int(raw * fudge), "basis": n,
-            "files": len(files)}
+            "files": len(files), "calibrated": calibrated}
 
 
 def solve_burn_kbps(entries, speed_id, target_mb):
     """Invert the size model: manual video kbps (1kbps precision) expected
     to produce target_mb for these entries.
 
-    Needs 2+ history samples for the speed (one sample cannot separate
-    content luck from systematic overshoot). Returns an int, or None when
-    unsolvable: bad target, no usable durations, no history, or a target
-    at/below the audio floor (even 1kbps video would overshoot). The caller
-    clamps to its own slider range. Never raises."""
+    Uses the learned fudge when history exists, else a pure analytic
+    inversion (fudge 1.0) so the target box works before any burn - the
+    caller reports calibrated-vs-analytic from the sample count. Returns
+    an int, or None when unsolvable: bad target, no usable durations, or
+    a target at/below the audio floor (even 1kbps video would overshoot).
+    The caller clamps to its own slider range. Never raises."""
     try:
         target = float(target_mb)
     except Exception:
@@ -326,8 +332,12 @@ def solve_burn_kbps(entries, speed_id, target_mb):
     if not files:
         return None
     fudge, n = burn_size_fudge(speed_id)
-    if fudge is None or n < 2 or not (fudge > 0):
-        return None
+    if fudge is None or not (fudge > 0):
+        # No history yet: pure analytic inversion (fudge 1.0). The box
+        # stays usable from the first burn; samples sharpen it later.
+        # (The *encode-side* compensation still wants 2+ samples before
+        # it trusts the ratio.)
+        fudge = 1.0
     try:
         total_dur = sum(float(e.get("duration")) for e in files)
         audio_part = sum(max(0.0, float(e.get("audio_bps") or 0))
@@ -1818,6 +1828,36 @@ def probe_media(path, ffmpeg: str) -> dict:
         info["size"] = 0
     if info["duration"] <= 0 or info["size"] <= 0:
         raise RuntimeError(f"could not probe media: {path}")
+    _fixup_duration(info)
+    if info["duration"] <= 0:
+        raise RuntimeError(f"could not probe media: {path}")
+    return info
+
+
+def _fixup_duration(info: dict) -> dict:
+    """Correct a lying container Duration (observed: 67s reported for a
+    914s VFR/edit-list MP4 - 27,412 frames at "408fps", while 27,412/30fps,
+    the SRT ETA, and the output size all agreed on ~15min).
+
+    File size never lies: size*8/bitrate must roughly equal duration. When
+    all three readings exist but size*8/bitrate disagrees with the header
+    duration by 3x or more, trust size/bitrate and flag it. Otherwise (or
+    with any reading missing) the probe is left untouched. Never raises."""
+    try:
+        info["duration_source"] = "header"
+        d = float(info.get("duration") or 0)
+        s = int(info.get("size") or 0)
+        b = int(info.get("overall_bps") or 0)
+    except Exception:
+        return info
+    if d > 0 and s > 0 and b > 0:
+        try:
+            implied = s * 8.0 / b
+        except Exception:
+            return info
+        if implied > d * 3.0 or implied < d / 3.0:
+            info["duration"] = implied
+            info["duration_source"] = "size/bitrate"
     return info
 
 
@@ -2187,6 +2227,15 @@ def burn_subtitles(src_path: str, srt_path: str, out_path: str, ffmpeg: str,
     info = probe_media(src, ffmpeg)
     if not info.get("vcodec"):
         raise RuntimeError(f"no video stream to burn into: {src.name}")
+    if info.get("duration_source") == "size/bitrate" and log_cb:
+        # The header Duration disagreed grossly with size/bitrate (lying
+        # VFR/edit-list container) - say which number won, or the Auto
+        # budget and progress math silently target the wrong length.
+        try:
+            log_cb(f"probe: header duration disagreed with size/bitrate - "
+                   f"using {float(info.get('duration') or 0):.0f}s")
+        except Exception:
+            pass
     _spd = resolve_burn_speed(speed)
     preset, passes = _spd["preset"], _spd["passes"]
     _tune = _spd.get("tune") or "hq"

@@ -2137,9 +2137,14 @@ class MoonshineGUI(ctk.CTk):
                     continue
             res = _est(entries, speed, vauto, vkbps)
             try:
-                ctx = {"entries": entries, "speed": speed}
+                from srt import burn_size_fudge as _fg
+                _fn = _fg(speed)[1]
             except Exception:
-                ctx = {"entries": [], "speed": speed}
+                _fn = 0
+            try:
+                ctx = {"entries": entries, "speed": speed, "fudge_n": _fn}
+            except Exception:
+                ctx = {"entries": [], "speed": speed, "fudge_n": 0}
         except Exception:
             res = {"mode": "none"}
             ctx = {"entries": [], "speed": "match"}
@@ -2195,38 +2200,36 @@ class MoonshineGUI(ctk.CTk):
                 typing = (self.focus_get() == self.burn_est_entry)
             except Exception:
                 typing = False
+            try:
+                running = bool(getattr(self, "_srt_running", False))
+            except Exception:
+                running = False
             res = res or {}
             mode = res.get("mode")
             n = int(res.get("basis") or 0)
-            nfiles = int(res.get("files") or 0)
-            if mode == "manual" and res.get("bytes") and n >= 2:
-                # Calibrated: editable box, slider follows on commit.
+            if mode == "manual" and res.get("bytes"):
+                # Editable from the first burn: learned fudge with history,
+                # pure analytic without (the box never locks the user out).
+                if n >= 2:
+                    basis = f"(learned, {n} burns)"
+                elif n == 1:
+                    basis = "(1 burn — rough, one more sharpens)"
+                else:
+                    basis = "(uncalibrated — burn to sharpen)"
                 try:
-                    self.burn_est_basis.configure(
-                        text=f"(learned, {n} burn{'s' if n != 1 else ''})")
+                    self.burn_est_basis.configure(text=basis)
                 except Exception:
                     pass
                 if not typing:
                     self._set_est_entry(self._fmt_est_mb(res["bytes"]),
-                                        True, "")
-            elif mode == "manual" and res.get("bytes"):
-                # One sample: show it, but sizing unlocks at two.
-                try:
-                    self.burn_est_basis.configure(
-                        text=f"(≈{self._fmt_est_mb(res['bytes'])} MB from 1 burn — "
-                             f"one more enables sizing)")
-                except Exception:
-                    pass
-                if not typing:
-                    self._set_est_entry("", False, "need 1 more")
+                                        not running, "")
             elif mode == "manual":
                 try:
-                    self.burn_est_basis.configure(
-                        text="(burn twice at this speed to calibrate)")
+                    self.burn_est_basis.configure(text="(could not measure queue)")
                 except Exception:
                     pass
                 if not typing:
-                    self._set_est_entry("", False, "no data")
+                    self._set_est_entry("", False, "MB")
             elif mode == "auto" and res.get("bytes"):
                 try:
                     self.burn_est_basis.configure(text="(size-match ≈ source)")
@@ -2268,6 +2271,14 @@ class MoonshineGUI(ctk.CTk):
             raw = str(self.burn_est_entry.get() or "").strip().lower()
             if raw.endswith("mb"):
                 raw = raw[:-2].strip()
+            if not raw:
+                # Empty box (click in/out, cleared field): nothing to solve,
+                # quietly restore the estimate instead of logging an error.
+                try:
+                    self._refresh_burn_est()
+                except Exception:
+                    pass
+                return
             if "," in raw and "." not in raw:
                 raw = raw.replace(",", ".")
             else:
@@ -2275,8 +2286,8 @@ class MoonshineGUI(ctk.CTk):
             mb = float(raw)
             kbps = _solve(ctx.get("entries") or [], speed, mb)
             if kbps is None:
-                self.srt_log("Size target needs 2+ past burns at this speed "
-                             "(and a target above the audio floor)")
+                self.srt_log("Size target needs a target above the audio floor "
+                             "(type MB, e.g. 850)")
                 try:
                     self._set_est_entry(getattr(self, "_burn_est_shown", ""),
                                         len(self._burn_est_shown or "") > 0,
@@ -2284,6 +2295,10 @@ class MoonshineGUI(ctk.CTk):
                 except Exception:
                     pass
                 return
+            try:
+                _hn = int(ctx.get("fudge_n") or 0)
+            except Exception:
+                _hn = 0
             lo, hi = 300, 10000
             clamped = kbps < lo or kbps > hi
             kbps = max(lo, min(hi, kbps))
@@ -2301,8 +2316,12 @@ class MoonshineGUI(ctk.CTk):
             except Exception:
                 pass
             self._update_burn_vbr_display()
+            try:
+                _cal = "" if _hn >= 2 else " (uncalibrated - analytic only)"
+            except Exception:
+                _cal = ""
             self.srt_log(f"Target ≈{mb:g} MB -> {kbps} kbps video"
-                         f"{' (clamped to slider range)' if clamped else ''} [{speed}]")
+                         f"{' (clamped to slider range)' if clamped else ''}{_cal} [{speed}]")
             try:
                 self._refresh_burn_est()
             except Exception:
@@ -2709,6 +2728,12 @@ class MoonshineGUI(ctk.CTk):
                 try:
                     self._show_srt_action(
                         getattr(self, "_srt_running_mode", None) or "generate")
+                except Exception:
+                    pass
+                # Typing a size mid-run can't apply - lock the box until done
+                # (the commit handler refuses while running anyway).
+                try:
+                    self.burn_est_entry.configure(state="disabled")
                 except Exception:
                     pass
             self.srt_start_btn.configure(state="disabled" if running else "normal")

@@ -90,9 +90,9 @@ Moonshine stay on CPU.
   at a speed the estimate becomes a target box: type MB and the bitrate
   snaps to the exact kbps (1kbps precision, same for CPU and NVENC); drag
   the slider and the box follows back. The slider stays the coarse control
-  and always wins on drag. With no history for a speed it says
-  `-- no historical data --` instead of guessing; size-match mode simply
-  shows ≈ source size. Burns also self-correct: with 2+ past burns at a
+  and always wins on drag. Before any history the box still works off a
+  pure analytic estimate (marked uncalibrated); empty input is ignored,
+  never an error. Size-match mode simply shows ≈ source size. Burns also self-correct: with 2+ past burns at a
   speed, a learned systematic overshoot (typical for NVENC 1-pass) is
   compensated by requesting proportionally less, so repeat burns land on
   target instead of running hot forever — the log states the adjustment
@@ -258,6 +258,12 @@ requirements*.txt  dependency pins (base / Canary / Whisper)
 - **PC shut down after a job** — that is the *Shut down PC when done*
   switch (fully successful jobs only); abort a pending one within 60s
   with `shutdown /a` in a terminal, or uncheck the box.
+- **Burned MP4 wildly bigger than the target on a phone/VFR file** — some
+  containers lie about Duration (seen: 67s header on a 15min file). The
+  probe cross-checks size×8÷bitrate and says so in the log (`probe:
+  header duration disagreed…`); the burn itself was correct for the set
+  bitrate. If one bad run poisoned the learned timing, hit ↺ Burn once
+  and reburn to relearn.
 
 ## Changelog
 
