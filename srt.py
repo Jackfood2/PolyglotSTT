@@ -23,8 +23,13 @@ import numpy as np
 
 
 # ---------------- ETA tracking (history baseline, confident countdown) ----------------
-# Aggregated baseline: per-engine, per-LENGTH totals persist in srt_eta.json
+# Aggregated baseline: per-MODEL and per-LENGTH totals persist in srt_eta.json
 # so repeat jobs predict from YOUR machine's measured speed, not guesses.
+# Keys are specific - whisper:tiny and whisper:large-v3 differ ~10x, and one
+# burn speed (ultrafast 1-pass) vs another (medium 2-pass) differs just as
+# much, so lumping them "per engine" poisoned every estimate. Families fall
+# back: a new key with no samples borrows its family's aggregate (and the
+# pre-split "whisper"/"burn" history keeps working as that fallback).
 # Length matters because short clips are dominated by fixed overhead (model
 # load, ffmpeg extract, VAD) while long files converge on the true rate -
 # one global factor would mislead both. Buckets: s<60s, m<600s, l=rest.
@@ -32,7 +37,15 @@ import numpy as np
 # the ACTUAL outcome is recorded at completion, so the next estimate in
 # that bucket is better. Old flat-format files migrate automatically.
 ETA_PATH = Path(__file__).parent / "srt_eta.json"
-ETA_DEFAULTS = {"whisper": 1.0, "canary": 3.0, "moonshine": 0.3, "burn": 1.5}
+ETA_DEFAULTS = {"whisper": 1.0, "canary": 3.0, "moonshine": 0.3, "burn": 1.5,
+                # First-run guesses until a sample lands (learning corrects).
+                "whisper:tiny": 0.08, "whisper:base": 0.12,
+                "whisper:small": 0.2, "whisper:medium": 0.4,
+                "whisper:large": 1.0, "whisper:large-v1": 1.0,
+                "whisper:large-v2": 1.0, "whisper:large-v3": 1.0,
+                "burn:match": 1.5, "burn:fast": 0.7, "burn:fastest": 0.35,
+                "burn:nvenc_draft": 0.25, "burn:nvenc_turbo": 0.2,
+                "burn:nvenc_balanced": 0.4}
 ETA_BUCKETS = (("s", 60.0), ("m", 600.0), ("l", float("inf")))
 _ETA_LOCK = threading.Lock()
 
@@ -80,9 +93,18 @@ def _bucket_entry(stats: Dict, key: str, bucket: Optional[str]):
 
 
 def _eta_factor(key: str, duration=None) -> float:
+    """proc/audio rate for a key, with family fallback.
+
+    whisper:large-v3 borrows the legacy "whisper" aggregate until it has
+    its own samples (same for burn:{speed} <- "burn"), so splitting keys
+    never discards the history users already accumulated."""
     try:
         bucket = _eta_bucket(duration) if duration else None
-        entry, _fb = _bucket_entry(_load_eta_stats(), key, bucket)
+        stats = _load_eta_stats()
+        entry, _fb = _bucket_entry(stats, key, bucket)
+        if entry is None and ":" in (key or ""):
+            entry, _fb = _bucket_entry(stats, (key or "").split(":")[0],
+                                       bucket)
         if entry:
             a = float(entry.get("audio") or 0)
             p = float(entry.get("proc") or 0)
@@ -90,11 +112,22 @@ def _eta_factor(key: str, duration=None) -> float:
                 return min(20.0, max(0.05, p / a))
     except Exception:
         pass
-    base = (key or "").split(":")[0]
     try:
-        return float(ETA_DEFAULTS.get(base, 1.0))
+        return float(ETA_DEFAULTS.get(key or "",
+                                      ETA_DEFAULTS.get((key or "").split(":")[0],
+                                                       1.0)))
     except Exception:
         return 1.0
+
+
+def _eta_safe_key(part: str, fallback: str = "") -> str:
+    """Sanitize one key segment (model ids come from config/downloads)."""
+    try:
+        s = str(part or fallback or "").strip().lower()
+    except Exception:
+        s = str(fallback or "")
+    s = re.sub(r"[^a-z0-9_+-]", "", s) or str(fallback or "")
+    return s[:40] or str(fallback or "")
 
 
 def record_eta_sample(key: str, audio_s: float, proc_s: float):
@@ -1174,6 +1207,16 @@ def run_srt_job(src_path: str, out_dir: str, engine_kind: str,
             _wait_for_model(eng, f"Whisper {getattr(eng, 'model_id', 'Large v3')}",
                             f"Loading Whisper {getattr(eng, 'model_id', 'Large v3')} "
                             f"(slow first time - downloads when missing)...", 0.16)
+            # Per-model ETA: tiny and large-v3 differ ~10x - sharing one
+            # "whisper" key poisoned both estimates. The factor re-resolves
+            # here (family fallback keeps old history useful until this
+            # size records its own samples).
+            try:
+                eta.key = "whisper:" + _eta_safe_key(
+                    getattr(eng, "model_id", ""), "large-v3")
+                eta.factor = float(_eta_factor(eta.key, eta.dur))
+            except Exception:
+                pass
             _wmodel = getattr(eng, 'model_id', 'Large v3')
             _wdev = getattr(eng, 'device_info', 'cpu')
             log(f"Transcribing full audio with Whisper {_wmodel} ({whisper_task} {eff_wsrc}->{eff_wtgt}, {_wdev}, native timestamps)...")
@@ -1312,6 +1355,12 @@ def run_srt_job(src_path: str, out_dir: str, engine_kind: str,
         write_srt(cues, out_path)
         prog(1.0, f"Done: {out_path.name} ({len(cues)} cues)")
         log(f"Wrote {out_path}")
+        try:
+            _el = eta.elapsed()
+            log(f"Total: {format_eta(_el)} for {duration:.1f}s audio "
+                f"({duration / max(0.1, _el):.1f}x realtime)")
+        except Exception:
+            pass
         try:
             record_eta_sample(eta.key, duration, eta.elapsed())
         except Exception:
@@ -1478,6 +1527,17 @@ def resolve_burn_speed(speed) -> dict:
     if isinstance(cfg, dict):
         return dict(cfg)
     return dict(BURN_SPEEDS["match"])
+
+
+def _burn_speed_id(speed) -> str:
+    """Validated burn speed id (same fallback as resolve_burn_speed).
+    Used for the per-speed ETA key - one speed's samples must never leak
+    into another's (ultrafast vs 2-pass differ ~10x)."""
+    try:
+        key = _eta_safe_key(speed, "match")
+    except Exception:
+        key = "match"
+    return key if key in BURN_SPEEDS else "match"
 
 
 def probe_media(path, ffmpeg: str) -> dict:
@@ -1920,6 +1980,7 @@ def burn_subtitles(src_path: str, srt_path: str, out_path: str, ffmpeg: str,
     _spd = resolve_burn_speed(speed)
     preset, passes = _spd["preset"], _spd["passes"]
     _tune = _spd.get("tune") or "hq"
+    _spd_id = _burn_speed_id(speed)
     use_nvenc = (_spd.get("encoder") == "nvenc")
     if use_nvenc:
         # Defensive at the library layer too (the app pre-checks and the
@@ -1933,7 +1994,7 @@ def burn_subtitles(src_path: str, srt_path: str, out_path: str, ffmpeg: str,
             raise RuntimeError(
                 "NVENC burn needs an NVIDIA GPU + h264_nvenc encoder - "
                 "none detected. Pick a CPU burn speed instead.")
-    beta = EtaTracker("burn")
+    beta = EtaTracker("burn:" + _spd_id)
     beta.set_duration(info["duration"])
 
     def _bprog(f, m):
@@ -2082,8 +2143,16 @@ def burn_subtitles(src_path: str, srt_path: str, out_path: str, ffmpeg: str,
                 progress_cb(1.0, f"Done: {out.name}")
         except Exception:
             pass
+        if log_cb:
+            try:
+                _bel = beta.elapsed()
+                _bdur = float(info.get("duration") or 0)
+                log_cb(f"Burn total: {format_eta(_bel)} for {_bdur:.1f}s video "
+                       f"({_bdur / max(0.1, _bel):.1f}x realtime)")
+            except Exception:
+                pass
         try:
-            record_eta_sample("burn", info["duration"], beta.elapsed())
+            record_eta_sample(beta.key, info["duration"], beta.elapsed())
         except Exception:
             pass
         return str(out), in_bytes, out_bytes

@@ -155,11 +155,16 @@ Language* (enabled for Canary and Whisper only; `translate` always outputs
 English), tune CPU threads, then *Generate SRT*. The engine label (e.g.
 `Whisper Large v3 (translate Japanese->English)`) always shows exactly
 what the job will do. The status line counts down remaining time from an
-estimate learned per engine and audio length on this machine
-(`srt_eta.json`: short/medium/long buckets plus an overall average), then
-commits to it — linear to 99% / 0s, holding there if a job overruns — and
-records the actual outcome so the next estimate is better. The bar keeps
-moving even through Whisper's long single pass and slow Canary chunks.
+estimate learned per model, per burn speed, and per audio length on this
+machine (`srt_eta.json`: `whisper:large-v3` and `tiny` track separately,
+as do `burn:match` vs `burn:fastest`, each in short/medium/long buckets
+plus an overall average; older shared entries are reused as fallback),
+then commits to it — linear to 99% / 0s, holding there if a job overruns —
+and records the actual outcome so the next estimate is better. Every file
+logs its total wall time with a realtime factor (`Total: 3:12 for 45.0s
+audio (4.3x realtime)`, `Burn total: ...`), so speed regressions are
+visible per job. The bar keeps moving even through Whisper's long single
+pass and slow Canary chunks.
 
 **Burn-in** — with SRTs generated, *Burn SRT into MP4* hardcodes each
 queued video's subtitles into a `.burned.mp4` next to it (same folder or

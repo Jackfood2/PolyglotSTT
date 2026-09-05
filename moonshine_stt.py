@@ -1662,6 +1662,9 @@ class MoonshineSTTApp:
             if job["engine_kind"] not in ("Moonshine v2", "Canary-1B", "Whisper Large v3"):
                 job["engine_kind"] = "Moonshine v2"
             self._srt_cancel.clear()
+            if self._abort_shutdown():
+                self._gui_queue.put(
+                    ("srt_log", "Aborted a pending auto-shutdown (new job started)"))
             if self.gui:
                 self.gui.after(0, lambda: self.gui.set_srt_running(True))
                 _n = len(job["src_paths"])
@@ -1815,6 +1818,20 @@ class MoonshineSTTApp:
                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         except Exception:
             pass
+
+    @staticmethod
+    def _abort_shutdown() -> bool:
+        """Cancel a pending auto-shutdown: a new job just started and dying
+        mid-job would be the worst outcome. `shutdown /a` fails when nothing
+        is pending (ignored). Returns True when something was aborted."""
+        try:
+            import subprocess as _sp
+            _r = _sp.run(["shutdown", "/a"],
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                         timeout=10)
+            return bool(getattr(_r, "returncode", 1) == 0)
+        except Exception:
+            return False
 
     def _on_job_finished(self, ok, msg):
         """Once-per-job completion follow-up (GUI thread, attached to the
@@ -2145,6 +2162,9 @@ class MoonshineSTTApp:
                        "speed": _spd, "order": order,
                        "vbr_auto": _vauto, "vbr_kbps": _vkbps}
             self._srt_cancel.clear()
+            if self._abort_shutdown():
+                self._gui_queue.put(
+                    ("srt_log", "Aborted a pending auto-shutdown (new job started)"))
             if self.gui:
                 self.gui.after(0, lambda: self.gui.set_srt_running(True))
                 _n = len(job["paths"])
