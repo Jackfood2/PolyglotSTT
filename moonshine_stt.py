@@ -61,6 +61,10 @@ DEFAULT_CONFIG = {
     "burn_vbr_kbps": 2000,          # manual video kbps when burn_vbr_auto False
     "burn_speed": "match",          # match (2-pass) | fast | fastest | nvenc_*
     "srt_tab": "Live",              # last open tab (Live | SRT File)
+    "srt_norm": False,              # boost quiet audio (loudnorm) before SRT transcription
+    "burn_after": False,            # burn MP4 automatically after SRT generation
+    "auto_shutdown": False,         # force-shutdown the PC once a job fully completes
+    "completion_alert": True,       # pop-up + focus the window once a job finishes
 }
 
 def load_local_config():
@@ -211,6 +215,29 @@ class MoonshineSTTApp:
             except Exception:
                 self.config["burn_vbr_auto"] = True
             needs_save = True
+        # Plain on/off switches: coerce 0/1/"true"/etc to real bools
+        # (hand-edited configs vary); unknown values fall back to default.
+        for _bk, _bdef in (("srt_norm", False), ("burn_after", False),
+                           ("auto_shutdown", False),
+                           ("completion_alert", True)):
+            _bv = self.config.get(_bk, _bdef)
+            if isinstance(_bv, bool):
+                _nb = _bv
+            elif isinstance(_bv, (int, float)):
+                _nb = bool(_bv)
+            elif isinstance(_bv, str):
+                _s = _bv.strip().lower()
+                if _s in ("1", "true", "yes", "on"):
+                    _nb = True
+                elif _s in ("0", "false", "no", "off", ""):
+                    _nb = False
+                else:
+                    _nb = _bdef
+            else:
+                _nb = _bdef
+            if self.config.get(_bk) is not _nb:
+                self.config[_bk] = _nb
+                needs_save = True
         try:
             _vk = int(self.config.get("burn_vbr_kbps", 2000))
         except Exception:
@@ -398,6 +425,16 @@ class MoonshineSTTApp:
                         pass
                 except Exception:
                     pass
+                # Restore the SRT-tab switches (normalize / burn-after /
+                # shutdown / alert) and persist every later toggle.
+                try:
+                    self.gui.set_srt_options(
+                        {k: self.config.get(k)
+                         for k in ("srt_norm", "burn_after",
+                                   "auto_shutdown", "completion_alert")},
+                        self._save_srt_opts)
+                except Exception:
+                    pass
                 self.gui.protocol("WM_DELETE_WINDOW", self._on_close)
                 self.gui.update_idletasks()
                 # Reopen on the previously selected tab.
@@ -416,6 +453,22 @@ class MoonshineSTTApp:
                 self.gui = None
 
         self.recorder.set_level_callback(self._level_callback)
+
+    def _save_srt_opts(self, opts):
+        """Persist SRT-tab switch toggles (normalize / burn-after /
+        shutdown / alert) the moment they change - jobs only snapshot."""
+        try:
+            with _CONFIG_LOCK:
+                for k in ("srt_norm", "burn_after",
+                          "auto_shutdown", "completion_alert"):
+                    try:
+                        if opts is not None and k in opts:
+                            self.config[k] = bool(opts[k])
+                    except Exception:
+                        pass
+                save_local_config(self.config)
+        except Exception:
+            pass
 
     def _get_canary_engine(self, apply_live_options: bool = True):
         # Double-checked creation: GUI thread and SRT worker may race here.
@@ -449,7 +502,7 @@ class MoonshineSTTApp:
                 pass
             try:
                 _dev = self.config.get("compute", "auto")
-                if (_dev in ("auto", "cpu", "cuda") and self.canary_engine is not None
+                if (_dev in ("auto", "cpu", "cuda", "gpu") and self.canary_engine is not None
                         and getattr(self.canary_engine, "device", "auto") != _dev):
                     self.canary_engine.device = _dev
             except Exception:
@@ -484,7 +537,7 @@ class MoonshineSTTApp:
                 pass
             try:
                 _dev = self.config.get("compute", "auto")
-                if (_dev in ("auto", "cpu", "cuda") and self.whisper_engine is not None
+                if (_dev in ("auto", "cpu", "cuda", "gpu") and self.whisper_engine is not None
                         and getattr(self.whisper_engine, "device", "auto") != _dev):
                     self.whisper_engine.device = _dev
             except Exception:
@@ -499,11 +552,11 @@ class MoonshineSTTApp:
             save_local_config(self.config)
 
     def _on_compute_changed(self, display: str):
-        code = {"Auto": "auto", "CPU": "cpu", "GPU": "cuda"}.get(
+        code = {"Auto": "auto", "CPU": "cpu", "GPU": "gpu"}.get(
             (display or "").strip(), "auto")
         # "GPU" is only offered when a dGPU exists, but the card can vanish
         # (eGPU unplugged) - re-verify instead of trusting the widget.
-        if code == "cuda":
+        if code == "gpu":
             try:
                 import gpu as _gpumod
                 if _gpumod.best_gpu() is None:
@@ -545,8 +598,8 @@ class MoonshineSTTApp:
         # Skip pointless reloads for explicit choices already in effect
         # (auto always re-resolves: VRAM conditions may have changed).
         try:
-            if code in ("cpu", "cuda"):
-                want = "cuda" if code == "cuda" else "cpu"
+            if code in ("cpu", "cuda", "gpu"):
+                want = "cpu" if code == "cpu" else "cuda"
                 if (getattr(target, "is_ready", False)
                         and getattr(target, "_device_used", "") == want):
                     self._log(f"Compute: already on {display}, no reload")
@@ -1068,7 +1121,7 @@ class MoonshineSTTApp:
             if self._srt_busy:
                 return
             active = self.config.get("engine", "Moonshine v2")
-            for name in ("canary_engine", "whisper_engine"):
+            for name in ("canary_engine", "whisper_engine", "moonshine_engine"):
                 try:
                     eng = getattr(self, name, None)
                     if eng is None or eng is self.engine:
@@ -1076,6 +1129,8 @@ class MoonshineSTTApp:
                     if active == "Canary-1B" and name == "canary_engine":
                         continue
                     if active == "Whisper Large v3" and name == "whisper_engine":
+                        continue
+                    if active == "Moonshine v2" and name == "moonshine_engine":
                         continue
                     try:
                         if eng.unload():
@@ -1269,6 +1324,10 @@ class MoonshineSTTApp:
                     self.gui.srt_log(payload)
                 elif msg_type == "srt_done":
                     self.gui.srt_done(payload[0], payload[1])
+                    try:
+                        self._on_job_finished(payload[0], payload[1])
+                    except Exception:
+                        pass
                 elif msg_type == "srt_file_status":
                     try:
                         self.gui.set_srt_file_status(payload[0], payload[1])
@@ -1492,7 +1551,10 @@ class MoonshineSTTApp:
 
     def _srt_start(self, input_paths, order=None, out_dir: str = "",
                    cpu_workers: int = 1,
-                   srt_in: str = "", srt_out: str = "", srt_task: str = ""):
+                   srt_in: str = "", srt_out: str = "", srt_task: str = "",
+                   normalize_audio: bool = False, burn_after: bool = False,
+                   burn_font_size: int = 0, burn_speed: str = "match",
+                   vbr_auto: bool = True, vbr_kbps: int = 2000):
         # Atomic check-and-set: two rapid Starts must not launch two jobs.
         # Self-heal: if a previous job thread died without clearing the flag
         # (must never happen, but a stuck "already running" bricks the tab),
@@ -1555,6 +1617,27 @@ class MoonshineSTTApp:
                     self.config["srt_cpu"] = int(cpu_workers)
                 except Exception:
                     self.config["srt_cpu"] = 0
+                # One-click switches (persisted like everything else).
+                self.config["srt_norm"] = bool(normalize_audio)
+                self.config["burn_after"] = bool(burn_after)
+                try:
+                    _bfs = max(10, min(40, int(burn_font_size or 18)))
+                except Exception:
+                    _bfs = 18
+                self.config["burn_font_size"] = _bfs
+                _bspd = str(burn_speed or "match").strip().lower()
+                if _bspd not in ("match", "fast", "fastest",
+                                 "nvenc_draft", "nvenc_turbo",
+                                 "nvenc_balanced"):
+                    _bspd = "match"
+                self.config["burn_speed"] = _bspd
+                try:
+                    _bauto = bool(vbr_auto) if vbr_auto is not None else True
+                    _bkbps = max(300, min(10000, int(vbr_kbps or 2000)))
+                except Exception:
+                    _bauto, _bkbps = True, 2000
+                self.config["burn_vbr_auto"] = _bauto
+                self.config["burn_vbr_kbps"] = _bkbps
                 save_local_config(self.config)
                 job = {
                     "engine_kind": self.config.get("engine", "Moonshine v2"),
@@ -1569,6 +1652,12 @@ class MoonshineSTTApp:
                     "src_paths": paths,
                     "order": order,
                     "out_dir": out_dir,
+                    "normalize_audio": bool(normalize_audio),
+                    "burn_after": bool(burn_after),
+                    "burn_font_size": _bfs,
+                    "burn_speed": _bspd,
+                    "burn_vbr_auto": _bauto,
+                    "burn_vbr_kbps": _bkbps,
                 }
             if job["engine_kind"] not in ("Moonshine v2", "Canary-1B", "Whisper Large v3"):
                 job["engine_kind"] = "Moonshine v2"
@@ -1627,6 +1716,7 @@ class MoonshineSTTApp:
                     srt_input_lang=job["srt_input_lang"],
                     srt_output_lang=job["srt_output_lang"],
                     out_path=str(_out) if _out is not None else None,
+                    normalize_audio=job.get("normalize_audio", False),
                 )
 
                 def _file_cb(kind, path, info):
@@ -1672,12 +1762,21 @@ class MoonshineSTTApp:
                 ok_paths = [p for (p, ok, _m) in results if ok]
                 bad = [(p, m) for (p, ok, m) in results if not ok]
                 total = len(results)
-                if cancelled:
+                # Phase 2 (optional): burn MP4s straight after the SRTs, in
+                # the same worker while the busy flag is still held - one
+                # click, one progress run, one completion event.
+                burn_msg = ""
+                burn_cancelled = False
+                if (not cancelled) and job.get("burn_after"):
+                    _bmsg, burn_cancelled = self._auto_burn_after_srt(job)
+                    if _bmsg:
+                        burn_msg = " | " + str(_bmsg)
+                if cancelled or burn_cancelled:
                     self._gui_queue.put(
-                        ("srt_done", (False, f"Cancelled after {len(ok_paths)}/{total} files")))
+                        ("srt_done", (False, f"Cancelled after {len(ok_paths)}/{total} files{burn_msg}")))
                 elif not bad:
                     self._gui_queue.put(
-                        ("srt_done", (True, f"Batch done: all {total} saved")))
+                        ("srt_done", (True, f"Batch done: all {total} saved{burn_msg}")))
                 elif ok_paths:
                     try:
                         first_bad = _os.path.basename(bad[0][0])
@@ -1685,7 +1784,7 @@ class MoonshineSTTApp:
                         first_bad = "a file"
                     self._gui_queue.put(
                         ("srt_done", (True, f"Batch done: {len(ok_paths)}/{total} saved "
-                                            f"({len(bad)} failed, e.g. {first_bad})")))
+                                            f"({len(bad)} failed, e.g. {first_bad}){burn_msg}")))
                 else:
                     self._gui_queue.put(
                         ("srt_done", (False, f"Batch failed: 0/{total} saved")))
@@ -1706,8 +1805,54 @@ class MoonshineSTTApp:
             self._srt_thread = _t
         _t.start()
 
-    def _cancel_srt_job(self):
-        # NOTE: named to avoid colliding with the self._srt_cancel EVENT
+    @staticmethod
+    def _shutdown_pc():
+        """Force-shutdown Windows after a fully successful job. 60s delay so
+        `shutdown /a` in a terminal can still abort it. Never raises."""
+        try:
+            import subprocess as _sp
+            _sp.Popen(["shutdown", "/s", "/f", "/t", "60"],
+                      stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        except Exception:
+            pass
+
+    def _on_job_finished(self, ok, msg):
+        """Once-per-job completion follow-up (GUI thread, attached to the
+        srt_done pump item - worker threads never touch this, so it fires
+        exactly once per finished job). Cancelled/failed jobs stay silent.
+        Full success + auto_shutdown -> forced shutdown in 60s (the log
+        carries the abort command). Any other non-cancelled finish +
+        completion_alert -> one pop-up + window focus."""
+        try:
+            text = str(msg or "")
+        except Exception:
+            text = ""
+        if not ok:
+            return
+        # Full success reads "all N saved" / "Burned all N"; partial results
+        # ("2/3 saved (1 failed...)") alert but never shut down.
+        full = "all " in text
+        try:
+            want_sd = bool(self.config.get("auto_shutdown", False))
+        except Exception:
+            want_sd = False
+        if full and want_sd:
+            self._gui_queue.put(
+                ("srt_log", "Auto-shutdown ON: PC powers off in 60s "
+                            "(run `shutdown /a` in cmd to abort)"))
+            self._shutdown_pc()
+            return
+        try:
+            want_alert = bool(self.config.get("completion_alert", True))
+        except Exception:
+            want_alert = True
+        if want_alert and self.gui:
+            try:
+                self.gui.notify_completion("Processing complete", text)
+            except Exception:
+                pass
+
+    def _cancel_srt_job(self):        # NOTE: named to avoid colliding with the self._srt_cancel EVENT
         # (an instance attribute shadows any same-named method - wiring the
         # event as the Cancel callback crashed threads with
         # "TypeError: 'Event' object is not callable" and cancel never fired).
@@ -1728,6 +1873,213 @@ class MoonshineSTTApp:
         if v >= 1e6:
             return f"{v / 1e6:.0f}MB"
         return f"{int(v)}B"
+
+    def _execute_burn(self, bjob):
+        """Run one burn batch (blocking, worker thread). Shared by the manual
+        Burn button and the burn-after-SRT phase so both behave identically.
+
+        bjob: {paths, order, out_dir, cpu_workers, font_size, speed,
+               vbr_auto, vbr_kbps}. Raises on setup failure (no ffmpeg,
+        NVENC unavailable); per-file failures are collected, never raised.
+        Returns (results, cancelled, ok, summary_msg). Owns no busy flag -
+        the caller sets/clears it and emits the completion event."""
+        import os as _os
+        import srt as srtmod
+        from collections import deque as _deque2
+        ffmpeg = srtmod.get_ffmpeg_exe()
+        if not ffmpeg:
+            raise RuntimeError("ffmpeg not found - run setup.bat once.")
+        if bjob.get("speed", "match") in ("nvenc_draft", "nvenc_turbo",
+                                          "nvenc_balanced"):
+            try:
+                import gpu as _gpumod
+                _nv_ok = bool(_gpumod.nvenc_available(ffmpeg))
+            except Exception:
+                _nv_ok = False
+            if not _nv_ok:
+                raise RuntimeError(
+                    "NVENC burn needs an NVIDIA GPU + h264_nvenc encoder - "
+                    "none detected. Pick a CPU burn speed instead.")
+        try:
+            _bres = srtmod.reserve_burn_names(
+                [(p, bjob["out_dir"]) for p in bjob["paths"]])
+            _bby_path = {}
+            for _idx in sorted(_bres):
+                _pp = bjob["paths"][_idx]
+                _bby_path.setdefault(_pp, _deque2()).append(_bres[_idx])
+        except Exception:
+            _bby_path = {}
+
+        def _run_one(path, progress_cb, log_cb):
+            from pathlib import Path as _P
+            src = _P(path)
+            srt_path = srtmod.default_out_path(src, bjob["out_dir"])
+            if not srt_path.exists():
+                raise FileNotFoundError(
+                    f"no SRT for {src.name} - Generate SRT first")
+            info = srtmod.probe_media(src, ffmpeg)
+            _vbps_auto, abps, acopy = srtmod.plan_burn_bitrates(info)
+            try:
+                in_gb = self._fmt_gb(info["size"])
+            except Exception:
+                in_gb = "?"
+            if bjob.get("vbr_auto", True):
+                vbps = _vbps_auto
+                budget_note = f"(in {in_gb}, target match)"
+            else:
+                vbps = max(100000, int(bjob.get("vbr_kbps", 2000)) * 1000)
+                try:
+                    _est = (vbps + (abps if info.get("has_audio") else 0)) \
+                        * max(1.0, float(info.get("duration") or 0)) / 8
+                    est_note = f"est. ~{self._fmt_gb(_est)}, size-match OFF"
+                except Exception:
+                    est_note = "size-match OFF"
+                budget_note = f"(in {in_gb}, manual {vbps // 1000} kbps, {est_note})"
+            log_cb(f"budget: video {vbps // 1000} kbps, "
+                   f"audio {'copy' if acopy else f'AAC {abps // 1000} kbps'} "
+                   f"{budget_note}")
+            _bq = _bby_path.get(path)
+            if _bq:
+                out_path = _bq.popleft()
+            else:
+                out_path = srtmod.default_burn_path(src, bjob["out_dir"])
+            return srtmod.burn_subtitles(
+                str(src), str(srt_path), str(out_path), ffmpeg,
+                vbps // 1000, (abps // 1000) if not acopy else 128,
+                acopy, bjob["cpu_workers"], bjob["font_size"],
+                bjob["speed"],
+                progress_cb=progress_cb, log_cb=log_cb,
+                cancel_event=self._srt_cancel)
+
+        def _file_cb(kind, path, info):
+            # Batch positions -> GUI queue rows via the order map.
+            try:
+                idx = int((info or {}).get("index", -1))
+                _order = bjob.get("order") or []
+                if 0 <= idx < len(_order):
+                    idx = int(_order[idx])
+            except Exception:
+                try:
+                    idx = int((info or {}).get("index", -1))
+                except Exception:
+                    idx = -1
+            if kind == "start":
+                self._gui_queue.put(("srt_file_status", (idx, "burning…")))
+            elif kind == "done":
+                if (info or {}).get("ok"):
+                    try:
+                        _o, _ib, _ob = (info or {}).get("out"), 0, 0
+                        if isinstance(_o, (list, tuple)) and len(_o) >= 3:
+                            _ib, _ob = _o[1], _o[2]
+                        tag = (f"\u2713 {self._fmt_gb(_ob)}"
+                               if _ob else "\u2713 burned")
+                    except Exception:
+                        tag = "\u2713 burned"
+                    self._gui_queue.put(("srt_file_status", (idx, tag)))
+                else:
+                    err = str((info or {}).get("error") or "error")[:60]
+                    self._gui_queue.put(("srt_file_status", (idx, f"\u2717 {err}")))
+            elif kind == "skip":
+                self._gui_queue.put(("srt_file_status", (idx, "– skipped")))
+
+        results, cancelled = srtmod.run_srt_batch(
+            bjob["paths"], _run_one,
+            progress_cb=lambda f, m: self._gui_queue.put(("srt_progress", (f, m))),
+            log_cb=lambda m: self._gui_queue.put(("srt_log", m)),
+            cancel_event=self._srt_cancel,
+            file_cb=_file_cb,
+        )
+        ok = [(p, m) for (p, ok_, m) in results if ok_]
+        bad = [(p, m) for (p, ok_, m) in results if not ok_]
+        total = len(results)
+        in_sum = out_sum = 0
+        for (_p, m) in ok:
+            try:
+                if isinstance(m, (list, tuple)) and len(m) >= 3:
+                    in_sum += int(m[1] or 0)
+                    out_sum += int(m[2] or 0)
+            except Exception:
+                pass
+        sizes = (f" ({self._fmt_gb(in_sum)}\u2192{self._fmt_gb(out_sum)})"
+                 if in_sum and out_sum else "")
+        if cancelled:
+            return results, True, False, f"Burn cancelled after {len(ok)}/{total} files"
+        elif not bad:
+            return results, False, True, f"Burned all {total}{sizes}"
+        elif ok:
+            try:
+                first_bad = _os.path.basename(bad[0][0])
+            except Exception:
+                first_bad = "a file"
+            return (results, False, True,
+                    f"Burned {len(ok)}/{total}{sizes} "
+                    f"({len(bad)} failed, e.g. {first_bad})")
+        else:
+            return results, False, False, "Burn failed: 0/{total}".format(total=total)
+
+    def _auto_burn_after_srt(self, job):
+        """Phase 2 of a burn-after-SRT job: burn every queued file that HAS
+        an SRT now (freshly made or pre-existing). Audio-only files and
+        files whose SRT step failed are marked skipped, never failed.
+        Returns (summary_msg, was_cancelled). Never raises."""
+        try:
+            import srt as srtmod
+            from pathlib import Path as _P
+            order = list(job.get("order") or [])
+            srcs = list(job.get("src_paths") or [])
+            out_dir = job.get("out_dir") or ""
+            keep_pos = []
+            kept_existing = 0
+            for pos, p in enumerate(srcs):
+                try:
+                    row = order[pos] if pos < len(order) else pos
+                    if srtmod.is_audio_only_path(p):
+                        self._gui_queue.put(
+                            ("srt_file_status", (row, "– audio-only")))
+                        continue
+                    if not srtmod.default_out_path(_P(p), out_dir).exists():
+                        self._gui_queue.put(
+                            ("srt_file_status", (row, "– no SRT")))
+                        continue
+                    # Never overwrite silently from a worker thread (the
+                    # overwrite prompts live on the GUI thread): keep the
+                    # existing burn and say so. Convert to MP4 offers the
+                    # overwrite choice when a refresh is wanted.
+                    if srtmod.default_burn_path(_P(p), out_dir).exists():
+                        self._gui_queue.put(
+                            ("srt_file_status", (row, "– kept existing")))
+                        kept_existing += 1
+                        continue
+                except Exception:
+                    continue
+                keep_pos.append(pos)
+            if kept_existing:
+                self._gui_queue.put(
+                    ("srt_log",
+                     f"Auto-burn: {kept_existing} existing MP4(s) kept "
+                     f"(Convert to MP4 to overwrite)"))
+            if not keep_pos:
+                return "", False
+            self._gui_queue.put(
+                ("srt_log",
+                 f"Auto-burn: {len(keep_pos)} file(s) with SRT -> MP4..."))
+            self._gui_queue.put(
+                ("srt_progress", (0.0, "Starting auto-burn...")))
+            bjob = {"paths": [srcs[i] for i in keep_pos],
+                    "order": [order[i] if i < len(order) else i
+                              for i in keep_pos],
+                    "out_dir": out_dir,
+                    "cpu_workers": int(job.get("cpu_workers") or 0),
+                    "font_size": int(job.get("burn_font_size") or 18),
+                    "speed": job.get("burn_speed") or "match",
+                    "vbr_auto": job.get("burn_vbr_auto", True),
+                    "vbr_kbps": job.get("burn_vbr_kbps", 2000)}
+            _results, _cancelled, _ok, _msg = self._execute_burn(bjob)
+            return _msg, bool(_cancelled)
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            return f"auto-burn skipped: {e}", False
 
     def _burn_start(self, input_paths, order=None, out_dir: str = "",
                     cpu_workers: int = 1, font_size: int = 0,
@@ -1830,143 +2182,11 @@ class MoonshineSTTApp:
             return
 
         def _job():
+            # Thin wrapper: the real work lives in _execute_burn (shared
+            # with the burn-after-SRT phase) so both paths stay identical.
             try:
-                import os as _os
-                import srt as srtmod
-                ffmpeg = srtmod.get_ffmpeg_exe()
-                if not ffmpeg:
-                    raise RuntimeError("ffmpeg not found - run setup.bat once.")
-                if job.get("speed", "match") in ("nvenc_draft", "nvenc_turbo",
-                                                   "nvenc_balanced"):
-                    try:
-                        import gpu as _gpumod
-                        _nv_ok = bool(_gpumod.nvenc_available(ffmpeg))
-                    except Exception:
-                        _nv_ok = False
-                    if not _nv_ok:
-                        raise RuntimeError(
-                            "NVENC burn needs an NVIDIA GPU + h264_nvenc encoder - "
-                            "none detected. Pick a CPU burn speed instead.")
-                from collections import deque as _deque2
-                try:
-                    _bres = srtmod.reserve_burn_names(
-                        [(p, job["out_dir"]) for p in job["paths"]])
-                    _bby_path = {}
-                    for _idx in sorted(_bres):
-                        _pp = job["paths"][_idx]
-                        _bby_path.setdefault(_pp, _deque2()).append(_bres[_idx])
-                except Exception:
-                    _bby_path = {}
-
-                def _run_one(path, progress_cb, log_cb):
-                    from pathlib import Path as _P
-                    src = _P(path)
-                    srt_path = srtmod.default_out_path(src, job["out_dir"])
-                    if not srt_path.exists():
-                        raise FileNotFoundError(
-                            f"no SRT for {src.name} - Generate SRT first")
-                    info = srtmod.probe_media(src, ffmpeg)
-                    _vbps_auto, abps, acopy = srtmod.plan_burn_bitrates(info)
-                    try:
-                        in_gb = self._fmt_gb(info["size"])
-                    except Exception:
-                        in_gb = "?"
-                    if job.get("vbr_auto", True):
-                        vbps = _vbps_auto
-                        budget_note = f"(in {in_gb}, target match)"
-                    else:
-                        vbps = max(100000, int(job.get("vbr_kbps", 2000)) * 1000)
-                        try:
-                            _est = (vbps + (abps if info.get("has_audio") else 0)) \
-                                * max(1.0, float(info.get("duration") or 0)) / 8
-                            est_note = f"est. ~{self._fmt_gb(_est)}, size-match OFF"
-                        except Exception:
-                            est_note = "size-match OFF"
-                        budget_note = f"(in {in_gb}, manual {vbps // 1000} kbps, {est_note})"
-                    log_cb(f"budget: video {vbps // 1000} kbps, "
-                           f"audio {'copy' if acopy else f'AAC {abps // 1000} kbps'} "
-                           f"{budget_note}")
-                    _bq = _bby_path.get(path)
-                    if _bq:
-                        out_path = _bq.popleft()
-                    else:
-                        out_path = srtmod.default_burn_path(src, job["out_dir"])
-                    return srtmod.burn_subtitles(
-                        str(src), str(srt_path), str(out_path), ffmpeg,
-                        vbps // 1000, (abps // 1000) if not acopy else 128,
-                        acopy, job["cpu_workers"], job["font_size"],
-                        job["speed"],
-                        progress_cb=progress_cb, log_cb=log_cb,
-                        cancel_event=self._srt_cancel)
-
-                def _file_cb(kind, path, info):
-                    # Batch positions -> GUI queue rows via the order map.
-                    try:
-                        idx = int((info or {}).get("index", -1))
-                        _order = job.get("order") or []
-                        if 0 <= idx < len(_order):
-                            idx = int(_order[idx])
-                    except Exception:
-                        try:
-                            idx = int((info or {}).get("index", -1))
-                        except Exception:
-                            idx = -1
-                    if kind == "start":
-                        self._gui_queue.put(("srt_file_status", (idx, "burning…")))
-                    elif kind == "done":
-                        if (info or {}).get("ok"):
-                            try:
-                                _o, _ib, _ob = (info or {}).get("out"), 0, 0
-                                if isinstance(_o, (list, tuple)) and len(_o) >= 3:
-                                    _ib, _ob = _o[1], _o[2]
-                                tag = (f"\u2713 {self._fmt_gb(_ob)}"
-                                       if _ob else "\u2713 burned")
-                            except Exception:
-                                tag = "\u2713 burned"
-                            self._gui_queue.put(("srt_file_status", (idx, tag)))
-                        else:
-                            err = str((info or {}).get("error") or "error")[:60]
-                            self._gui_queue.put(("srt_file_status", (idx, f"\u2717 {err}")))
-                    elif kind == "skip":
-                        self._gui_queue.put(("srt_file_status", (idx, "– skipped")))
-
-                results, cancelled = srtmod.run_srt_batch(
-                    job["paths"], _run_one,
-                    progress_cb=lambda f, m: self._gui_queue.put(("srt_progress", (f, m))),
-                    log_cb=lambda m: self._gui_queue.put(("srt_log", m)),
-                    cancel_event=self._srt_cancel,
-                    file_cb=_file_cb,
-                )
-                ok = [(p, m) for (p, ok_, m) in results if ok_]
-                bad = [(p, m) for (p, ok_, m) in results if not ok_]
-                total = len(results)
-                in_sum = out_sum = 0
-                for (_p, m) in ok:
-                    try:
-                        if isinstance(m, (list, tuple)) and len(m) >= 3:
-                            in_sum += int(m[1] or 0)
-                            out_sum += int(m[2] or 0)
-                    except Exception:
-                        pass
-                sizes = (f" ({self._fmt_gb(in_sum)}\u2192{self._fmt_gb(out_sum)})"
-                         if in_sum and out_sum else "")
-                if cancelled:
-                    self._gui_queue.put(
-                        ("srt_done", (False, f"Burn cancelled after {len(ok)}/{total} files")))
-                elif not bad:
-                    self._gui_queue.put(
-                        ("srt_done", (True, f"Burned all {total}{sizes}")))
-                elif ok:
-                    try:
-                        first_bad = _os.path.basename(bad[0][0])
-                    except Exception:
-                        first_bad = "a file"
-                    self._gui_queue.put(
-                        ("srt_done", (True, f"Burned {len(ok)}/{total}{sizes} "
-                                            f"({len(bad)} failed, e.g. {first_bad})")))
-                else:
-                    self._gui_queue.put(
-                        ("srt_done", (False, f"Burn failed: 0/{total}")))
+                _results, _cancelled, _ok, _msg = self._execute_burn(job)
+                self._gui_queue.put(("srt_done", (_ok, _msg)))
             except InterruptedError:
                 self._gui_queue.put(("srt_done", (False, "Cancelled by user")))
             except Exception as e:

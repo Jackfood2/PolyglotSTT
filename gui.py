@@ -597,6 +597,17 @@ class MoonshineGUI(ctk.CTk):
                 self.compute_menu.configure(state="disabled")
             except Exception:
                 pass
+        # Volume boost: single-pass loudnorm on the extraction wav so quiet
+        # / uneven recordings transcribe cleaner. Burn is unaffected (it
+        # re-encodes from the original source, never this wav).
+        self.srt_norm_var = ctk.BooleanVar(value=False)
+        self.srt_norm_check = ctk.CTkCheckBox(
+            perf_card, text="Boost quiet audio (normalize before transcription)",
+            variable=self.srt_norm_var, font=("Segoe UI", 10),
+            text_color=FG_DIM, fg_color=ACCENT,
+            command=self._on_srt_opt_toggled)
+        self.srt_norm_check.grid(row=4, column=0, columnspan=3, sticky="w",
+                                 padx=12, pady=(2, 10))
         ctk.CTkLabel(perf_card, text="(Whisper/Canary)",
                      font=("Segoe UI", 9), text_color=FG_DIM
                      ).grid(row=3, column=2, sticky="e", padx=(4, 12), pady=(2, 10))
@@ -804,6 +815,38 @@ class MoonshineGUI(ctk.CTk):
                       command=self._on_srt_open_folder
                       ).grid(row=1, column=1, padx=(4, 0), pady=(8, 0), sticky="ew")
         self._srt_burn_cb = None
+        self._srt_mode = "generate"  # single-button rule: generate | burn
+        self._srt_running_mode = "generate"
+        # One-click hardcode: with SRTs missing, generate them and burn the
+        # MP4s in the same run (files already carrying an SRT burn too).
+        self.burn_after_var = ctk.BooleanVar(value=False)
+        self.burn_after_check = ctk.CTkCheckBox(
+            scroll, text="Burn MP4 automatically after SRT (one-click hardcode)",
+            variable=self.burn_after_var, font=("Segoe UI", 11),
+            text_color=FG_PRIMARY, fg_color=ACCENT,
+            command=self._on_srt_opt_toggled)
+        self.burn_after_check.grid(row=7, column=0, sticky="w", padx=16, pady=(0, 2))
+        # Finish behavior: checked shutdown powers the PC off 60s after a
+        # FULLY successful job (abort with `shutdown /a`); otherwise an
+        # optional pop-up + window focus fires once per finished job.
+        finrow = ctk.CTkFrame(scroll, fg_color="transparent")
+        finrow.grid(row=8, column=0, sticky="ew", padx=16, pady=(0, 8))
+        self.shutdown_var = ctk.BooleanVar(value=False)
+        self.shutdown_check = ctk.CTkCheckBox(
+            finrow, text="Shut down PC when done",
+            variable=self.shutdown_var, font=("Segoe UI", 11),
+            text_color=FG_PRIMARY, fg_color=DANGER,
+            command=self._on_srt_opt_toggled)
+        self.shutdown_check.pack(side="left", padx=(0, 18))
+        self.alert_var = ctk.BooleanVar(value=True)
+        self.alert_check = ctk.CTkCheckBox(
+            finrow, text="Pop-up alert when done",
+            variable=self.alert_var, font=("Segoe UI", 11),
+            text_color=FG_PRIMARY, fg_color=ACCENT,
+            command=self._on_srt_opt_toggled)
+        self.alert_check.pack(side="left")
+        self._srt_opt_callback = None
+        self._show_srt_action("generate")
 
     def _on_tab_changed(self, value=None):
         # CTkTabview calls command() without args on some versions, with the
@@ -1421,36 +1464,155 @@ class MoonshineGUI(ctk.CTk):
             pass
         return found
 
+    def _show_srt_action(self, mode: str):
+        """Single-button rule: exactly one primary action is visible.
+
+        "generate" -> big green Generate SRT; "burn" (every queued file
+        already has an SRT) -> the same slot becomes Convert to MP4."""
+        try:
+            gen, brn = self.srt_start_btn, self.srt_burn_btn
+        except Exception:
+            return
+        try:
+            if mode == "burn":
+                try:
+                    gen.grid_remove()
+                except Exception:
+                    pass
+                try:
+                    brn.configure(text="\u25B6 Convert to MP4")
+                except Exception:
+                    pass
+                brn.grid(row=0, column=0, padx=(0, 4), sticky="ew")
+            else:
+                try:
+                    brn.grid_remove()
+                except Exception:
+                    pass
+                try:
+                    gen.configure(text="\u25B6  Generate SRT")
+                except Exception:
+                    pass
+                gen.grid(row=0, column=0, padx=(0, 4), sticky="ew")
+            self._srt_mode = mode
+        except Exception:
+            pass
+
+    def _set_burn_after_enabled(self, enabled: bool):
+        """The one-click-hardcode tickbox only makes sense while generating."""
+        try:
+            self.burn_after_check.configure(state="normal" if enabled else "disabled")
+        except Exception:
+            pass
+
+    def get_srt_options(self) -> dict:
+        """Snapshot of the four SRT-tab switches (GUI thread only)."""
+        try:
+            norm = bool(self.srt_norm_var.get())
+        except Exception:
+            norm = False
+        try:
+            after = bool(self.burn_after_var.get())
+        except Exception:
+            after = False
+        try:
+            sd = bool(self.shutdown_var.get())
+        except Exception:
+            sd = False
+        try:
+            al = bool(self.alert_var.get())
+        except Exception:
+            al = True
+        return {"srt_norm": norm, "burn_after": after,
+                "auto_shutdown": sd, "completion_alert": al}
+
+    def set_srt_options(self, opts=None, callback: Optional[Callable] = None):
+        """Restore the four switches from config at startup. Never raises."""
+        o = opts or {}
+        for var_name, key, dflt in (("srt_norm_var", "srt_norm", False),
+                                    ("burn_after_var", "burn_after", False),
+                                    ("shutdown_var", "auto_shutdown", False),
+                                    ("alert_var", "completion_alert", True)):
+            try:
+                var = getattr(self, var_name, None)
+                if var is not None:
+                    var.set(bool(o.get(key, dflt)))
+            except Exception:
+                pass
+        self._srt_opt_callback = callback if callable(callback) else None
+
+    def _on_srt_opt_toggled(self):
+        cb = getattr(self, "_srt_opt_callback", None)
+        if cb:
+            try:
+                cb(self.get_srt_options())
+            except Exception:
+                pass
+
+    def notify_completion(self, title: str, msg: str):
+        """One-shot finish alert (GUI thread only): bring the window up and
+        pop a message box. Topmost is flashed, never left on."""
+        try:
+            self.lift()
+        except Exception:
+            pass
+        try:
+            self.attributes("-topmost", True)
+        except Exception:
+            pass
+        try:
+            from tkinter import messagebox as _mb
+            _mb.showinfo(title or "Done", msg or "Finished.", parent=self)
+        except Exception:
+            pass
+        try:
+            self.attributes("-topmost", False)
+        except Exception:
+            pass
+        try:
+            self.focus_force()
+        except Exception:
+            pass
+
     def update_action_states(self, touch_progress: bool = True):
-        """Grey rules (only when idle - set_srt_running owns states mid-run):
-        Generate OFF when the queue is non-empty and every file already has
-        an SRT; Burn OFF when no queued file has one."""
+        """Single-button rule (only when idle - set_srt_running owns states
+        mid-run): every queued file already has an SRT -> the primary slot
+        becomes Convert to MP4; otherwise it is Generate SRT (plus the
+        burn-after tickbox for one-click hardcode)."""
         if getattr(self, "_srt_running", False):
             return
         try:
             paths = self.get_srt_input_paths()
             if not paths:
+                self._show_srt_action("generate")
                 try:
                     self.srt_start_btn.configure(state="normal")
-                    self.srt_burn_btn.configure(state="normal")
                 except Exception:
                     pass
+                self._set_burn_after_enabled(True)
                 return
             existing = self._srt_existing_outputs("srt")
             all_done = len(existing) >= len(paths)
             any_done = len(existing) > 0
-            try:
-                self.srt_start_btn.configure(
-                    state="disabled" if all_done else "normal")
-                self.srt_burn_btn.configure(
-                    state="normal" if any_done else "disabled")
-            except Exception:
-                pass
+            if all_done:
+                self._show_srt_action("burn")
+                try:
+                    self.srt_burn_btn.configure(state="normal")
+                except Exception:
+                    pass
+                self._set_burn_after_enabled(False)
+            else:
+                self._show_srt_action("generate")
+                try:
+                    self.srt_start_btn.configure(state="normal")
+                except Exception:
+                    pass
+                self._set_burn_after_enabled(True)
             if not touch_progress:
                 return
             if all_done:
                 self.set_srt_progress(
-                    0, "All queued files already have SRTs - Clear or add more")
+                    0, "All queued files already have SRTs - Convert to MP4")
             elif not any_done:
                 try:
                     cur = self.srt_status.cget("text")
@@ -1788,10 +1950,33 @@ class MoonshineGUI(ctk.CTk):
                 srt_task = ""
             if srt_task not in ("transcribe", "translate"):
                 srt_task = ""
+            # One-click switches + burn settings for a possible auto-burn
+            # phase (same snapshot discipline: worker never touches widgets).
+            try:
+                opts = self.get_srt_options()
+            except Exception:
+                opts = {}
+            try:
+                _bfont = self.get_burn_font_size()
+            except Exception:
+                _bfont = 18
+            try:
+                from srt import BURN_SPEED_IDS as _BSI
+                _bspd = _BSI.get((self.burn_speed_var.get() or "").strip(), "match")
+            except Exception:
+                _bspd = "match"
+            try:
+                _bvauto, _bvk = self.get_burn_vbr()
+            except Exception:
+                _bvauto, _bvk = True, 2000
+            self._srt_running_mode = "generate"
             threading.Thread(target=self._srt_start_cb,
                              args=([paths[i] for i in order], order,
                                    out_dir, cpu,
-                                   srt_in, srt_out, srt_task),
+                                   srt_in, srt_out, srt_task,
+                                   bool(opts.get("srt_norm", False)),
+                                   bool(opts.get("burn_after", False)),
+                                   _bfont, _bspd, _bvauto, _bvk),
                              daemon=True).start()
 
     def _on_srt_cancel(self):
@@ -1882,6 +2067,7 @@ class MoonshineGUI(ctk.CTk):
                 vbr_auto, vbr_kbps = self.get_burn_vbr()
             except Exception:
                 vbr_auto, vbr_kbps = True, 2000
+            self._srt_running_mode = "burn"
             threading.Thread(target=self._srt_burn_cb,
                              args=([paths[i] for i in order], order, out_dir, cpu,
                                    self.get_burn_font_size(), speed,
@@ -1939,6 +2125,13 @@ class MoonshineGUI(ctk.CTk):
     def set_srt_running(self, running: bool):
         self._srt_running = running
         try:
+            if running:
+                # The single-button rule holds mid-run: only the starter stays.
+                try:
+                    self._show_srt_action(
+                        getattr(self, "_srt_running_mode", None) or "generate")
+                except Exception:
+                    pass
             self.srt_start_btn.configure(state="disabled" if running else "normal")
             self.srt_cancel_btn.configure(state="normal" if running else "disabled")
             try:

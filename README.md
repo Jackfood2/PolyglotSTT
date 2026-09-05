@@ -61,7 +61,19 @@ Moonshine stay on CPU.
 - **SRT File tab** — queue one or many video/audio files (batch runs one by
   one, failures don't stop the queue), pick an output folder, generate
   `.srt` with live progress bar, per-file status list, per-chunk log,
-  cancel, and a remaining-time countdown.
+  cancel, and a remaining-time countdown. *Boost quiet audio* applies a
+  loudnorm pass before transcription for soft/uneven recordings (burns
+  always re-encode from the original, so they are unaffected).
+- **One primary button** — the action slot morphs with the queue: files
+  still need SRTs → *Generate SRT*; every queued file already has one →
+  *Convert to MP4*. Tick *Burn MP4 automatically after SRT* and one click
+  generates the missing SRTs and hardcodes everything burnable (audio-only
+  files, SRT-less failures, and already-burned videos are marked skipped,
+  never failed — use Convert to MP4 with its overwrite prompts to redo).
+- **Finish behavior** — *Shut down PC when done* force-powers off 60s after
+  a fully successful job only (nothing on cancel/failure; abort any time
+  with `shutdown /a`); otherwise an optional pop-up + window focus fires
+  once per finished job. Both switches persist.
 - **Burn SRT into MP4** — hardcode subtitles into a new `.mp4`
   (`<name>.burned.mp4`, any input: mp4/mkv/ts/…) with x264 two-pass sized
   to match the original file (audio copied when possible, CPU threads from
@@ -214,6 +226,13 @@ requirements*.txt  dependency pins (base / Canary / Whisper)
 - **Switching engines feels lighter the second time** — the idle heavy
   engine is unloaded to reclaim gigabytes of RAM; it reloads from cache
   when you switch back.
+- **Auto-burn skipped a file** — audio-only files, files whose SRT step
+  failed, and videos that already have a burned MP4 are marked skipped,
+  never failed or overwritten; use *Convert to MP4* (with its overwrite
+  prompts) to refresh an existing burn.
+- **PC shut down after a job** — that is the *Shut down PC when done*
+  switch (fully successful jobs only); abort a pending one within 60s
+  with `shutdown /a` in a terminal, or uncheck the box.
 
 ## Changelog
 

@@ -191,8 +191,6 @@ class ProgressPump:
                     pass
         except Exception:
             pass
-        except Exception:
-            pass
 
     def stop(self):
         try:
@@ -321,6 +319,21 @@ MIN_GAP_SECONDS = 0.08
 SUPPORTED_EXTS = (".mp4", ".mkv", ".avi", ".mov", ".wmv", ".flv", ".webm",
                   ".mp3", ".wav", ".m4a", ".aac", ".ogg", ".flac", ".wma")
 
+# Unambiguous audio-only files: nothing to burn a subtitle image into.
+# Ambiguous containers (.webm/.ogg can carry video) are NOT listed here -
+# they go through probing and fail with a clear message when audioless.
+AUDIO_ONLY_EXTS = frozenset({".mp3", ".wav", ".m4a", ".aac",
+                             ".flac", ".wma", ".opus"})
+
+
+def is_audio_only_path(path) -> bool:
+    """True for unambiguous audio-only files (auto-burn skips them with a
+    status mark instead of a burn failure). Never raises."""
+    try:
+        return str(Path(path).suffix or "").lower() in AUDIO_ONLY_EXTS
+    except Exception:
+        return False
+
 
 def cpu_count() -> int:
     try:
@@ -392,11 +405,19 @@ def format_ts(seconds: float) -> str:
     return f"{h:02d}:{m:02d}:{s:02d},{ms:03d}"
 
 
-def extract_audio(src: Path, dst_wav: Path, ffmpeg: str, cancel_event=None):
+def extract_audio(src: Path, dst_wav: Path, ffmpeg: str, cancel_event=None,
+                  normalize_audio: bool = False):
     """Extract 16kHz mono wav. Raises on failure. Polls cancel_event (Popen,
-    not run(): a 2h video extract would otherwise ignore Cancel for minutes)."""
-    cmd = [ffmpeg, "-y", "-v", "error", "-i", str(src),
-           "-ac", "1", "-ar", "16000", "-vn", str(dst_wav)]
+    not run(): a 2h video extract would otherwise ignore Cancel for minutes).
+
+    normalize_audio: single-pass EBU R128 loudnorm (I=-16 LUFS) for quiet /
+    uneven recordings - raises soft speech before transcription. The burned
+    MP4 is unaffected (it re-encodes from the original source, never this
+    wav). Costs one extra audio filter pass, no temp stats file."""
+    cmd = [ffmpeg, "-y", "-v", "error", "-i", str(src)]
+    if normalize_audio:
+        cmd += ["-af", "loudnorm=I=-16:TP=-1.5:LRA=11"]
+    cmd += ["-ac", "1", "-ar", "16000", "-vn", str(dst_wav)]
     try:
         proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL,
                                 stderr=subprocess.PIPE)
@@ -936,11 +957,12 @@ def run_srt_job(src_path: str, out_dir: str, engine_kind: str,
                 progress_cb: Optional[Callable[[float, str], None]] = None,
                 log_cb: Optional[Callable[[str], None]] = None,
                 cancel_event: Optional[threading.Event] = None,
-                whisper_task: str = "translate", whisper_src: str = "ja",
-                get_whisper_engine: Optional[Callable] = None,
-                srt_input_lang: str = "auto",
-                srt_output_lang: str = "en",
-                out_path: Optional[str] = None) -> str:
+                 whisper_task: str = "translate", whisper_src: str = "ja",
+                 get_whisper_engine: Optional[Callable] = None,
+                 srt_input_lang: str = "auto",
+                 srt_output_lang: str = "en",
+                 out_path: Optional[str] = None,
+                 normalize_audio: bool = False) -> str:
     """Blocking SRT job. progress_cb(fraction 0..1, message). Returns output .srt path."""
     eta = EtaTracker(_eta_key_for(engine_kind, moonshine_arch))
 
@@ -984,20 +1006,26 @@ def run_srt_job(src_path: str, out_dir: str, engine_kind: str,
         log(f"Loading {name} model...")
         eng.load()
         waited = 0
-        while not eng.is_ready and waited < 900:
-            if cancelled():
-                raise InterruptedError("cancelled")
-            _t.sleep(1)
-            waited += 1
-            try:
-                loading = bool(getattr(eng, "_loading", True))
-            except Exception:
-                loading = True
-            if not loading and not eng.is_ready:
-                err = getattr(eng, "_last_error", None) or "unknown error"
-                raise RuntimeError(f"{name} failed to load: {err}")
-            if waited % 10 == 0:
-                prog(load_pct, f"{loading_msg} ({waited}s)")
+        # Pump the bar through the (possibly minutes-long) load: without it
+        # a first-time Canary/Whisper download sits frozen at load_pct.
+        with ProgressPump(prog, load_pct, 0.04, 300.0,
+                          loading_msg):
+            while not eng.is_ready and waited < 900:
+                if cancelled():
+                    raise InterruptedError("cancelled")
+                _t.sleep(1)
+                waited += 1
+                try:
+                    loading = bool(getattr(eng, "_loading", True))
+                except Exception:
+                    loading = True
+                if not loading and not eng.is_ready:
+                    err = getattr(eng, "_last_error", None) or "unknown error"
+                    raise RuntimeError(f"{name} failed to load: {err}")
+                # The pump carries the bar (never backward); the log carries
+                # the elapsed time, sparingly.
+                if waited % 30 == 0:
+                    log(f"  still loading {name} ({waited}s)...")
         if not eng.is_ready:
             raise RuntimeError(f"{name} timed out loading.")
 
@@ -1021,8 +1049,10 @@ def run_srt_job(src_path: str, out_dir: str, engine_kind: str,
         if cancelled():
             raise InterruptedError("cancelled")
         prog(0.02, "Extracting audio (ffmpeg 16kHz mono)...")
-        log("Extracting audio...")
-        extract_audio(src, tmp_wav, ffmpeg, cancel_event)
+        log("Extracting audio..." + (" [normalize: loudnorm -16 LUFS]"
+                                     if normalize_audio else ""))
+        extract_audio(src, tmp_wav, ffmpeg, cancel_event,
+                      normalize_audio=normalize_audio)
         if cancelled():
             raise InterruptedError("cancelled")
         import soundfile as sf
@@ -1844,6 +1874,17 @@ def _burn_popen_wait(proc, total_frames: int, base: float, span: float,
         pass
     if proc.returncode != 0:
         raise RuntimeError(f"ffmpeg burn {label}failed: {tail.strip()[-300:]}")
+    if last == 0:
+        # Fast encode finished before the poll loop ever parsed a status
+        # line (sub-second clip on many cores): recover the final count
+        # from the leftover buffer so stats/fps stay truthful.
+        try:
+            with lock:
+                _tailfound = re.findall(rb"frame=\s*(\d+)", bytes(buf))
+            if _tailfound:
+                last = int(_tailfound[-1])
+        except Exception:
+            pass
     if stats is not None:
         try:
             el = max(0.1, time.monotonic() - t_start)
@@ -1985,6 +2026,12 @@ def burn_subtitles(src_path: str, srt_path: str, out_path: str, ffmpeg: str,
                              cancel_event, label="", stats=_st)
             _speed_line(_st, "encode")
         elif passes == 2:
+            # NOTE: pass 1 and pass 2 MUST use the same x264 preset. A
+            # faster pass-1 preset was tried (veryfast stats + medium
+            # final) and x264 hard-fails pass 2 with "different weightp
+            # setting than first pass" - the stats are NOT preset-agnostic.
+            # (x264 already runs its own internal fast-firstpass; the two
+            # speeds stay identical here by requirement, not by caution.)
             if log_cb:
                 try:
                     log_cb(f"burn pass 1/2 (analysis, {vbps} kbps video)...")

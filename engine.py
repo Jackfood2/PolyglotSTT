@@ -261,6 +261,31 @@ class TranscriptionEngine:
             self._switch_cb = on_ready
         self.load()
 
+    def unload(self) -> bool:
+        """Drop the ORT sessions to reclaim RAM when another engine takes
+        over. Refuses while a load is in flight (the loader thread would
+        resurrect the model after) and never touches the live-transcribe
+        path except via _ready (in-flight transcribe() holds its own local
+        ref and finishes; new calls see not-ready and skip cleanly).
+        Returns True when native resources were released."""
+        with self._lock:
+            if self._loading or self._transcriber is None:
+                return False
+            tr = self._transcriber
+            self._transcriber = None
+            self._ready = False
+            self._last_error = None
+        # Same lock order as transcribe() (_lock released first, then
+        # _tx_lock): close can never race an in-flight inference, and no
+        # ABBA deadlock with the loader (it only clears _loading after its
+        # last lock use, so _loading==False means no lock held against us).
+        with self._tx_lock:
+            try:
+                tr.close()
+            except Exception:
+                pass
+        return True
+
     def transcribe(self, audio_data: np.ndarray, sample_rate: int = 16000) -> str:
         """Transcribe audio data and return text. Thread-safe."""
         with self._lock:
