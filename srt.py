@@ -2303,8 +2303,14 @@ def burn_subtitles(src_path: str, srt_path: str, out_path: str, ffmpeg: str,
             # scales internally. -rc vbr is stated explicitly: without it
             # some builds fall back to a quality mode that silently ignores
             # -b:v/-maxrate (observed: ~3x oversize, immune to kbps cuts).
+            # Lookahead + AQ cost a little speed but spend the SAME bits
+            # visibly better (scene-cut awareness, detail-weighted
+            # quantization) - free quality at identical file sizes.
             base += ["-c:v", "h264_nvenc", "-preset", preset, "-tune", _tune,
                      "-rc", "vbr",
+                     "-rc-lookahead", "32",
+                     "-spatial-aq", "1", "-aq-strength", "8",
+                     "-temporal-aq", "1",
                      "-b:v", f"{vbps}k",
                      "-maxrate", f"{int(vbps * 1.5)}k",
                      "-bufsize", f"{int(vbps * 2)}k",
