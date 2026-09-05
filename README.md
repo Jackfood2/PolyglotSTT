@@ -77,7 +77,12 @@ Moonshine stay on CPU.
 - **Burn SRT into MP4** — hardcode subtitles into a new `.mp4`
   (`<name>.burned.mp4`, any input: mp4/mkv/ts/…) with x264 two-pass sized
   to match the original file (audio copied when possible, CPU threads from
-  the slider). Subtitle size is adjustable (12–32) with an instant
+  the slider). *Est. size* under the bitrate control learns from your past
+  burns: every successful burn records its actual-vs-predicted ratio per
+  speed (`burn_size.json`), so manual-kbps estimates calibrate to your
+  content and settings — including unpredictable NVENC modes. With no
+  history for a speed it says `-- no historical data --` instead of
+  guessing; size-match mode simply shows ≈ source size. Subtitle size is adjustable (12–32) with an instant
   single-frame **Preview** before the full encode. Latin burns use Arial
   with outline; Japanese/Chinese/Korean burns automatically switch to
   MS Gothic (the only CJK setup this renderer draws — verified).

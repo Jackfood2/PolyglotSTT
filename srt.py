@@ -130,6 +130,121 @@ def _eta_safe_key(part: str, fallback: str = "") -> str:
     return s[:40] or str(fallback or "")
 
 
+# ---------------- Burn-size history (learned output estimates) ----------------
+# GPU (NVENC) and 1-pass sizes are hard to predict analytically: rate-control
+# overshoot varies by content and preset. So every successful burn records
+# its actual/analytic-raw ratio under its speed id, and the estimate
+# multiplies the analytic raw size by the learned mean for that speed.
+# Manual-kbps mode with no history for the speed reports "no data" instead
+# of guessing. Size-match (auto bitrate) needs no history at all: the
+# target IS the source size.
+BURN_SIZE_PATH = Path(__file__).parent / "burn_size.json"
+_BURN_LOCK = threading.Lock()
+
+
+def record_burn_sample(speed_id, video_kbps, audio_bps, duration_s,
+                       actual_bytes):
+    """Fold one successful burn into per-speed size history. Never raises."""
+    try:
+        vkbps = float(video_kbps)
+        abps = max(0.0, float(audio_bps or 0))
+        dur = float(duration_s)
+        act = float(actual_bytes)
+    except Exception:
+        return
+    if not (vkbps > 0 and dur > 1.0 and act > 0):
+        return
+    raw = (vkbps * 1000.0 + abps) / 8.0 * dur
+    if raw <= 0:
+        return
+    ratio = act / raw
+    if not (0.2 < ratio < 5.0):
+        return  # aborted/partial/corrupt write - must not poison history
+    key = _burn_speed_id(speed_id)
+    with _BURN_LOCK:
+        try:
+            try:
+                with open(str(BURN_SIZE_PATH), "r", encoding="utf-8") as f:
+                    stats = json.load(f)
+                if not isinstance(stats, dict):
+                    stats = {}
+            except Exception:
+                stats = {}
+            node = stats.get(key)
+            if not isinstance(node, dict):
+                node = {"n": 0, "sum": 0.0}
+            try:
+                node = {"n": int(node.get("n", 0)) + 1,
+                        "sum": float(node.get("sum", 0.0)) + ratio}
+            except Exception:
+                node = {"n": 1, "sum": ratio}
+            stats[key] = node
+            tmp = str(BURN_SIZE_PATH) + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(stats, f, indent=1)
+            os.replace(tmp, str(BURN_SIZE_PATH))
+        except Exception:
+            pass
+
+
+def burn_size_fudge(speed_id):
+    """(mean actual/analytic-raw ratio or None, sample count) for a speed."""
+    try:
+        with open(str(BURN_SIZE_PATH), "r", encoding="utf-8") as f:
+            stats = json.load(f)
+        node = (stats or {}).get(_burn_speed_id(speed_id))
+        if isinstance(node, dict):
+            n = int(node.get("n", 0) or 0)
+            s = float(node.get("sum", 0.0) or 0.0)
+            if n >= 1 and s > 0:
+                return s / n, n
+    except Exception:
+        pass
+    return None, 0
+
+
+def estimate_burn_batch(entries, speed_id, vbr_auto, vbr_kbps):
+    """Estimate total burn output for queued files.
+
+    entries: [{duration (s), audio_bps, src_bytes}]. vbr_auto=True means
+    size-match (target is the source size - no history needed).
+    Returns {"mode": "manual"/"auto"/"none", "bytes": int|None,
+             "basis": n_history_samples, "files": n_counted}."""
+    try:
+        files = [e for e in (entries or [])
+                 if float((e or {}).get("duration") or 0) > 1.0]
+    except Exception:
+        files = []
+    if not files:
+        return {"mode": "none", "bytes": None, "basis": 0, "files": 0}
+    if vbr_auto:
+        total = 0
+        for e in files:
+            try:
+                total += max(0, int(e.get("src_bytes") or 0))
+            except Exception:
+                pass
+        return {"mode": "auto", "bytes": total or None,
+                "basis": 0, "files": len(files)}
+    try:
+        vkbps = max(100, int(vbr_kbps or 0))
+    except Exception:
+        return {"mode": "none", "bytes": None, "basis": 0, "files": 0}
+    raw = 0.0
+    for e in files:
+        try:
+            abps = max(0.0, float(e.get("audio_bps") or 0))
+            raw += (vkbps * 1000.0 + abps) / 8.0 * float(e.get("duration"))
+        except Exception:
+            continue
+    fudge, n = burn_size_fudge(speed_id)
+    if fudge is None:
+        return {"mode": "manual", "bytes": None, "basis": 0,
+                "files": len(files)}
+    return {"mode": "manual", "bytes": int(raw * fudge), "basis": n,
+            "files": len(files)}
+
+
 def record_eta_sample(key: str, audio_s: float, proc_s: float):
     """Fold one successful job into the aggregated baseline (atomic write),
     updating both its length bucket and the engine-wide aggregate."""
@@ -2147,6 +2262,17 @@ def burn_subtitles(src_path: str, srt_path: str, out_path: str, ffmpeg: str,
                 pass
         try:
             record_eta_sample(beta.key, info["duration"], beta.elapsed())
+        except Exception:
+            pass
+        try:
+            # Feed the size learner: probed audio rate when copied, the AAC
+            # rate otherwise (video_kbps arrives in kbps units).
+            _aeff = int(info.get("audio_bps") or 0) if audio_copy else \
+                max(32, int(audio_kbps)) * 1000
+            record_burn_sample(_spd_id, max(100, int(video_kbps)), _aeff,
+                               float(info.get("duration") or 0), out_bytes)
+        except Exception:
+            pass
         except Exception:
             pass
         return str(out), in_bytes, out_bytes

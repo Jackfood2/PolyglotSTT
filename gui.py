@@ -683,6 +683,16 @@ class MoonshineGUI(ctk.CTk):
                      font=("Segoe UI", 9), text_color=FG_DIM, wraplength=420,
                      justify="left").grid(row=5, column=0, columnspan=4,
                                           sticky="w", padx=12, pady=(2, 10))
+        # Learned output-size estimate (per-speed history; manual kbps only).
+        self.burn_est_value = ctk.CTkLabel(
+            style_card, text="Est. size: —",
+            font=("Segoe UI", 10, "bold"), text_color=FG_PRIMARY,
+            wraplength=420, justify="left")
+        self.burn_est_value.grid(row=6, column=0, columnspan=4,
+                                 sticky="w", padx=12, pady=(2, 10))
+        self._burn_probe_cache = {}
+        self._burn_est_token = 0
+        self._burn_est_sig = None
         self._srt_preview_cb = None
         self._preview_running = False
         # Sample controls: when no SRT exists yet, Preview transcribes just
@@ -1583,6 +1593,18 @@ class MoonshineGUI(ctk.CTk):
             return
         try:
             paths = self.get_srt_input_paths()
+            # Queue/outdir membership drives the estimate inputs - refresh
+            # only when they actually change (slider/speed refresh directly).
+            try:
+                _sig = (tuple(paths), self._srt_out_dir())
+            except Exception:
+                _sig = None
+            if _sig != getattr(self, "_burn_est_sig", None):
+                self._burn_est_sig = _sig
+                try:
+                    self._refresh_burn_est()
+                except Exception:
+                    pass
             if not paths:
                 self._show_srt_action("generate")
                 try:
@@ -1713,6 +1735,10 @@ class MoonshineGUI(ctk.CTk):
             self.burn_vbr_value.configure(text=f"{n}k")
         except Exception:
             pass
+        try:
+            self._refresh_burn_est()
+        except Exception:
+            pass
 
     def _on_burn_vbr_toggled(self):
         try:
@@ -1725,6 +1751,10 @@ class MoonshineGUI(ctk.CTk):
                 self.burn_vbr_value.configure(text="auto")
             else:
                 self._on_burn_vbr_changed(self.burn_vbr_slider.get())
+        except Exception:
+            pass
+        try:
+            self._refresh_burn_est()
         except Exception:
             pass
 
@@ -1741,6 +1771,127 @@ class MoonshineGUI(ctk.CTk):
         except Exception:
             return True, 0
         return False, n
+
+    def _refresh_burn_est(self):
+        """Recompute the learned output-size estimate (kbps/speed/queue
+        changed, or history just grew). Probing runs on a daemon worker -
+        Tk is only touched via after() on completion. Stale workers are
+        dropped by token."""
+        try:
+            token = int(getattr(self, "_burn_est_token", 0) or 0) + 1
+            self._burn_est_token = token
+        except Exception:
+            token = 0
+        try:
+            from srt import BURN_SPEED_IDS as _BSI
+            speed = _BSI.get((self.burn_speed_var.get() or "").strip(), "match")
+        except Exception:
+            speed = "match"
+        try:
+            vauto, vkbps = self.get_burn_vbr()
+        except Exception:
+            vauto, vkbps = True, 0
+        try:
+            paths = list(self.get_srt_input_paths() or [])
+            out_dir = self._srt_out_dir()
+        except Exception:
+            paths, out_dir = [], ""
+        try:
+            import threading as _th
+            _th.Thread(target=self._burn_est_work,
+                       args=(token, paths, out_dir, speed, vauto, vkbps),
+                       daemon=True).start()
+        except Exception:
+            pass
+
+    def _burn_est_work(self, token, paths, out_dir, speed, vauto, vkbps):
+        try:
+            import os as _os
+            from pathlib import Path as _P
+            from srt import (probe_media as _probe, get_ffmpeg_exe as _ff,
+                             is_audio_only_path as _audio_only,
+                             estimate_burn_batch as _est)
+            try:
+                ff = _ff()
+            except Exception:
+                ff = None
+            if not isinstance(self._burn_probe_cache, dict):
+                self._burn_probe_cache = {}
+            if len(self._burn_probe_cache) > 300:
+                self._burn_probe_cache = {}
+            entries = []
+            for p in paths or []:
+                try:
+                    if _audio_only(p):
+                        continue
+                    st = _os.stat(p)
+                    key = (str(p), st.st_mtime_ns, st.st_size)
+                    hit = self._burn_probe_cache.get(key)
+                    if hit is None and ff:
+                        try:
+                            info = _probe(_P(p), ff)
+                            hit = {"duration": float(info.get("duration") or 0),
+                                   "audio_bps": int(info.get("audio_bps") or 0),
+                                   "src_bytes": int(info.get("size") or st.st_size)}
+                        except Exception:
+                            hit = {}
+                        try:
+                            self._burn_probe_cache[key] = hit
+                        except Exception:
+                            pass
+                    hit = hit or {}
+                    if float(hit.get("duration") or 0) > 1.0:
+                        entries.append(hit)
+                except Exception:
+                    continue
+            res = _est(entries, speed, vauto, vkbps)
+        except Exception:
+            res = {"mode": "none"}
+        try:
+            self.after(0, lambda: self._apply_burn_est(token, res))
+        except Exception:
+            pass
+
+    @staticmethod
+    def _fmt_est_size(nbytes):
+        try:
+            v = float(nbytes)
+        except Exception:
+            return "?"
+        if v >= 1e9:
+            return f"{v / 1e9:.2f} GB"
+        if v >= 1e6:
+            return f"{v / 1e6:.0f} MB"
+        if v >= 1000:
+            return f"{int(v / 1e3)} KB"
+        return f"{int(v)} B"
+
+    def _apply_burn_est(self, token, res):
+        try:
+            if int(token) != int(getattr(self, "_burn_est_token", 0) or 0):
+                return  # a newer refresh won - drop this stale result
+        except Exception:
+            pass
+        try:
+            res = res or {}
+            mode = res.get("mode")
+            if mode == "auto" and res.get("bytes"):
+                text = (f"Est. size: ≈ {self._fmt_est_size(res['bytes'])} total "
+                        f"({int(res.get('files') or 0)} file(s), "
+                        f"size-match ≈ source)")
+            elif mode == "manual" and res.get("bytes"):
+                n = int(res.get("basis") or 0)
+                text = (f"Est. size: ≈ {self._fmt_est_size(res['bytes'])} total "
+                        f"({int(res.get('files') or 0)} file(s), learned from "
+                        f"{n} past burn{'s' if n != 1 else ''})")
+            elif mode == "manual":
+                text = ("Est. size: -- no historical data -- "
+                        "(burn once at this speed to calibrate)")
+            else:
+                text = "Est. size: —"
+            self.burn_est_value.configure(text=text)
+        except Exception:
+            pass
 
     def _refresh_burn_speed_desc(self):
         """One-line trade-off note for the selected burn speed. NVENC rows
@@ -1780,6 +1931,10 @@ class MoonshineGUI(ctk.CTk):
     def _on_burn_speed_changed(self, value):
         try:
             self._refresh_burn_speed_desc()
+        except Exception:
+            pass
+        try:
+            self._refresh_burn_est()
         except Exception:
             pass
         # NVENC entries stay visible (discoverability) but refuse without
@@ -2203,6 +2358,12 @@ class MoonshineGUI(ctk.CTk):
         except Exception:
             pass
         self.srt_log(f"{'DONE' if ok else 'FAILED'}: {msg}")
+        # A burn just recorded fresh history - refresh the estimate even
+        # though the queue itself did not change.
+        try:
+            self._refresh_burn_est()
+        except Exception:
+            pass
 
     # ---------------- SRT language helpers ----------------
     def _on_srt_input_lang_changed(self, value):
