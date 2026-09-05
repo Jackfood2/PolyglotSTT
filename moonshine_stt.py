@@ -419,6 +419,11 @@ class MoonshineSTTApp:
                     self.gui.set_footer_version(APP_VERSION)
                 except Exception:
                     pass
+                try:
+                    self.gui.set_note_transcribe_fn(self._note_transcribe)
+                except Exception:
+                    pass
+
                 self.gui.protocol("WM_DELETE_WINDOW", self._on_close)
                 self.gui.update_idletasks()
                 try:
@@ -2194,6 +2199,13 @@ class MoonshineSTTApp:
     def _gui_record_stop(self):
         if self._recording:
             self._stop_recording()
+    def _note_transcribe(self, audio, sample_rate=16000):
+        """Transcribe audio for Note mode using current engine."""
+        try:
+            return self.engine.transcribe(audio, sample_rate)
+        except Exception as e:
+            return f"[Error: {e}]"
+
     def _on_close(self):
         if self._recording:
             try:

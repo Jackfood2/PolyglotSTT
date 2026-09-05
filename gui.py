@@ -338,10 +338,13 @@ class MoonshineGUI(ctk.CTk):
         self.tabs.grid(row=2, column=0, sticky="nsew", padx=8, pady=(0, 4))
         live = self.tabs.add("Live")
         srt_tab = self.tabs.add("SRT File")
+        note_tab = self.tabs.add("Note")
         live.grid_columnconfigure(0, weight=1)
         live.grid_rowconfigure(3, weight=1)
         srt_tab.grid_columnconfigure(0, weight=1)
         srt_tab.grid_rowconfigure(0, weight=1)
+        note_tab.grid_columnconfigure(0, weight=1)
+        note_tab.grid_rowconfigure(0, weight=1)
         try:
             _sb = self.tabs._segmented_button
             _sb.configure(selected_color=ACCENT,
@@ -457,6 +460,7 @@ class MoonshineGUI(ctk.CTk):
             font=("Segoe UI", 10), text_color=FG_DIM)
         self._footer_label.pack()
         self._build_srt_tab(srt_tab)
+        self._build_note_tab(note_tab)
         try:
             self._fix_menu_text()
         except Exception:
@@ -904,6 +908,316 @@ class MoonshineGUI(ctk.CTk):
         self.alert_check.pack(side="left")
         self._srt_opt_callback = None
         self._show_srt_action("generate")
+
+    # ═══════════════════════════════════════════════════════════
+    # NOTE TAB
+    # ═══════════════════════════════════════════════════════════
+    def _build_note_tab(self, tab):
+        """Build the Note tab UI - professional dictation layout."""
+        import customtkinter as ctk
+
+        self._note_recording = False
+        self._note_start_time = 0
+        self._note_timer_id = None
+
+        scroll = ctk.CTkScrollableFrame(tab, fg_color="transparent")
+        scroll.pack(fill="both", expand=True, padx=4, pady=4)
+        scroll.grid_columnconfigure(0, weight=1)
+
+        # ── Header card ──
+        header_card = ctk.CTkFrame(scroll, fg_color=BG_CARD, corner_radius=16)
+        header_card.grid(row=0, column=0, sticky="ew", padx=4, pady=(0, 8))
+        header_card.grid_columnconfigure(0, weight=1)
+
+        ctk.CTkLabel(header_card, text="Note Mode",
+                     font=("Segoe UI", 18, "bold"),
+                     text_color=FG_PRIMARY).pack(anchor="w", padx=20, pady=(16, 2))
+        ctk.CTkLabel(header_card,
+                     text="Record and transcribe in real-time. Audio is processed in "
+                          "40-80s chunks at natural pauses.",
+                     font=("Segoe UI", 11), text_color=FG_DIM,
+                     wraplength=400, justify="left"
+                     ).pack(anchor="w", padx=20, pady=(0, 12))
+
+        # ── Record control card ──
+        ctrl_card = ctk.CTkFrame(scroll, fg_color=BG_CARD, corner_radius=16)
+        ctrl_card.grid(row=1, column=0, sticky="ew", padx=4, pady=(0, 8))
+        ctrl_card.grid_columnconfigure(0, weight=1)
+
+        # Timer display
+        self.note_timer_label = ctk.CTkLabel(
+            ctrl_card, text="00:00:00",
+            font=("Consolas", 32, "bold"), text_color=FG_PRIMARY)
+        self.note_timer_label.pack(pady=(20, 4))
+
+        # Status line
+        self.note_status_label = ctk.CTkLabel(
+            ctrl_card, text="Ready to record",
+            font=("Segoe UI", 11), text_color=FG_DIM)
+        self.note_status_label.pack(pady=(0, 8))
+
+        # Record / Stop button
+        btn_row = ctk.CTkFrame(ctrl_card, fg_color="transparent")
+        btn_row.pack(pady=(0, 20))
+
+        self.note_record_btn = ctk.CTkButton(
+            btn_row, text="●  RECORD", width=180, height=48,
+            font=("Segoe UI", 15, "bold"),
+            fg_color=ACCENT, hover_color=ACCENT_DARK,
+            text_color=BTN_TEXT, corner_radius=24,
+            command=self._on_note_toggle)
+        self.note_record_btn.pack(side="left", padx=6)
+
+        self.note_clear_btn = ctk.CTkButton(
+            btn_row, text="Clear", width=90, height=48,
+            font=("Segoe UI", 12),
+            fg_color=BTN_DIM, hover_color=BTN_DIM_HOVER,
+            text_color=FG_SECONDARY, corner_radius=24,
+            command=self._on_note_clear)
+        self.note_clear_btn.pack(side="left", padx=6)
+
+        # Chunk info
+        self.note_chunk_label = ctk.CTkLabel(
+            ctrl_card, text="", font=("Segoe UI", 10), text_color=FG_DIM)
+        self.note_chunk_label.pack(pady=(0, 12))
+
+        # ── Transcription output card ──
+        out_card = ctk.CTkFrame(scroll, fg_color=BG_CARD, corner_radius=16)
+        out_card.grid(row=2, column=0, sticky="nsew", padx=4, pady=(0, 8))
+        out_card.grid_columnconfigure(0, weight=1)
+        out_card.grid_rowconfigure(1, weight=1)
+
+        out_header = ctk.CTkFrame(out_card, fg_color="transparent")
+        out_header.grid(row=0, column=0, sticky="ew", padx=16, pady=(12, 4))
+
+        ctk.CTkLabel(out_header, text="Transcription",
+                     font=("Segoe UI", 12, "bold"),
+                     text_color=FG_DIM).pack(side="left")
+
+        self.note_save_btn = ctk.CTkButton(
+            out_header, text="Save as TXT", width=110, height=30,
+            font=("Segoe UI", 11),
+            fg_color=SUCCESS, hover_color=BTN_GO_HOVER,
+            text_color=BTN_TEXT, corner_radius=8,
+            command=self._on_note_save)
+        self.note_save_btn.pack(side="right")
+
+        self.note_copy_btn = ctk.CTkButton(
+            out_header, text="Copy All", width=90, height=30,
+            font=("Segoe UI", 11),
+            fg_color=BTN_DIM, hover_color=BTN_DIM_HOVER,
+            text_color=FG_SECONDARY, corner_radius=8,
+            command=self._on_note_copy)
+        self.note_copy_btn.pack(side="right", padx=(0, 6))
+
+        self.note_text = ctk.CTkTextbox(
+            out_card, font=("Segoe UI", 13),
+            fg_color=BG_INPUT, text_color=FG_PRIMARY,
+            corner_radius=10, wrap="word", height=280)
+        self.note_text.grid(row=1, column=0, sticky="nsew", padx=12, pady=(4, 12))
+        self.note_text.insert("1.0", "Transcription will appear here as you speak...")
+        self.note_text.configure(state="disabled")
+
+        # ── Engine info ──
+        info_card = ctk.CTkFrame(scroll, fg_color=BG_CARD, corner_radius=12)
+        info_card.grid(row=3, column=0, sticky="ew", padx=4, pady=(0, 6))
+
+        self.note_engine_label = ctk.CTkLabel(
+            info_card, text="Engine: (uses current Live tab engine)",
+            font=("Segoe UI", 10), text_color=FG_DIM)
+        self.note_engine_label.pack(padx=16, pady=10, anchor="w")
+
+        # Init note recorder
+        try:
+            from note_engine import NoteRecorder, NoteTranscriber
+            self._note_recorder = NoteRecorder(sample_rate=16000)
+            self._note_transcriber = NoteTranscriber()
+            self._note_recorder.set_callbacks(
+                on_chunk_ready=self._note_on_chunk,
+                on_level=self._note_on_level,
+                on_status=self._note_on_rec_status)
+            self._note_transcriber.set_callbacks(
+                on_text=self._note_on_text,
+                on_status=self._note_on_tx_status)
+        except Exception as e:
+            print(f"[Note] init failed: {e}")
+            self._note_recorder = None
+            self._note_transcriber = None
+
+    def _on_note_toggle(self):
+        if self._note_recording:
+            self._note_stop()
+        else:
+            self._note_start()
+
+    def _note_start(self):
+        if self._note_recorder is None:
+            return
+        try:
+            # Set transcription function based on current engine
+            self._note_setup_transcribe_fn()
+            self._note_recorder.start()
+            self._note_transcriber.start()
+            self._note_recording = True
+            self._note_start_time = time.time()
+
+            self.note_record_btn.configure(
+                text="■  STOP", fg_color=DANGER, hover_color=BTN_DANGER_HOVER)
+            self.note_status_label.configure(text="Recording...", text_color=DANGER)
+            self.note_text.configure(state="normal")
+            self.note_text.delete("1.0", "end")
+            self.note_text.configure(state="disabled")
+
+            self._note_update_timer()
+        except Exception as e:
+            self.note_status_label.configure(text=f"Error: {e}", text_color=DANGER)
+
+    def _note_stop(self):
+        if not self._note_recording:
+            return
+        self._note_recording = False
+
+        # Stop timer
+        if self._note_timer_id:
+            try:
+                self.after_cancel(self._note_timer_id)
+            except Exception:
+                pass
+            self._note_timer_id = None
+
+        # Get remaining audio
+        remaining = self._note_recorder.stop()
+        if remaining is not None and len(remaining) > 16000:
+            self._note_transcriber.submit_chunk(remaining, self._note_recorder.chunk_count + 1)
+
+        self._note_transcriber.stop()
+
+        self.note_record_btn.configure(
+            text="●  RECORD", fg_color=ACCENT, hover_color=ACCENT_DARK)
+        self.note_status_label.configure(text="Stopped - review and save", text_color=SUCCESS)
+        self.note_chunk_label.configure(text="")
+
+    def _note_setup_transcribe_fn(self):
+        """Wire up the transcription function from the app's current engine."""
+        try:
+            # This will be set by the main app via set_note_transcribe_fn
+            if hasattr(self, '_note_transcribe_fn') and self._note_transcribe_fn:
+                self._note_transcriber.set_transcribe_fn(self._note_transcribe_fn)
+        except Exception:
+            pass
+
+    def set_note_transcribe_fn(self, fn):
+        """Called by main app to set the transcription function."""
+        self._note_transcribe_fn = fn
+        if self._note_transcriber:
+            self._note_transcriber.set_transcribe_fn(fn)
+
+    def _note_on_chunk(self, audio, index):
+        """Called from recorder thread when a chunk is ready."""
+        if self._note_transcriber:
+            self._note_transcriber.submit_chunk(audio, index)
+        try:
+            self.after(0, lambda i=index: self.note_chunk_label.configure(
+                text=f"Chunks processed: {i}"))
+        except Exception:
+            pass
+
+    def _note_on_level(self, level):
+        pass  # Could add a level meter later
+
+    def _note_on_rec_status(self, msg):
+        try:
+            self.after(0, lambda m=msg: self.note_status_label.configure(
+                text=m, text_color=FG_SECONDARY))
+        except Exception:
+            pass
+
+    def _note_on_text(self, text, index):
+        """Called when a chunk is transcribed."""
+        def _append():
+            try:
+                self.note_text.configure(state="normal")
+                current = self.note_text.get("1.0", "end").strip()
+                if current == "Transcription will appear here as you speak...":
+                    self.note_text.delete("1.0", "end")
+                self.note_text.insert("end", text + "\n\n")
+                self.note_text.see("end")
+                self.note_text.configure(state="disabled")
+            except Exception:
+                pass
+        try:
+            self.after(0, _append)
+        except Exception:
+            pass
+
+    def _note_on_tx_status(self, msg):
+        try:
+            self.after(0, lambda m=msg: self.note_status_label.configure(
+                text=m, text_color=FG_SECONDARY))
+        except Exception:
+            pass
+
+    def _note_update_timer(self):
+        if not self._note_recording:
+            return
+        elapsed = time.time() - self._note_start_time
+        h = int(elapsed // 3600)
+        m = int((elapsed % 3600) // 60)
+        s = int(elapsed % 60)
+        self.note_timer_label.configure(text=f"{h:02d}:{m:02d}:{s:02d}")
+        self._note_timer_id = self.after(1000, self._note_update_timer)
+
+    def _on_note_clear(self):
+        if self._note_recording:
+            return
+        self.note_text.configure(state="normal")
+        self.note_text.delete("1.0", "end")
+        self.note_text.insert("1.0", "Transcription will appear here as you speak...")
+        self.note_text.configure(state="disabled")
+        self.note_chunk_label.configure(text="")
+        self.note_status_label.configure(text="Ready to record", text_color=FG_DIM)
+        if self._note_transcriber:
+            self._note_transcriber._results = []
+
+    def _on_note_copy(self):
+        try:
+            self.note_text.configure(state="normal")
+            text = self.note_text.get("1.0", "end").strip()
+            self.note_text.configure(state="disabled")
+            if text and text != "Transcription will appear here as you speak...":
+                from input_sim import copy_to_clipboard
+                copy_to_clipboard(text)
+                self.note_status_label.configure(text="Copied to clipboard", text_color=SUCCESS)
+        except Exception:
+            pass
+
+    def _on_note_save(self):
+        try:
+            self.note_text.configure(state="normal")
+            text = self.note_text.get("1.0", "end").strip()
+            self.note_text.configure(state="disabled")
+
+            if not text or text == "Transcription will appear here as you speak...":
+                self.note_status_label.configure(text="Nothing to save", text_color=WARNING)
+                return
+
+            from tkinter import filedialog
+            import datetime
+            default_name = f"note_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
+            path = filedialog.asksaveasfilename(
+                title="Save Note",
+                defaultextension=".txt",
+                initialfile=default_name,
+                filetypes=[("Text files", "*.txt"), ("All files", "*.*")])
+            if path:
+                with open(path, "w", encoding="utf-8") as f:
+                    f.write(text)
+                self.note_status_label.configure(
+                    text=f"Saved: {Path(path).name}", text_color=SUCCESS)
+        except Exception as e:
+            self.note_status_label.configure(text=f"Save error: {e}", text_color=DANGER)
+
+
     def _on_tab_changed(self, value=None):
         try:
             name = self.tabs.get()
@@ -1511,6 +1825,15 @@ class MoonshineGUI(ctk.CTk):
         added = 0
         try:
             import os as _os
+            if self._srt_input_paths and not getattr(self, "_srt_running", False):
+                all_done = all(
+                    str(self._srt_file_status.get(i, "")).startswith(
+                        ("\u2713", "\u2717", "\u2013"))
+                    for i in range(len(self._srt_input_paths))
+                )
+                if all_done:
+                    self._srt_input_paths = []
+                    self._srt_file_status = {}
             try:
                 seen = {_os.path.normcase(p) for p in self._srt_input_paths}
             except Exception:
@@ -1539,7 +1862,6 @@ class MoonshineGUI(ctk.CTk):
             if added and not getattr(self, "_srt_running", False):
                 try:
                     last = self._srt_input_paths[-1]
-                    import os as _os
                     self.set_srt_progress(
                         0, f"Ready: {added} file(s) - latest: {_os.path.basename(last)}")
                 except Exception:
@@ -1551,6 +1873,7 @@ class MoonshineGUI(ctk.CTk):
         except Exception:
             pass
         return added
+
     def _refresh_srt_list(self):
         try:
             self.srt_file_list.delete(0, "end")
@@ -1774,6 +2097,13 @@ class MoonshineGUI(ctk.CTk):
             self.update_action_states()
         except Exception:
             pass
+        try:
+            self.srt_bar.set(0)
+            self.srt_pct.configure(text="0%")
+            self.srt_status.configure(text="Idle - pick a file to begin")
+        except Exception:
+            pass
+
     def _srt_browse_outdir(self):
         try:
             from tkinter import filedialog
@@ -2657,26 +2987,39 @@ class MoonshineGUI(ctk.CTk):
                     self.burn_est_entry.configure(state="disabled")
                 except Exception:
                     pass
-                self.srt_start_btn.configure(state="disabled" if running else "normal")
-                self.srt_cancel_btn.configure(state="normal" if running else "disabled")
+            try:
+                self.srt_start_btn.configure(
+                    state="disabled" if running else "normal")
+            except Exception:
+                pass
+            try:
+                self.srt_cancel_btn.configure(
+                    state="normal" if running else "disabled")
+            except Exception:
+                pass
+            try:
+                self.srt_burn_btn.configure(
+                    state="disabled" if running else "normal")
+            except Exception:
+                pass
+            for w in (getattr(self, "srt_browse_btn", None),
+                      getattr(self, "srt_clear_btn", None)):
                 try:
-                    self.srt_burn_btn.configure(state="disabled" if running else "normal")
+                    if w is not None:
+                        w.configure(state="disabled" if running else "normal")
                 except Exception:
                     pass
-                for w in (getattr(self, "srt_browse_btn", None),
-                          getattr(self, "srt_clear_btn", None)):
-                    try:
-                        if w is not None:
-                            w.configure(state="disabled" if running else "normal")
-                    except Exception:
-                        pass
+            try:
+                self.srt_file_list.configure(
+                    state="disabled" if running else "normal")
+            except Exception:
+                pass
+            if running:
                 try:
-                    self.srt_file_list.configure(state="disabled" if running else "normal")
-                except Exception:
-                    pass
-                if running:
                     self.srt_bar.set(0)
                     self.srt_pct.configure(text="0%")
+                except Exception:
+                    pass
             else:
                 try:
                     self.update_action_states(touch_progress=False)
@@ -2684,6 +3027,7 @@ class MoonshineGUI(ctk.CTk):
                     pass
         except Exception:
             pass
+
     def set_srt_progress(self, frac: float, msg: str = ""):
         try:
             frac = max(0.0, min(1.0, float(frac)))
@@ -2743,7 +3087,20 @@ class MoonshineGUI(ctk.CTk):
     def srt_done(self, ok: bool, msg: str):
         self.set_srt_running(False)
         try:
-            self.srt_status.configure(text=msg, text_color=theme_color(SUCCESS if ok else DANGER))
+            self.srt_clear_btn.configure(state="normal")
+        except Exception:
+            pass
+        try:
+            self.srt_browse_btn.configure(state="normal")
+        except Exception:
+            pass
+        try:
+            self.srt_file_list.configure(state="normal")
+        except Exception:
+            pass
+        try:
+            self.srt_status.configure(
+                text=msg, text_color=theme_color(SUCCESS if ok else DANGER))
         except Exception:
             pass
         self.srt_log(f"{'DONE' if ok else 'FAILED'}: {msg}")
@@ -2751,6 +3108,7 @@ class MoonshineGUI(ctk.CTk):
             self._refresh_burn_est()
         except Exception:
             pass
+
     def _on_srt_input_lang_changed(self, value):
         try:
             self._refresh_srt_engine_label()
