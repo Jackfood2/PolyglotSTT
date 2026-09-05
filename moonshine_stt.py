@@ -36,7 +36,7 @@ RECORD_KEY = keyboard.Key.f2
 SAMPLE_RATE = 16000
 # Build version shown in the footer + startup log (bump per release so a
 # screenshot always identifies the checkout).
-APP_VERSION = "1.2.1"
+APP_VERSION = "1.2.2"
 CONFIG_PATH = os.path.join(os.path.dirname(__file__), "moonshine_config.json")
 _CONFIG_LOCK = threading.RLock()  # reentrant: callers may hold it while save_local_config() re-acquires
 

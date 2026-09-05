@@ -256,7 +256,14 @@ requirements*.txt  dependency pins (base / Canary / Whisper)
 
 ## Changelog
 
-### v1.2.1 (latest)
+### v1.2.2 (latest)
+
+- Two-way target size: with 2+ burns at a speed the estimate becomes an
+  editable MB box — type a size and the bitrate snaps to the exact kbps
+  (1kbps precision, CPU and NVENC alike); drag the slider and the box
+  follows back, slider always wins on drag. Typing implies manual mode.
+
+### v1.2.1
 
 - GitHub discoverability: 20 repository topics added (speech-to-text,
   whisper, subtitles, offline, NVENC, …) so the project surfaces in
