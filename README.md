@@ -252,7 +252,13 @@ requirements*.txt  dependency pins (base / Canary / Whisper)
 
 ## Changelog
 
-### v1.2.0 (latest)
+### v1.2.1 (latest)
+
+- GitHub discoverability: 20 repository topics added (speech-to-text,
+  whisper, subtitles, offline, NVENC, …) so the project surfaces in
+  topic search alongside the existing description
+
+### v1.2.0
 
 - Dark / light theme (☀/☾ header toggle, instant, persisted) — including
   the tab strip, which is now explicitly themed (it stayed dark before)
