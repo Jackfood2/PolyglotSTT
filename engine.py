@@ -181,11 +181,13 @@ class TranscriptionEngine:
                 except Exception:
                     stale = False
                 if stale:
+                    # Fixed: restart the load outside the lock to avoid deadlock.
                     with self._lock:
                         if self._switch_cb is None:
                             self._switch_cb = one_shot
                             one_shot = None
                     self.load()
+                    return
                 if self._base_ready:
                     self._base_ready(True, None)
                 if one_shot:

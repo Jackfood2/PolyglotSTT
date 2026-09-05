@@ -541,11 +541,17 @@ def load_wav_16k(wav_path: Path) -> Tuple[np.ndarray, int]:
     audio, sr = sf.read(str(wav_path), dtype="float32", always_2d=False)
     audio = np.asarray(audio, dtype=np.float32).flatten()
     if sr != 16000:
-        import math
         ratio = 16000 / float(sr)
-        idx = (np.arange(int(len(audio) * ratio)) / ratio).astype(np.int64)
-        idx = np.clip(idx, 0, len(audio) - 1)
-        audio = audio[idx]
+        out_len = int(len(audio) * ratio)
+        if out_len <= 0:
+            audio = np.zeros(0, dtype=np.float32)
+        else:
+            pos = np.arange(out_len, dtype=np.float64) / ratio
+            i0 = np.floor(pos).astype(np.int64)
+            i1 = np.minimum(i0 + 1, len(audio) - 1)
+            i0 = np.clip(i0, 0, len(audio) - 1)
+            frac = (pos - i0).astype(np.float32)
+            audio = (audio[i0] * (1.0 - frac) + audio[i1] * frac).astype(np.float32)
         sr = 16000
     return audio, sr
 def vad_segments(audio: np.ndarray, sr: int = 16000,
@@ -1516,7 +1522,9 @@ def stage_subtitles_filter(srt_path, font_size: int, dest_dir) -> str:
     except Exception:
         cjk = False
     if cjk:
-        style = "FontName=MS Gothic,FontSize=%d" % size
+        style = ("FontName=MS Gothic,FontSize=%d,PrimaryColour=&H00FFFFFF,"
+                 "OutlineColour=&H80000000,BorderStyle=1,Outline=1,"
+                 "Shadow=0,MarginV=28" % size)
     else:
         style = ("FontName=Arial,FontSize=%d,PrimaryColour=&H00FFFFFF,"
                  "OutlineColour=&H80000000,BorderStyle=1,Outline=1,"

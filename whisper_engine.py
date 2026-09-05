@@ -332,6 +332,11 @@ class WhisperEngine:
             self._ready = False
             self._last_error = None
         try:
+            with self._infer_lock:
+                pass
+        except Exception:
+            pass
+        try:
             import gc
             gc.collect()
         except Exception:

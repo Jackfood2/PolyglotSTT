@@ -273,7 +273,17 @@ requirements*.txt  dependency pins (base / Canary / Whisper)
 
 ## Changelog
 
-### v1.2.8 (latest)
+### v1.2.9 (latest)
+
+- Engine readiness guards: recording and queued-clip transcription refuse
+  while the engine is not ready instead of failing silently
+- Deadlock fixes: engine reload restarts outside the lock; unload waits on
+  the inference lock; Note recorder cuts chunks outside the audio lock
+- Idle-unload respects queued clips and Note recording; CJK burns get
+  outline styling; 16 kHz resampling uses linear interpolation
+- Clipboard paste simplified (keeps new text, longer settle delay)
+
+### v1.2.8
 
 - Note-tab engine (`note_engine.py`): chunked recording with adaptive
   silence detection (40–80s chunks cut at natural pauses) + async worker

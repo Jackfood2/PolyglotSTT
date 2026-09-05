@@ -200,6 +200,11 @@ class CanaryEngine:
             self._last_error = None
             self.supported_source_langs = None
         try:
+            with self._infer_lock:
+                pass
+        except Exception:
+            pass
+        try:
             import gc
             gc.collect()
         except Exception:

@@ -461,14 +461,10 @@ def insert_text(text, target_top_hwnd, target_child_hwnd, hotkey_name, our_root_
             log_func("No external target - copied to clipboard")
         return False
     if method == "clipboard":
-        old_text = get_clipboard_text()
         if set_clipboard_text(text):
             force_release_modifier_keys()
             paste_ok = send_ctrl_v(log_func=log_func)
-            time.sleep(0.5)
-            if old_text is not None:
-                set_clipboard_text(old_text)
-                set_clipboard_text(text)
+            time.sleep(1.0)
             return paste_ok
         else:
             pass

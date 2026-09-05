@@ -63,41 +63,39 @@ class NoteRecorder:
 
     def _audio_callback(self, indata, frames, time_info, status):
         try:
+            should_cut = False
             with self._lock:
                 if not self._recording:
                     return
                 self._frames.append(indata.copy())
 
-            # Level meter
-            if self._on_level:
                 f = indata.astype(np.float32) / 32768.0
                 rms = float(np.sqrt(np.mean(f ** 2)))
-                level = min(1.0, rms * 5.0)
-                self._on_level(level)
 
-            # Silence detection
-            f = indata.astype(np.float32) / 32768.0
-            rms = float(np.sqrt(np.mean(f ** 2)))
-            now = time.monotonic()
-            elapsed = now - self._chunk_start_time
+                if self._on_level:
+                    self._on_level(min(1.0, rms * 5.0))
 
-            if rms < self.RMS_THRESHOLD:
-                if self._silence_start is None:
-                    self._silence_start = now
+                now = time.monotonic()
+                elapsed = now - self._chunk_start_time
+
+                if rms < self.RMS_THRESHOLD:
+                    if self._silence_start is None:
+                        self._silence_start = now
+                    else:
+                        silence_dur = now - self._silence_start
+                        required = self._required_silence(elapsed)
+                        if elapsed >= self.MIN_CHUNK_SEC and silence_dur >= required:
+                            should_cut = True
+                        elif elapsed >= self.MAX_CHUNK_SEC:
+                            should_cut = True
                 else:
-                    silence_dur = now - self._silence_start
-                    required = self._required_silence(elapsed)
-                    if elapsed >= self.MIN_CHUNK_SEC and silence_dur >= required:
-                        self._cut_chunk()
-                    elif elapsed >= self.MAX_CHUNK_SEC:
-                        self._cut_chunk()
-            else:
-                self._silence_start = None
+                    self._silence_start = None
 
-            # Hard cut at MAX
-            if elapsed >= self.MAX_CHUNK_SEC + 2.0:
+                if elapsed >= self.MAX_CHUNK_SEC + 2.0:
+                    should_cut = True
+
+            if should_cut:
                 self._cut_chunk()
-
         except Exception:
             pass
 
@@ -114,7 +112,7 @@ class NoteRecorder:
 
             audio = np.concatenate(frames, axis=0)
             # Trim trailing silence (last 0.5s max)
-            audio = self._trim_trailing_silence(audio)
+            audio = self._trim_trailing_silence(audio, self.sample_rate)
 
             if len(audio) < self.sample_rate * 2:  # skip < 2s
                 return

@@ -1044,6 +1044,16 @@ class MoonshineSTTApp:
         try:
             if self._srt_busy:
                 return
+            try:
+                if self.audio_queue.qsize() > 0 or self.currently_processing:
+                    return
+            except Exception:
+                pass
+            try:
+                if self.gui is not None and getattr(self.gui, "_note_recording", False):
+                    return
+            except Exception:
+                pass
             active = self.config.get("engine", "Moonshine v2")
             for name in ("canary_engine", "whisper_engine", "moonshine_engine"):
                 try:
@@ -1263,6 +1273,12 @@ class MoonshineSTTApp:
                 self._gui_queue.put(("status", ("Switching model - wait a moment", WARNING)))
                 return
             try:
+                if not getattr(self.engine, "is_ready", False):
+                    self._gui_queue.put(("status", ("Model not ready yet", WARNING)))
+                    return
+            except Exception:
+                pass
+            try:
                 self.recorder.start()
             except Exception as e:
                 msg = f"Mic error: {e}"
@@ -1351,6 +1367,9 @@ class MoonshineSTTApp:
             else:
                 self._gui_queue.put(("status", ("Transcribing...", WARNING)))
         engine = settings.get("engine", self.engine)
+        if not getattr(engine, "is_ready", False):
+            self._gui_queue.put(("status", ("Engine not ready - skipped clip", WARNING)))
+            return
         text = engine.transcribe(audio, SAMPLE_RATE)
         clean = text.strip() if text else ""
         if clean and not clean.startswith("["):
@@ -2202,7 +2221,10 @@ class MoonshineSTTApp:
     def _note_transcribe(self, audio, sample_rate=16000):
         """Transcribe audio for Note mode using current engine."""
         try:
-            return self.engine.transcribe(audio, sample_rate)
+            engine = self.engine
+            if not getattr(engine, "is_ready", False):
+                return "[Error: engine not ready]"
+            return engine.transcribe(audio, sample_rate)
         except Exception as e:
             return f"[Error: {e}]"
 
