@@ -1306,8 +1306,23 @@ class MoonshineGUI(ctk.CTk):
             pass
 
     def _note_begin_capture(self):
-        """Start recorder + transcriber + UI state. Assumes pre-flight go."""
+        """Start recorder + transcriber + UI state. Re-runs the pre-flight
+        first so the engine snapshot is always fresh - the wait/confirm
+        paths load engines but never snapshot them."""
         try:
+            if getattr(self, "_note_record_cb", None) is not None:
+                try:
+                    _v = self._note_record_cb() or {"go": True}
+                except Exception:
+                    _v = {"go": True}
+                if isinstance(_v, dict) and not _v.get("go"):
+                    try:
+                        self.note_status_label.configure(
+                            text="Note engine not ready — press RECORD to retry",
+                            text_color=WARNING)
+                    except Exception:
+                        pass
+                    return
             # Set transcription function based on current engine
             self._note_setup_transcribe_fn()
             try:

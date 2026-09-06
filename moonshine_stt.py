@@ -3250,9 +3250,18 @@ class MoonshineSTTApp:
             self._stop_recording()
     def _note_transcribe(self, audio, sample_rate=16000):
         """Transcribe audio for Note mode using the NOTE tab's snapshotted
-        engine (stable for the session even if Live switches mid-note)."""
+        engine (stable for the session even if Live switches mid-note).
+        Self-heals: a missing snapshot re-resolves (loads are already
+        kicked by the pre-flight, so this is just a lookup)."""
         try:
             engine = self._note_engine_obj
+            if engine is None:
+                try:
+                    v = self.note_record_request() or {}
+                    if isinstance(v, dict) and v.get("go"):
+                        engine = self._note_engine_obj
+                except Exception:
+                    pass
             if engine is None:
                 return "[Error: note engine not ready]"
             return engine.transcribe(audio, sample_rate)
