@@ -37,8 +37,25 @@ if errorlevel 1 (
     exit /b 1
 )
 :CHECK_DEPS
-"%~dp0venv\Scripts\python.exe" -c "import moonshine_voice" >nul 2>&1
-if not errorlevel 1 goto CHECK_CANARY
+rem One fast probe for every group (importlib find_spec ~= milliseconds).
+rem Previously one full interpreter + heavy import per group (~16s total:
+rem nemo alone ~12s, faster-whisper ~3s, torch ~2s on every launch).
+rem Corrupt-but-present installs are left to the app, whose per-engine
+rem fallbacks log clearly. If the probe itself fails, assume present.
+set "DEPFLAGS=%TEMP%\polyglotstt_deps.txt"
+del "%DEPFLAGS%" >nul 2>&1
+"%~dp0venv\Scripts\python.exe" -c "import importlib.util as _u; _m={'moonshine_voice':'base','faster_whisper':'whisper','torch':'canary','nemo':'canary'}; open(r'%TEMP%\polyglotstt_deps.txt','w').write(' '.join(_v for _m2,_v in _m.items() if _u.find_spec(_m2) is None))" >nul 2>&1
+set "NEED_BASE=" & set "NEED_WHISPER=" & set "NEED_CANARY="
+if exist "%DEPFLAGS%" (
+    findstr /c:"base" "%DEPFLAGS%" >nul 2>&1
+    if not errorlevel 1 set "NEED_BASE=1"
+    findstr /c:"whisper" "%DEPFLAGS%" >nul 2>&1
+    if not errorlevel 1 set "NEED_WHISPER=1"
+    findstr /c:"canary" "%DEPFLAGS%" >nul 2>&1
+    if not errorlevel 1 set "NEED_CANARY=1"
+    del "%DEPFLAGS%" >nul 2>&1
+)
+if not defined NEED_BASE goto CHECK_CANARY
 echo Installing dependencies...
 "%~dp0venv\Scripts\python.exe" -m pip install -r requirements.txt >nul 2>&1
 if not errorlevel 1 goto CHECK_CANARY
@@ -50,25 +67,36 @@ if errorlevel 1 (
     exit /b 1
 )
 :CHECK_CANARY
+if not defined NEED_CANARY goto CHECK_WHISPER
 if not exist "requirements-canary.txt" goto CHECK_WHISPER
-"%~dp0venv\Scripts\python.exe" -c "import nemo.collections.asr" >nul 2>&1
+echo Installing Canary dependencies (torch+nemo, large)...
+"%~dp0venv\Scripts\python.exe" -m pip install -r requirements-canary.txt --extra-index-url https://download.pytorch.org/whl/cpu
 if not errorlevel 1 goto CHECK_WHISPER
-echo Installing Canary dependencies (torch+nemo, offline)...
+echo Online Canary install failed, trying offline wheels...
 "%~dp0venv\Scripts\python.exe" -m pip install --no-index --find-links="%~dp0wheels" -r requirements-canary.txt
-if errorlevel 1 echo Warning: Canary deps not installed. Moonshine engine still works.
+if errorlevel 1 echo Warning: Canary deps failed. Moonshine still works.
 :CHECK_WHISPER
-if not exist "requirements-whisper.txt" goto RUN_APP
-"%~dp0venv\Scripts\python.exe" -c "import faster_whisper" >nul 2>&1
-if not errorlevel 1 goto RUN_APP
-echo Installing Whisper Large v3 dependencies (faster-whisper, offline)...
+if not defined NEED_WHISPER goto GPU_NOTE
+if not exist "requirements-whisper.txt" goto GPU_NOTE
+echo Installing Whisper Large v3 dependencies (faster-whisper, CPU)...
+"%~dp0venv\Scripts\python.exe" -m pip install -r requirements-whisper.txt
+if not errorlevel 1 goto GPU_NOTE
+echo Online Whisper install failed, trying offline wheels...
 "%~dp0venv\Scripts\python.exe" -m pip install --no-index --find-links="%~dp0wheels" -r requirements-whisper.txt
-if errorlevel 1 echo Warning: Whisper deps not installed. Moonshine engine still works.
+if errorlevel 1 echo Warning: Whisper deps failed. Moonshine still works.
 :GPU_NOTE
 rem Warning only here (never a surprise 2.5GB download on launch).
+rem The torch import (~2s) runs once: marker lives inside venv, so a
+rem recreated venv re-checks automatically. Missing marker + failing
+rem check keeps nagging (actionable); a pass silences future launches.
 where nvidia-smi >nul 2>&1
 if errorlevel 1 goto RUN_APP
+if exist "venv\.cuda_ok" goto RUN_APP
 "%~dp0venv\Scripts\python.exe" -c "import torch,sys; sys.exit(0 if torch.cuda.is_available() else 1)" >nul 2>&1
-if not errorlevel 1 goto RUN_APP
+if not errorlevel 1 (
+    type nul > "venv\.cuda_ok"
+    goto RUN_APP
+)
 echo Note: NVIDIA GPU found but torch is CPU-only. Run setup.bat once for GPU support.
 :RUN_APP
 if not exist "models_cache\download.moonshine.ai" echo Warning: models_cache not found. Will try APPDATA cache.

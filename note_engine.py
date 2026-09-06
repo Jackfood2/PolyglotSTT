@@ -332,6 +332,34 @@ class NoteRecorder:
             return "ok", ""
 
 
+def cleanup_stale_session_wavs(session_dir=None) -> int:
+    """Delete orphan note_*.wav archives from crashed/hung runs.
+
+    Only the recorder's exact note_YYYYMMDD_HHMMSS.wav pattern - never user
+    files, never MP3s (previous runs' audio is theirs to keep). A file a
+    live writer still holds open fails to delete on Windows and is kept.
+    Returns files removed. Never raises."""
+    removed = 0
+    try:
+        import re as _re
+        d = Path(str(session_dir)) if session_dir else None
+        if d is None or not d.is_dir():
+            return 0
+        for p in sorted(d.glob("note_*.wav")):
+            try:
+                if not p.is_file():
+                    continue
+                if not _re.fullmatch(r"note_\d{8}_\d{6}\.wav", p.name):
+                    continue
+                p.unlink()
+                removed += 1
+            except Exception:
+                continue
+    except Exception:
+        pass
+    return removed
+
+
 def wav_to_mp3(ffmpeg_exe, wav_path, mp3_path, bitrate_kbps=128):
     """Convert a session WAV to MP3 (voice archive: mono, 16 kHz).
     Returns (ok_bool, message). Blocking - callers run it off-thread.

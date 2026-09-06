@@ -471,6 +471,16 @@ class MoonshineSTTApp:
                 self.gui = None
         self.recorder.set_level_callback(self._level_callback)
         try:
+            # Orphan session WAVs from crashed/hung runs (close-cleanup never
+            # ran). Cheap directory scan; previous runs' MP3s are untouched.
+            from pathlib import Path as _P
+            from note_engine import cleanup_stale_session_wavs as _sweep
+            _n = _sweep(_P(__file__).parent / "notes_audio")
+            if _n:
+                self._log(f"Cleared {_n} orphan note audio file(s) from a previous run")
+        except Exception:
+            pass
+        try:
             self._log(f"PolyglotSTT v{APP_VERSION} (engine={self.config.get('engine', '?')}, "
                       f"compute={self.config.get('compute', '?')}, "
                       f"theme={self.config.get('theme', '?')})")
@@ -3272,6 +3282,13 @@ class MoonshineSTTApp:
         try:
             if self.gui and not self.gui.confirm_note_close():
                 return
+        except Exception:
+            pass
+        try:
+            # Drop this run's unsaved Note session audio (kept iff the user
+            # explicitly saved it via Save Audio).
+            if self.gui:
+                self.gui.cleanup_note_audio()
         except Exception:
             pass
         if self._recording:

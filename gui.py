@@ -957,6 +957,8 @@ class MoonshineGUI(ctk.CTk):
         self._note_mic_warned = False  # mic-dead popup latch (per episode)
         self._note_last_level_t = 0.0  # level-post throttle stamp
         self._note_pending = False  # auto-start armed while engine loads
+        self._note_auto_mp3s = set()  # session MP3s auto-saved this run
+        self._note_saved_mp3s = set()  # ...of which the user kept via Save Audio
 
         scroll = ctk.CTkScrollableFrame(tab, fg_color="transparent")
         scroll.pack(fill="both", expand=True, padx=4, pady=4)
@@ -1047,6 +1049,14 @@ class MoonshineGUI(ctk.CTk):
             text_color=BTN_TEXT, corner_radius=8,
             command=self._on_note_save)
         self.note_save_btn.pack(side="right")
+
+        self.note_save_audio_btn = ctk.CTkButton(
+            out_header, text="Save Audio", width=100, height=30,
+            font=("Segoe UI", 11),
+            fg_color=BTN_DIM, hover_color=BTN_DIM_HOVER,
+            text_color=FG_SECONDARY, corner_radius=8,
+            command=self._on_note_save_audio)
+        self.note_save_audio_btn.pack(side="right", padx=(0, 6))
 
         self.note_copy_btn = ctk.CTkButton(
             out_header, text="Copy All", width=90, height=30,
@@ -1412,6 +1422,10 @@ class MoonshineGUI(ctk.CTk):
             mp3 = wav.with_suffix(".mp3")
             ok, msg = wav_to_mp3(_ff, wav, mp3, 128)
             if ok:
+                try:
+                    self._note_auto_mp3s.add(str(mp3))
+                except Exception:
+                    pass
                 _say(f"Audio saved: {msg}", SUCCESS)
             else:
                 _say(f"Audio archive kept as WAV ({msg}): {wav.name}", WARNING)
@@ -1660,6 +1674,115 @@ class MoonshineGUI(ctk.CTk):
             except Exception:
                 return False
         return True
+
+    def _on_note_save_audio(self):
+        """Save Audio button: copy the last auto-saved session MP3 to a
+        user-chosen location (marks it kept for close-cleanup)."""
+        try:
+            from pathlib import Path as _P
+            from tkinter import filedialog as _fd
+            from tkinter import messagebox as _mb
+            try:
+                cands = sorted(
+                    (str(p) for p in (getattr(self, "_note_auto_mp3s", set())
+                                      or set())),
+                    reverse=True)
+            except Exception:
+                cands = []
+            src = None
+            for c in cands:
+                try:
+                    if _P(c).exists() and _P(c).stat().st_size > 0:
+                        src = _P(c)
+                        break
+                except Exception:
+                    continue
+            if src is None:
+                try:
+                    self.note_status_label.configure(
+                        text="No audio saved yet — record a note first",
+                        text_color=WARNING)
+                except Exception:
+                    pass
+                return
+            try:
+                dest = _fd.asksaveasfilename(
+                    title="Save note audio",
+                    defaultextension=".mp3",
+                    initialfile=src.name,
+                    filetypes=[("MP3 audio", "*.mp3"),
+                               ("All files", "*.*")],
+                    parent=self)
+            except Exception:
+                return
+            if not dest:
+                return
+            try:
+                import shutil as _sh
+                _sh.copy2(str(src), str(dest))
+            except Exception as e:
+                try:
+                    _mb.showwarning("Save Audio", f"Could not save: {e}",
+                                    parent=self)
+                except Exception:
+                    pass
+                return
+            try:
+                self._note_saved_mp3s.add(str(src))
+            except Exception:
+                pass
+            try:
+                self.note_status_label.configure(
+                    text=f"Audio saved to: {_P(dest).name}", text_color=SUCCESS)
+            except Exception:
+                pass
+        except Exception:
+            pass
+
+    def cleanup_note_audio(self):
+        """Close-time sweep: stop any live Note capture, then delete this
+        run's auto session files (WAV leftovers + MP3s) UNLESS explicitly
+        kept via Save Audio. Previous runs' files are never touched.
+        Never raises (close must never brick)."""
+        try:
+            try:
+                if bool(getattr(self, "_note_recording", False)):
+                    try:
+                        self._note_recording = False
+                    except Exception:
+                        pass
+                    try:
+                        rec = getattr(self, "_note_recorder", None)
+                        if rec is not None:
+                            rec.stop()
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+            try:
+                auto = set(getattr(self, "_note_auto_mp3s", set()) or set())
+                saved = set(getattr(self, "_note_saved_mp3s", set()) or set())
+            except Exception:
+                auto, saved = set(), set()
+            try:
+                rec = getattr(self, "_note_recorder", None)
+                sw = getattr(rec, "session_wav", None) if rec else None
+                if sw:
+                    auto.add(str(sw))
+            except Exception:
+                pass
+            from pathlib import Path as _P
+            for p in auto:
+                try:
+                    if p in saved:
+                        continue
+                    _f = _P(str(p))
+                    if _f.exists():
+                        _f.unlink()
+                except Exception:
+                    continue
+        except Exception:
+            pass
 
 
     def _on_tab_changed(self, value=None):
