@@ -279,7 +279,12 @@ requirements*.txt  dependency pins (base / Canary / Whisper)
 
 ## Changelog
 
-### v1.2.13 (latest)
+### v1.2.14 (latest)
+
+- Note full-session MP3 archive: parallel WAV during record, background convert on stop
+- Note pending auto-start: RECORD arms the wait, capture begins when the engine is ready
+
+### v1.2.13
 
 - Light theme engine/model dropdown text readable (were invisible)
 - Tab strip surround and segment canvases follow the theme, border off
