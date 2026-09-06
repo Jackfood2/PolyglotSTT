@@ -40,23 +40,29 @@ THEMES = {
     },
     "light": {
         "ACCENT": "#5A48D6", "ACCENT_DARK": "#4A38B8",
-        "ACCENT_GLOW": "#4A38B8", "SUCCESS": "#00755C",
+        "ACCENT_GLOW": "#5E35B1", "SUCCESS": "#00755C",
         "WARNING": "#8A5A00", "DANGER": "#C0392B",
         "BG_DARK": "#E9EDF2", "BG_CARD": "#FFFFFF", "BG_INPUT": "#DCE2EA",
         "FG_PRIMARY": "#16181D", "FG_SECONDARY": "#3E4450",
         "FG_DIM": "#687182",
         "BTN_DIM": "#CBD2DC", "BTN_DIM_HOVER": "#B6BECB",
-        "BTN_GO_HOVER": "#00755C", "BTN_DANGER_HOVER": "#A93226",
+        "BTN_GO_HOVER": "#006A51", "BTN_DANGER_HOVER": "#A93226",
         "BTN_BURN": "#A05A18", "BTN_BURN_HOVER": "#7E4A12",
         "BTN_TEXT": "#FEFEFE",
         "SEG_SELECTED": "#D9D2FB", "SEG_SELECTED_HOVER": "#C4B8F5",
     },
 }
 THEME_MODE = "dark"
+# SEG_* are excluded from the value maps: their dark values intentionally
+# match other roles (selected strip == ACCENT), and value-based mapping
+# cannot tell roles apart. The strip is configured explicitly instead.
+_SKIP_REMAP = ("SEG_SELECTED", "SEG_SELECTED_HOVER")
 _DARK_TO_LIGHT = {v.upper(): THEMES["light"][k]
-                  for k, v in THEMES["dark"].items()}
+                  for k, v in THEMES["dark"].items()
+                  if k not in _SKIP_REMAP}
 _LIGHT_TO_DARK = {v.upper(): THEMES["dark"][k]
-                  for k, v in THEMES["light"].items()}
+                  for k, v in THEMES["light"].items()
+                  if k not in _SKIP_REMAP}
 def theme_color(value):
     try:
         v = str(value or "")
@@ -471,6 +477,10 @@ class MoonshineGUI(ctk.CTk):
         self._build_note_tab(note_tab)
         try:
             self._fix_menu_text()
+        except Exception:
+            pass
+        try:
+            self._tune_scrollers()
         except Exception:
             pass
     def set_footer_version(self, version: str):
@@ -1541,6 +1551,38 @@ class MoonshineGUI(ctk.CTk):
                 cb(nxt)
             except Exception:
                 pass
+    def _tune_scrollers(self, root=None):
+        """Wheel step-up for our scroll areas. CTk scrolls 20 units of 1px
+        per notch on Windows (~20px - endless on a heavy tab); 12px units
+        travel the same tab in ~8 notches. Re-asserted on theme swap.
+        Inner text boxes/listboxes keep their own scrolling."""
+        try:
+            import customtkinter as _ctk
+        except Exception:
+            return
+        try:
+            base = root if root is not None else self
+            stack = [base]
+            while stack:
+                try:
+                    w = stack.pop()
+                except Exception:
+                    break
+                try:
+                    if isinstance(w, _ctk.CTkScrollableFrame):
+                        try:
+                            w._parent_canvas.configure(yscrollincrement=12)
+                        except Exception:
+                            pass
+                except Exception:
+                    pass
+                try:
+                    stack.extend(list(w.winfo_children()))
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
     def set_theme(self, mode: str = "dark"):
         global THEME_MODE
         mode = "light" if str(mode or "").lower() == "light" else "dark"
@@ -1555,8 +1597,11 @@ class MoonshineGUI(ctk.CTk):
             except Exception:
                 pass
         try:
+            # SEG_* excluded like the module maps: their dark values match
+            # other roles and value-mapping cannot tell roles apart (this
+            # exact omission once repainted every accent button lavender).
             forward = {str(old_vals.get(k, v)).upper(): v
-                       for k, v in pal.items()}
+                       for k, v in pal.items() if k not in _SKIP_REMAP}
         except Exception:
             forward = {}
         try:
@@ -1601,6 +1646,19 @@ class MoonshineGUI(ctk.CTk):
                                unselected_color=BG_CARD,
                                unselected_hover_color=BG_INPUT,
                                text_color=FG_PRIMARY)
+                # Inner segment buttons own CTkCanvases invisible to the
+                # walker - paint them the strip color directly.
+                try:
+                    import tkinter as _tk4
+                    for _ch in list(_sb2.winfo_children()):
+                        try:
+                            _cv = getattr(_ch, "_canvas", None)
+                            if _cv is not None:
+                                _tk4.Canvas.configure(_cv, bg=BG_CARD)
+                        except Exception:
+                            pass
+                except Exception:
+                    pass
         except Exception:
             pass
         THEME_MODE = mode
@@ -1612,9 +1670,13 @@ class MoonshineGUI(ctk.CTk):
         try:
             if getattr(self, "meter", None) is not None:
                 try:
-                    self.meter.configure(bg=BG_CARD)
+                    import tkinter as _tk2
+                    _tk2.Canvas.configure(self.meter, bg=BG_CARD)
                 except Exception:
-                    pass
+                    try:
+                        self.meter.configure(bg=BG_CARD)
+                    except Exception:
+                        pass
                 self.meter.set_level(float(getattr(self.meter, "level", 0.0)))
         except Exception:
             pass
@@ -1631,7 +1693,18 @@ class MoonshineGUI(ctk.CTk):
         try:
             _wf = getattr(self, "waveform", None)
             if _wf is not None and getattr(_wf, "canvas", None) is not None:
-                _wf.canvas.configure(bg=BG_INPUT)
+                try:
+                    import tkinter as _tk3
+                    _tk3.Canvas.configure(_wf.canvas, bg=BG_INPUT)
+                except Exception:
+                    try:
+                        _wf.canvas.configure(bg=BG_INPUT)
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+        try:
+            self._tune_scrollers()
         except Exception:
             pass
         return mode
@@ -1681,10 +1754,27 @@ class MoonshineGUI(ctk.CTk):
             except Exception:
                 continue
             if key in mapping:
+                # CTkCanvas (button art, meters, waveform) goes straight to
+                # the tkinter level: its CTk configure() accepts bg without
+                # applying it, so the normal path would silently no-op.
+                try:
+                    import tkinter as _tk0
+                    if type(widget).__name__ == "CTkCanvas" and opt in (
+                            "bg", "background"):
+                        _tk0.Canvas.configure(widget, bg=mapping[key])
+                        continue
+                except Exception:
+                    pass
                 try:
                     widget.configure(**{opt: mapping[key]})
                 except Exception:
-                    pass
+                    try:
+                        import tkinter as _tk
+                        if type(widget).__name__ == "CTkCanvas" and opt in (
+                                "bg", "background"):
+                            _tk.Canvas.configure(widget, bg=mapping[key])
+                    except Exception:
+                        pass
     def _toggle_record(self):
         if self._is_recording:
             self._is_recording = False
@@ -2220,6 +2310,10 @@ class MoonshineGUI(ctk.CTk):
         body = ctk.CTkScrollableFrame(win, fg_color="transparent")
         body.pack(fill="both", expand=True, padx=12, pady=4)
         body.grid_columnconfigure(0, weight=1)
+        try:
+            self._tune_scrollers(win)
+        except Exception:
+            pass
         foot = ctk.CTkFrame(win, fg_color="transparent")
         foot.pack(fill="x", padx=16, pady=(4, 14))
         foot.grid_columnconfigure(0, weight=1)
@@ -2914,6 +3008,10 @@ class MoonshineGUI(ctk.CTk):
         try:
             grid = ctk.CTkScrollableFrame(win, fg_color="transparent")
             grid.pack(fill="both", expand=True, padx=12, pady=4)
+            try:
+                self._tune_scrollers(win)
+            except Exception:
+                pass
             headers = ("Mode", "Encoder", "Size accuracy", "Speed",
                        "Plays on", "Best for")
             for c, h in enumerate(headers):
