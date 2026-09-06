@@ -347,8 +347,13 @@ class MoonshineGUI(ctk.CTk):
         note_tab.grid_columnconfigure(0, weight=1)
         note_tab.grid_rowconfigure(0, weight=1)
         try:
+            # Palette-named colors so the theme walker remaps them.
+            # fg follows the cards (no dark surround survives) and the
+            # border is off entirely ("transparent" fg is rejected here,
+            # BG_CARD is the opaque equivalent).
             _sb = self.tabs._segmented_button
-            _sb.configure(selected_color=ACCENT,
+            _sb.configure(fg_color=BG_CARD, border_width=0,
+                          selected_color=ACCENT,
                           selected_hover_color=ACCENT_DARK,
                           unselected_color=BG_CARD,
                           unselected_hover_color=BG_INPUT,
@@ -1506,7 +1511,9 @@ class MoonshineGUI(ctk.CTk):
                     "method_menu", "suffix_menu", "model_menu",
                     "compute_menu", "srt_input_lang_menu",
                     "srt_output_lang_menu", "sample_len_menu",
-                    "burn_speed_menu", "burn_codec_menu"):
+                    "burn_speed_menu", "burn_codec_menu",
+                    "srt_engine_menu", "srt_model_menu",
+                    "note_engine_menu", "note_model_menu"):
             try:
                 _w = getattr(self, _mn, None)
                 if _w is not None:
@@ -1586,7 +1593,8 @@ class MoonshineGUI(ctk.CTk):
             _sb2 = getattr(getattr(self, "tabs", None),
                            "_segmented_button", None)
             if _sb2 is not None:
-                _sb2.configure(selected_color=ACCENT,
+                _sb2.configure(fg_color=BG_CARD, border_width=0,
+                               selected_color=ACCENT,
                                selected_hover_color=ACCENT_DARK,
                                unselected_color=BG_CARD,
                                unselected_hover_color=BG_INPUT,
