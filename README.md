@@ -279,7 +279,14 @@ requirements*.txt  dependency pins (base / Canary / Whisper)
 
 ## Changelog
 
-### v1.2.9 (latest)
+### v1.2.10 (latest)
+
+- Per-tab engines: Live, SRT File, and Note each pick engine + model
+- Shared-default mirror: untouched tabs follow your last pick
+- Dual-engine confirm with stated RAM cost when another session runs
+- Note fixes: engine errors surface instead of dropping chunks, honest counter, non-blocking STOP, editable box, append-on-record, mic watchdog, level meter, close save-prompt
+
+### v1.2.9
 
 - Engine readiness guards: recording and queued-clip transcription refuse
   while the engine is not ready instead of failing silently
