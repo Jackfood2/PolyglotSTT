@@ -36,6 +36,7 @@ THEMES = {
         "BTN_GO_HOVER": "#00916E", "BTN_DANGER_HOVER": "#C0392B",
         "BTN_BURN": "#B5651D", "BTN_BURN_HOVER": "#8E4E15",
         "BTN_TEXT": "#FEFEFE",
+        "SEG_SELECTED": "#6C5CE7", "SEG_SELECTED_HOVER": "#5A4BD1",
     },
     "light": {
         "ACCENT": "#5A48D6", "ACCENT_DARK": "#4A38B8",
@@ -48,6 +49,7 @@ THEMES = {
         "BTN_GO_HOVER": "#00755C", "BTN_DANGER_HOVER": "#A93226",
         "BTN_BURN": "#A05A18", "BTN_BURN_HOVER": "#7E4A12",
         "BTN_TEXT": "#FEFEFE",
+        "SEG_SELECTED": "#D9D2FB", "SEG_SELECTED_HOVER": "#C4B8F5",
     },
 }
 THEME_MODE = "dark"
@@ -353,8 +355,8 @@ class MoonshineGUI(ctk.CTk):
             # BG_CARD is the opaque equivalent).
             _sb = self.tabs._segmented_button
             _sb.configure(fg_color=BG_CARD, border_width=0,
-                          selected_color=ACCENT,
-                          selected_hover_color=ACCENT_DARK,
+                          selected_color=SEG_SELECTED,
+                          selected_hover_color=SEG_SELECTED_HOVER,
                           unselected_color=BG_CARD,
                           unselected_hover_color=BG_INPUT,
                           text_color=FG_PRIMARY)
@@ -1594,8 +1596,8 @@ class MoonshineGUI(ctk.CTk):
                            "_segmented_button", None)
             if _sb2 is not None:
                 _sb2.configure(fg_color=BG_CARD, border_width=0,
-                               selected_color=ACCENT,
-                               selected_hover_color=ACCENT_DARK,
+                               selected_color=SEG_SELECTED,
+                               selected_hover_color=SEG_SELECTED_HOVER,
                                unselected_color=BG_CARD,
                                unselected_hover_color=BG_INPUT,
                                text_color=FG_PRIMARY)
