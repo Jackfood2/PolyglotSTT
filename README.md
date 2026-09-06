@@ -55,8 +55,11 @@ Moonshine stay on CPU.
 - **Live tab** — hold `F2` to record, release to transcribe; text is typed
   into the focused window (clipboard fallback), with level meter, waveform,
   history, and per-engine Task / source-language selectors. The *Model* row
-  follows the engine: Moonshine sizes, downloadable Whisper sizes (Tiny
-  75MB → Large v3 3GB, fetched once on first pick), or the fixed Canary-1B.
+   follows the engine: Moonshine sizes, downloadable Whisper sizes (Tiny
+   75MB → Large v3 3GB, fetched once on first pick), or the fixed Canary-1B.
+   Whisper generations: Large and Large v1 are the same (v1) weights, v2 is
+   the middle generation, v3 is newest and best — every Large is ~3GB, so
+   just take v3 unless you need to reproduce old output.
   Recording is politely refused for a moment while a model is swapping.
 - **SRT File tab** — queue one or many video/audio files (batch runs one by
   one, failures don't stop the queue), pick an output folder, generate
@@ -108,8 +111,10 @@ Moonshine stay on CPU.
   compensated by requesting proportionally less, so repeat burns land on
   target instead of running hot forever — the log states the adjustment
   (`overshoot compensation: …`), x264 2-pass measures ≈1.00 and is
-  untouched, and undershoot is never compensated. Subtitle size is adjustable (12–32) with an instant
-  single-frame **Preview** before the full encode. Latin burns use Arial
+   untouched, and undershoot is never compensated. Subtitle size is adjustable (12–32) with an instant
+   single-frame **Preview** before the full encode: **Preview Frame** renders one still with the current
+   size, using *Sample from/len* only as its test spot (transcribing that short clip when no SRT exists
+   yet) — *Generate SRT/MP4* always processes the FULL file, samples never affect it. Latin burns use Arial
   with outline; Japanese/Chinese/Korean burns automatically switch to
   MS Gothic (the only CJK setup this renderer draws — verified).
 - **Burn speeds** — **Match size (2-pass x264)** exact ±1–3% size,
@@ -279,7 +284,13 @@ requirements*.txt  dependency pins (base / Canary / Whisper)
 
 ## Changelog
 
-### v1.2.17 (latest)
+### v1.2.18 (latest)
+
+- Whisper model menu now tells Large apart: bare Large is the same v1 weights as Large v1 (oldest), v2 middle, v3 newest and best
+- Burn card states it outright: Sample from/len only pick the Preview Frame test spot, Generate SRT/MP4 always runs the full file
+- Taller drop box so the two-line hint is never clipped
+
+### v1.2.17
 
 - Window title bar now shows the running version (`MoonshineSTT v1.2.17`), same source as the footer
 

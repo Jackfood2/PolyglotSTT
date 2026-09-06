@@ -93,8 +93,8 @@ except Exception:
         "Base (145MB)": "base",
         "Small (500MB)": "small",
         "Medium (1.5GB)": "medium",
-        "Large (3GB)": "large",
-        "Large v1 (3GB)": "large-v1",
+        "Large (3GB, same as v1)": "large",
+        "Large v1 (3GB, oldest)": "large-v1",
         "Large v2 (3GB)": "large-v2",
         "Large v3 (3GB, best)": "large-v3",
     }
@@ -524,7 +524,7 @@ class MoonshineGUI(ctk.CTk):
                      ).pack(anchor="w", padx=12, pady=(8, 2))
         self.srt_drop = ctk.CTkTextbox(file_card, font=("Segoe UI", 11),
                                        fg_color=BG_INPUT, text_color=FG_SECONDARY,
-                                       corner_radius=8, height=44,
+                                       corner_radius=8, height=58,
                                        activate_scrollbars=False, wrap="word")
         self.srt_drop.pack(fill="x", padx=10, pady=(0, 6))
         self.srt_drop.insert("1.0", "Drag & drop video/audio files here,\nor click Browse Files...")
@@ -724,7 +724,10 @@ class MoonshineGUI(ctk.CTk):
         except Exception:
             _ghint = ""
         ctk.CTkLabel(style_card,
-                     text="Preview burns one frame with the current size - instant check before the full encode." + _ghint,
+                     text="Preview Frame tests THESE settings on one still image. "
+                     "Sample from/len only pick the test spot (and the short clip "
+                     "transcribed when no SRT exists yet) - Generate SRT/MP4 always "
+                     "processes the FULL file." + _ghint,
                      font=("Segoe UI", 9), text_color=FG_DIM, wraplength=420,
                      justify="left").grid(row=5, column=0, columnspan=4,
                                           sticky="w", padx=12, pady=(2, 8))

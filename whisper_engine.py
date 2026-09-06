@@ -27,8 +27,8 @@ WHISPER_MODEL_CHOICES = {
     "Base (145MB)": "base",
     "Small (500MB)": "small",
     "Medium (1.5GB)": "medium",
-    "Large (3GB)": "large",
-    "Large v1 (3GB)": "large-v1",
+    "Large (3GB, same as v1)": "large",
+    "Large v1 (3GB, oldest)": "large-v1",
     "Large v2 (3GB)": "large-v2",
     "Large v3 (3GB, best)": "large-v3",
 }
