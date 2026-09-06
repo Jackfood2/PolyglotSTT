@@ -16,6 +16,8 @@ moonshine_config.json
 srt_eta.json
 # Learned burn-size ratios per speed (auto-created from successful burns).
 burn_size.json
+# Full-session Note audio archives (auto-created per recording).
+notes_audio/
 # SRT job temp files.
 *.srt_tmp16k.wav
 *.tmp
