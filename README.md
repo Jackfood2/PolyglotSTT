@@ -279,7 +279,12 @@ requirements*.txt  dependency pins (base / Canary / Whisper)
 
 ## Changelog
 
-### v1.2.14 (latest)
+### v1.2.15 (latest)
+
+- Note Save Audio button with location picker; unsaved session audio cleared on close, orphans swept on launch
+- Fast launch: single millisecond dependency probe instead of four heavy imports (~5s to window, was ~18s)
+
+### v1.2.14
 
 - Note full-session MP3 archive: parallel WAV during record, background convert on stop
 - Note pending auto-start: RECORD arms the wait, capture begins when the engine is ready
