@@ -436,7 +436,8 @@ class MoonshineSTTApp:
                     pass
                 try:
                     self.gui.set_note_record_callback(self.note_record_request,
-                                                      self.note_record_confirm)
+                                                      self.note_record_confirm,
+                                                      self.note_engine_ready)
                 except Exception:
                     pass
                 try:
@@ -1211,7 +1212,7 @@ class MoonshineSTTApp:
                 except Exception:
                     pass
                 return {"wait": "Note engine (Moonshine) still loading — "
-                                "press record again when ready."}
+                                "recording starts automatically."}
             try:
                 cache = (self._tab_cache or {}).get("note") or {}
             except Exception:
@@ -1256,9 +1257,60 @@ class MoonshineSTTApp:
                     fresh.load()
             except Exception:
                 pass
-            return {"wait": "Loading note engine — press record again when ready."}
+            return {"wait": "Loading note engine — recording starts automatically."}
         except Exception:
             return {"abort": True}
+
+    def note_engine_ready(self):
+        """(ready_bool, problem_str) for the Note tab's current selection.
+        Kicks a missing load (never blocks). GUI thread safe."""
+        try:
+            sel = self.tab_selection("note")
+            kind = sel["kind"]
+            if kind == "Moonshine v2":
+                try:
+                    eng = self.moonshine_engine
+                    if eng is not None and eng.is_ready:
+                        return True, ""
+                    if eng is not None and not getattr(eng, "_loading", False):
+                        try:
+                            eng.load()
+                        except Exception:
+                            pass
+                except Exception:
+                    pass
+                return False, ""
+            try:
+                cache = (self._tab_cache or {}).get("note") or {}
+            except Exception:
+                cache = {}
+            slot = "canary" if kind == "Canary-1B" else "whisper"
+            eng = cache.get(slot)
+            if eng is None:
+                try:
+                    eng = self._tab_heavy("note", kind, sel["wmodel"])
+                    if eng is not None and not eng.is_ready:
+                        eng.load()
+                except Exception:
+                    pass
+                return False, ""
+            try:
+                if eng.is_ready:
+                    if slot == "whisper" and not self._whisper_cache_ok(
+                            eng, sel["wmodel"]):
+                        return False, ""
+                    return True, ""
+            except Exception:
+                pass
+            try:
+                if not getattr(eng, "_loading", True):
+                    err = getattr(eng, "_last_error", None) or "unknown error"
+                    return False, f"Note engine failed: {err}"
+            except Exception:
+                pass
+            return False, ""
+        except Exception:
+            return False, ""
 
     def note_record_confirm(self, dual_ok):
         """Follow-up after the record pre-flight asked to confirm."""
@@ -1272,7 +1324,7 @@ class MoonshineSTTApp:
                     fresh.load()
             except Exception:
                 pass
-            return {"wait": "Loading note engine — press record again when ready."}
+            return {"wait": "Loading note engine — recording starts automatically."}
         except Exception:
             return {"abort": True}
 

@@ -956,6 +956,7 @@ class MoonshineGUI(ctk.CTk):
         self._note_dirty = False  # unsaved note content present
         self._note_mic_warned = False  # mic-dead popup latch (per episode)
         self._note_last_level_t = 0.0  # level-post throttle stamp
+        self._note_pending = False  # auto-start armed while engine loads
 
         scroll = ctk.CTkScrollableFrame(tab, fg_color="transparent")
         scroll.pack(fill="both", expand=True, padx=4, pady=4)
@@ -1124,6 +1125,17 @@ class MoonshineGUI(ctk.CTk):
     def _on_note_toggle(self):
         if self._note_recording:
             self._note_stop()
+        elif getattr(self, "_note_pending", False):
+            # Second press while waiting for the engine: cancel the wait.
+            try:
+                self._note_pending = False
+            except Exception:
+                pass
+            try:
+                self.note_status_label.configure(text="Ready to record",
+                                                 text_color=FG_DIM)
+            except Exception:
+                pass
         else:
             self._note_start()
 
@@ -1155,15 +1167,18 @@ class MoonshineGUI(ctk.CTk):
         except Exception:
             pass
 
-    def set_note_record_callback(self, cb, confirm_cb=None):
+    def set_note_record_callback(self, cb, confirm_cb=None, ready_cb=None):
         """App pre-flight for RECORD: returns go/confirm/wait/abort verdict.
-        confirm_cb(dual_ok) follows a confirm verdict. None-safe."""
+        confirm_cb(dual_ok) follows a confirm verdict; ready_cb() reports
+        (ready_bool, problem_str) for the pending auto-start poll. None-safe."""
         try:
             self._note_record_cb = cb if callable(cb) else None
             self._note_record_confirm = confirm_cb if callable(confirm_cb) else None
+            self._note_ready_cb = ready_cb if callable(ready_cb) else None
         except Exception:
             self._note_record_cb = None
             self._note_record_confirm = None
+            self._note_ready_cb = None
 
     def _note_start(self):
         if self._note_recorder is None:
@@ -1193,6 +1208,20 @@ class MoonshineGUI(ctk.CTk):
                     except Exception:
                         follow = {"abort": True}
                     if not (isinstance(follow, dict) and follow.get("go")):
+                        if isinstance(follow, dict) and "wait" in follow:
+                            # Dual load accepted: same pending auto-start.
+                            try:
+                                self.note_status_label.configure(
+                                    text="Loading note engine — recording starts automatically…",
+                                    text_color=WARNING)
+                            except Exception:
+                                pass
+                            try:
+                                self._note_pending = True
+                                self._note_wait_engine()
+                            except Exception:
+                                pass
+                            return
                         try:
                             self.note_status_label.configure(
                                 text=str((follow or {}).get("wait") or
@@ -1202,15 +1231,83 @@ class MoonshineGUI(ctk.CTk):
                             pass
                         return
                 elif isinstance(verdict, dict) and "wait" in verdict:
+                    # Engine still loading: arm a pending auto-start instead
+                    # of dead-ending. The 1/sec poll below begins capture
+                    # the moment it is ready; second RECORD press cancels.
                     try:
                         self.note_status_label.configure(
-                            text=str(verdict.get("wait") or "Note engine loading..."),
+                            text="Loading note engine — recording starts automatically…",
                             text_color=WARNING)
+                    except Exception:
+                        pass
+                    try:
+                        self._note_pending = True
+                        self._note_wait_engine()
                     except Exception:
                         pass
                     return
                 elif isinstance(verdict, dict) and "abort" in verdict:
                     return
+            self._note_begin_capture()
+        except Exception as e:
+            self.note_status_label.configure(text=f"Error: {e}", text_color=DANGER)
+
+    def _note_wait_engine(self):
+        """Pending auto-start poll (GUI-thread after() chain, no threads).
+        Ends by beginning capture, surfacing a load failure, or on cancel."""
+        try:
+            if not getattr(self, "_note_pending", False):
+                return
+            if getattr(self, "_note_recording", False):
+                try:
+                    self._note_pending = False
+                except Exception:
+                    pass
+                return
+            ready, problem = False, ""
+            try:
+                chk = getattr(self, "_note_ready_cb", None)
+                if chk is not None:
+                    ready, problem = chk()
+                else:
+                    ready, problem = True, ""
+            except Exception:
+                ready, problem = False, ""
+            if ready:
+                try:
+                    self._note_pending = False
+                except Exception:
+                    pass
+                try:
+                    self._note_begin_capture()
+                except Exception as e:
+                    try:
+                        self.note_status_label.configure(
+                            text=f"Error: {e}", text_color=DANGER)
+                    except Exception:
+                        pass
+                return
+            if problem:
+                try:
+                    self._note_pending = False
+                except Exception:
+                    pass
+                try:
+                    self.note_status_label.configure(text=str(problem),
+                                                     text_color=DANGER)
+                except Exception:
+                    pass
+                return
+            try:
+                self.after(1000, self._note_wait_engine)
+            except Exception:
+                pass
+        except Exception:
+            pass
+
+    def _note_begin_capture(self):
+        """Start recorder + transcriber + UI state. Assumes pre-flight go."""
+        try:
             # Set transcription function based on current engine
             self._note_setup_transcribe_fn()
             try:
