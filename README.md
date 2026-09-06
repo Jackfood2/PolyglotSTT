@@ -279,7 +279,12 @@ requirements*.txt  dependency pins (base / Canary / Whisper)
 
 ## Changelog
 
-### v1.2.10 (latest)
+### v1.2.11 (latest)
+
+- Light theme: borderless card-blended tab strip (no dark surround)
+- Engine/model dropdown text readable in light mode
+
+### v1.2.10
 
 - Per-tab engines: Live, SRT File, and Note each pick engine + model
 - Shared-default mirror: untouched tabs follow your last pick
