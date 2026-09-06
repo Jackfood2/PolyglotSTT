@@ -30,7 +30,7 @@ except Exception as e:
     FG_SECONDARY = "#B2BEC3"
 RECORD_KEY = keyboard.Key.f2
 SAMPLE_RATE = 16000
-APP_VERSION = "1.2.16"
+APP_VERSION = "1.2.17"
 CONFIG_PATH = os.path.join(os.path.dirname(__file__), "moonshine_config.json")
 _CONFIG_LOCK = threading.RLock()
 DEFAULT_CONFIG = {
@@ -440,6 +440,7 @@ class MoonshineSTTApp:
                     pass
                 try:
                     self.gui.set_footer_version(APP_VERSION)
+                    self.gui.set_title_version(APP_VERSION)
                 except Exception:
                     pass
                 try:

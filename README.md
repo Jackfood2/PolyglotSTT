@@ -279,7 +279,11 @@ requirements*.txt  dependency pins (base / Canary / Whisper)
 
 ## Changelog
 
-### v1.2.16 (latest)
+### v1.2.17 (latest)
+
+- Window title bar now shows the running version (`MoonshineSTT v1.2.17`), same source as the footer
+
+### v1.2.16
 
 - Reliability pass: engine loads carry a generation token, so a stale load can no longer overwrite the newly selected model; heavy-engine unloads take the inference lock before clearing the model
 - Fixed a VAD buffer bug that re-added already-consumed audio (wrong speech regions plus quadratic slowdown on long files)

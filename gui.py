@@ -492,6 +492,12 @@ class MoonshineGUI(ctk.CTk):
                 text=f"{base} \u2022 v{v}" if v else base)
         except Exception:
             pass
+    def set_title_version(self, version: str):
+        try:
+            v = str(version or "").strip()
+            self.title(f"MoonshineSTT v{v}" if v else "MoonshineSTT")
+        except Exception:
+            pass
     def _build_srt_tab(self, tab):
         import os as _os
         try:
