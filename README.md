@@ -279,7 +279,13 @@ requirements*.txt  dependency pins (base / Canary / Whisper)
 
 ## Changelog
 
-### v1.2.12 (latest)
+### v1.2.13 (latest)
+
+- Light theme engine/model dropdown text readable (were invisible)
+- Tab strip surround and segment canvases follow the theme, border off
+- Theme palette collision fixes plus a regression guard
+
+### v1.2.12
 
 - Two-tone tab highlight: pale lavender when selected in light mode, saturated purple in dark mode — readable in both
 
