@@ -279,7 +279,11 @@ requirements*.txt  dependency pins (base / Canary / Whisper)
 
 ## Changelog
 
-### v1.2.11 (latest)
+### v1.2.12 (latest)
+
+- Two-tone tab highlight: pale lavender when selected in light mode, saturated purple in dark mode — readable in both
+
+### v1.2.11
 
 - Light theme: borderless card-blended tab strip (no dark surround)
 - Engine/model dropdown text readable in light mode
