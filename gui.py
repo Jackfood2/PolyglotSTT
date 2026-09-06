@@ -920,6 +920,8 @@ class MoonshineGUI(ctk.CTk):
         self._note_recording = False
         self._note_start_time = 0
         self._note_timer_id = None
+        self._note_submitted = 0  # chunks cut by the recorder
+        self._note_done = 0  # chunks fully transcribed (ok or not)
 
         scroll = ctk.CTkScrollableFrame(tab, fg_color="transparent")
         scroll.pack(fill="both", expand=True, padx=4, pady=4)
@@ -1017,7 +1019,6 @@ class MoonshineGUI(ctk.CTk):
             corner_radius=10, wrap="word", height=280)
         self.note_text.grid(row=1, column=0, sticky="nsew", padx=12, pady=(4, 12))
         self.note_text.insert("1.0", "Transcription will appear here as you speak...")
-        self.note_text.configure(state="disabled")
 
         # ── Engine info ──
         info_card = ctk.CTkFrame(scroll, fg_color=BG_CARD, corner_radius=12)
@@ -1039,7 +1040,8 @@ class MoonshineGUI(ctk.CTk):
                 on_status=self._note_on_rec_status)
             self._note_transcriber.set_callbacks(
                 on_text=self._note_on_text,
-                on_status=self._note_on_tx_status)
+                on_status=self._note_on_tx_status,
+                on_done=self._note_on_done)
         except Exception as e:
             print(f"[Note] init failed: {e}")
             self._note_recorder = None
@@ -1061,13 +1063,15 @@ class MoonshineGUI(ctk.CTk):
             self._note_transcriber.start()
             self._note_recording = True
             self._note_start_time = time.time()
+            self._note_submitted = 0
+            self._note_done = 0
+            self._note_update_counter()
 
             self.note_record_btn.configure(
                 text="■  STOP", fg_color=DANGER, hover_color=BTN_DANGER_HOVER)
             self.note_status_label.configure(text="Recording...", text_color=DANGER)
             self.note_text.configure(state="normal")
             self.note_text.delete("1.0", "end")
-            self.note_text.configure(state="disabled")
 
             self._note_update_timer()
         except Exception as e:
@@ -1113,13 +1117,41 @@ class MoonshineGUI(ctk.CTk):
         if self._note_transcriber:
             self._note_transcriber.set_transcribe_fn(fn)
 
+    def _note_update_counter(self):
+        """Honest progress: transcribed/completed out of cut chunks."""
+        try:
+            done = int(getattr(self, "_note_done", 0) or 0)
+            sub = int(getattr(self, "_note_submitted", 0) or 0)
+            self.note_chunk_label.configure(
+                text=f"Transcribed {done}/{sub} chunk{'s' if sub != 1 else ''}")
+        except Exception:
+            pass
+
+    def _note_on_done(self, index, ok):
+        """Worker-thread completion signal: marshal count to GUI thread."""
+        try:
+            self.after(0, self._note_count_done)
+        except Exception:
+            pass
+
+    def _note_count_done(self):
+        try:
+            self._note_done = int(getattr(self, "_note_done", 0) or 0) + 1
+        except Exception:
+            self._note_done = 1
+        self._note_update_counter()
+
     def _note_on_chunk(self, audio, index):
         """Called from recorder thread when a chunk is ready."""
         if self._note_transcriber:
             self._note_transcriber.submit_chunk(audio, index)
         try:
-            self.after(0, lambda i=index: self.note_chunk_label.configure(
-                text=f"Chunks processed: {i}"))
+            if int(index) > int(getattr(self, "_note_submitted", 0) or 0):
+                self._note_submitted = int(index)
+        except Exception:
+            pass
+        try:
+            self.after(0, self._note_update_counter)
         except Exception:
             pass
 
@@ -1134,16 +1166,15 @@ class MoonshineGUI(ctk.CTk):
             pass
 
     def _note_on_text(self, text, index):
-        """Called when a chunk is transcribed."""
+        """Called when a chunk is transcribed. The box stays editable, so
+        appends go to the end without disturbing text being edited."""
         def _append():
             try:
-                self.note_text.configure(state="normal")
                 current = self.note_text.get("1.0", "end").strip()
                 if current == "Transcription will appear here as you speak...":
                     self.note_text.delete("1.0", "end")
                 self.note_text.insert("end", text + "\n\n")
                 self.note_text.see("end")
-                self.note_text.configure(state="disabled")
             except Exception:
                 pass
         try:
@@ -1171,10 +1202,9 @@ class MoonshineGUI(ctk.CTk):
     def _on_note_clear(self):
         if self._note_recording:
             return
-        self.note_text.configure(state="normal")
         self.note_text.delete("1.0", "end")
         self.note_text.insert("1.0", "Transcription will appear here as you speak...")
-        self.note_text.configure(state="disabled")
+        self.note_chunk_label.configure(text="")
         self.note_chunk_label.configure(text="")
         self.note_status_label.configure(text="Ready to record", text_color=FG_DIM)
         if self._note_transcriber:
@@ -1182,9 +1212,7 @@ class MoonshineGUI(ctk.CTk):
 
     def _on_note_copy(self):
         try:
-            self.note_text.configure(state="normal")
             text = self.note_text.get("1.0", "end").strip()
-            self.note_text.configure(state="disabled")
             if text and text != "Transcription will appear here as you speak...":
                 from input_sim import copy_to_clipboard
                 copy_to_clipboard(text)
@@ -1194,9 +1222,7 @@ class MoonshineGUI(ctk.CTk):
 
     def _on_note_save(self):
         try:
-            self.note_text.configure(state="normal")
             text = self.note_text.get("1.0", "end").strip()
-            self.note_text.configure(state="disabled")
 
             if not text or text == "Transcription will appear here as you speak...":
                 self.note_status_label.configure(text="Nothing to save", text_color=WARNING)

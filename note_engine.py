@@ -208,6 +208,11 @@ class NoteRecorder:
 class NoteTranscriber:
     """Processes chunks asynchronously and accumulates text."""
 
+    # Engine failure strings (NOT transcriptions): surface them via status
+    # instead of appending - or worse, silently dropping as "no speech".
+    # Genuine text - even "[Music]"-led - always passes through to append.
+    _ERROR_PREFIXES = ("[Error:", "[Whisper Error:", "[Canary Error:")
+
     def __init__(self):
         self._results: List[str] = []
         self._lock = threading.Lock()
@@ -216,13 +221,16 @@ class NoteTranscriber:
         self._queue_lock = threading.Lock()
         self._worker_thread: Optional[threading.Thread] = None
         self._stop_event = threading.Event()
+        self._gen = 0  # session generation: stale workers drop callbacks
         self._on_text: Optional[Callable[[str, int], None]] = None
         self._on_status: Optional[Callable[[str], None]] = None
+        self._on_done: Optional[Callable[[int, bool], None]] = None
         self._transcribe_fn: Optional[Callable] = None
 
-    def set_callbacks(self, on_text=None, on_status=None):
+    def set_callbacks(self, on_text=None, on_status=None, on_done=None):
         self._on_text = on_text
         self._on_status = on_status
+        self._on_done = on_done
 
     def set_transcribe_fn(self, fn):
         """Set the transcription function: fn(audio, sr) -> str"""
@@ -243,9 +251,16 @@ class NoteTranscriber:
             return len(self._results)
 
     def start(self):
-        self._results = []
-        self._queue = []
+        with self._queue_lock:
+            # New session: old worker (if still finishing a tail chunk)
+            # carries a stale generation - its late callbacks are dropped
+            # and it never touches the new queue.
+            self._gen += 1
+            self._results = []
+            self._queue = []
         self._stop_event.clear()
+        # Never join a previous worker here: start() runs on the GUI
+        # thread and the old one may be mid-transcription.
         self._worker_thread = threading.Thread(target=self._worker, daemon=True)
         self._worker_thread.start()
 
@@ -254,17 +269,28 @@ class NoteTranscriber:
             self._queue.append((audio, index))
 
     def stop(self):
+        # Event-only: the worker keeps draining the queue WITH callbacks
+        # (so the tail chunk still appears), then exits itself. Returns at
+        # once - the old join(timeout=30) froze the UI mid-transcription.
         self._stop_event.set()
-        if self._worker_thread and self._worker_thread.is_alive():
-            self._worker_thread.join(timeout=30)
+
+    def _current_gen(self, my_gen: int) -> bool:
+        try:
+            with self._queue_lock:
+                return self._gen == my_gen
+        except Exception:
+            return False
 
     def _worker(self):
-        while not self._stop_event.is_set():
-            item = None
+        with self._queue_lock:
+            my_gen = self._gen
+        while True:
             with self._queue_lock:
-                if self._queue:
-                    item = self._queue.pop(0)
-
+                if self._gen != my_gen:
+                    break  # superseded by a newer session
+                if self._stop_event.is_set() and not self._queue:
+                    break  # drained after stop
+                item = self._queue.pop(0) if self._queue else None
             if item is None:
                 time.sleep(0.1)
                 continue
@@ -272,40 +298,41 @@ class NoteTranscriber:
             audio, index = item
             self._processing = True
             try:
-                if self._on_status:
+                if self._on_status and self._current_gen(my_gen):
                     self._on_status(f"Transcribing chunk {index}...")
 
                 text = ""
                 if self._transcribe_fn:
                     text = self._transcribe_fn(audio, 16000)
 
-                if text and text.strip() and not text.startswith("["):
+                txt = (text or "").strip()
+                if txt and not txt.startswith(self._ERROR_PREFIXES):
                     with self._lock:
-                        self._results.append(text.strip())
-                    if self._on_text:
-                        self._on_text(text.strip(), index)
-                    if self._on_status:
-                        self._on_status(f"Chunk {index} done ({len(text)} chars)")
+                        self._results.append(txt)
+                    if self._on_text and self._current_gen(my_gen):
+                        self._on_text(txt, index)
+                    if self._on_status and self._current_gen(my_gen):
+                        self._on_status(f"Chunk {index} done ({len(txt)} chars)")
+                    if self._on_done and self._current_gen(my_gen):
+                        self._on_done(index, True)
+                elif txt:
+                    # Engine failure string, NOT a transcription: report it
+                    # as a failure instead of appending - or misreporting
+                    # "no speech detected" as the old code did.
+                    if self._on_status and self._current_gen(my_gen):
+                        self._on_status(f"Chunk {index} failed: {txt}")
+                    if self._on_done and self._current_gen(my_gen):
+                        self._on_done(index, False)
                 else:
-                    if self._on_status:
+                    if self._on_status and self._current_gen(my_gen):
                         self._on_status(f"Chunk {index}: no speech detected")
+                    if self._on_done and self._current_gen(my_gen):
+                        self._on_done(index, False)
 
             except Exception as e:
-                if self._on_status:
+                if self._on_status and self._current_gen(my_gen):
                     self._on_status(f"Chunk {index} error: {e}")
+                if self._on_done and self._current_gen(my_gen):
+                    self._on_done(index, False)
             finally:
                 self._processing = False
-
-        # Process remaining queue items
-        with self._queue_lock:
-            remaining = self._queue[:]
-            self._queue = []
-        for audio, index in remaining:
-            try:
-                if self._transcribe_fn:
-                    text = self._transcribe_fn(audio, 16000)
-                    if text and text.strip() and not text.startswith("["):
-                        with self._lock:
-                            self._results.append(text.strip())
-            except Exception:
-                pass
