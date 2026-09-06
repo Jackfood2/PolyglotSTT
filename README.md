@@ -57,9 +57,10 @@ Moonshine stay on CPU.
   history, and per-engine Task / source-language selectors. The *Model* row
    follows the engine: Moonshine sizes, downloadable Whisper sizes (Tiny
    75MB → Large v3 3GB, fetched once on first pick), or the fixed Canary-1B.
-   Whisper generations: Large and Large v1 are the same (v1) weights, v2 is
-   the middle generation, v3 is newest and best — every Large is ~3GB, so
-   just take v3 unless you need to reproduce old output.
+   Whisper generations: v1 oldest, v2 middle, v3 newest and best — every
+   Large is ~3GB. The bare Large entry is gone: the installed faster-whisper
+   resolves it to byte-identical files as Large v3, so it was pure
+   duplication (saved "large" configs switch to Large v3, no re-download).
   Recording is politely refused for a moment while a model is swapping.
 - **SRT File tab** — queue one or many video/audio files (batch runs one by
   one, failures don't stop the queue), pick an output folder, generate
@@ -284,7 +285,15 @@ requirements*.txt  dependency pins (base / Canary / Whisper)
 
 ## Changelog
 
-### v1.2.18 (latest)
+### v1.2.19 (latest)
+
+- Critical Canary fix: every Canary load died with `NameError` before publishing the model, so the engine could never become ready — loads now complete and report ready correctly
+- Stale-load guards completed for Whisper too (success and failure paths discard results from superseded loads instead of clobbering the new model)
+
+- Removed the bare Whisper Large option: the installed faster-whisper resolves it to the exact same files as Large v3, so the double entry (and double size readout in Model storage) is gone; old configs move over with no re-download
+- Engine/model selection now sits at the top of every tab (Live, SRT File, Note) in the same position
+
+### v1.2.18
 
 - Whisper model menu now tells Large apart: bare Large is the same v1 weights as Large v1 (oldest), v2 middle, v3 newest and best
 - Burn card states it outright: Sample from/len only pick the Preview Frame test spot, Generate SRT/MP4 always runs the full file

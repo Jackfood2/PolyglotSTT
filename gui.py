@@ -93,7 +93,6 @@ except Exception:
         "Base (145MB)": "base",
         "Small (500MB)": "small",
         "Medium (1.5GB)": "medium",
-        "Large (3GB, same as v1)": "large",
         "Large v1 (3GB, oldest)": "large-v1",
         "Large v2 (3GB)": "large-v2",
         "Large v3 (3GB, best)": "large-v3",
@@ -350,7 +349,7 @@ class MoonshineGUI(ctk.CTk):
         srt_tab = self.tabs.add("SRT File")
         note_tab = self.tabs.add("Note")
         live.grid_columnconfigure(0, weight=1)
-        live.grid_rowconfigure(3, weight=1)
+        live.grid_rowconfigure(5, weight=1)
         srt_tab.grid_columnconfigure(0, weight=1)
         srt_tab.grid_rowconfigure(0, weight=1)
         note_tab.grid_columnconfigure(0, weight=1)
@@ -370,7 +369,7 @@ class MoonshineGUI(ctk.CTk):
         except Exception:
             pass
         record_card = ctk.CTkFrame(live, fg_color=BG_CARD, corner_radius=16)
-        record_card.grid(row=0, column=0, sticky="ew", padx=8, pady=(0, 6))
+        record_card.grid(row=2, column=0, sticky="ew", padx=8, pady=(0, 6))
         record_card.grid_columnconfigure(0, weight=1)
         self.meter = LevelMeter(record_card, width=420, height=10)
         self.meter.grid(row=0, column=0, padx=20, pady=(12, 4), sticky="ew")
@@ -400,7 +399,7 @@ class MoonshineGUI(ctk.CTk):
             command=self._copy_last)
         self.copy_last_btn.grid(row=0, column=2, padx=(4, 16), sticky="ew")
         output_card = ctk.CTkFrame(live, fg_color=BG_CARD, corner_radius=16)
-        output_card.grid(row=1, column=0, sticky="ew", padx=8, pady=(0, 6))
+        output_card.grid(row=3, column=0, sticky="ew", padx=8, pady=(0, 6))
         output_card.grid_columnconfigure(0, weight=1)
         ctk.CTkLabel(output_card, text="Last Transcription",
                      font=("Segoe UI", 11, "bold"), text_color=FG_DIM
@@ -413,14 +412,14 @@ class MoonshineGUI(ctk.CTk):
         self.output_text.insert("1.0", "Waiting for voice input...")
         self.output_text.configure(state="disabled")
         history_label_frame = ctk.CTkFrame(live, fg_color="transparent")
-        history_label_frame.grid(row=2, column=0, sticky="ew", padx=12, pady=(8, 4))
+        history_label_frame.grid(row=4, column=0, sticky="ew", padx=12, pady=(8, 4))
         ctk.CTkLabel(history_label_frame, text="Transcription History",
                      font=("Segoe UI", 11, "bold"), text_color=FG_DIM
                      ).pack(side="left")
         self.history = HistoryPanel(live, height=140)
-        self.history.grid(row=3, column=0, sticky="nsew", padx=8, pady=(0, 6))
+        self.history.grid(row=5, column=0, sticky="nsew", padx=8, pady=(0, 6))
         engine_frame = ctk.CTkFrame(live, fg_color=BG_CARD, corner_radius=10)
-        engine_frame.grid(row=4, column=0, sticky="ew", padx=8, pady=(0, 6))
+        engine_frame.grid(row=0, column=0, sticky="ew", padx=8, pady=(0, 6))
         ctk.CTkLabel(engine_frame, text="Engine:", font=("Segoe UI", 10, "bold"), text_color=FG_DIM).pack(side="left", padx=(12, 4), pady=8)
         self.engine_var = ctk.StringVar(value="Moonshine v2")
         self.engine_menu = ctk.CTkOptionMenu(engine_frame, variable=self.engine_var, values=ENGINE_CHOICES, width=150, fg_color=BG_INPUT, button_color=ACCENT, command=self._on_engine_changed)
@@ -449,7 +448,7 @@ class MoonshineGUI(ctk.CTk):
         self._method_callback = None
         self._suffix_callback = None
         model_frame = ctk.CTkFrame(live, fg_color=BG_CARD, corner_radius=10)
-        model_frame.grid(row=5, column=0, sticky="ew", padx=8, pady=(0, 6))
+        model_frame.grid(row=1, column=0, sticky="ew", padx=8, pady=(0, 6))
         self.model_title_label = ctk.CTkLabel(model_frame, text="Model:",
                                               font=("Segoe UI", 10, "bold"), text_color=FG_DIM)
         self.model_title_label.pack(side="left", padx=(12, 4), pady=8)
@@ -516,8 +515,11 @@ class MoonshineGUI(ctk.CTk):
         scroll = ctk.CTkScrollableFrame(tab, fg_color="transparent")
         scroll.pack(fill="both", expand=True, padx=4, pady=4)
         scroll.grid_columnconfigure(0, weight=1)
+        eng_card = ctk.CTkFrame(scroll, fg_color=BG_CARD, corner_radius=12)
+        eng_card.grid(row=0, column=0, sticky="ew", padx=4, pady=(0, 6))
+        eng_card.grid_columnconfigure(1, weight=1)
         file_card = ctk.CTkFrame(scroll, fg_color=BG_CARD, corner_radius=12)
-        file_card.grid(row=0, column=0, sticky="ew", padx=4, pady=(0, 6))
+        file_card.grid(row=1, column=0, sticky="ew", padx=4, pady=(0, 6))
         file_card.grid_columnconfigure(0, weight=1)
         ctk.CTkLabel(file_card, text="Video / Audio Files  (queue - runs one by one)",
                      font=("Segoe UI", 11, "bold"), text_color=FG_DIM
@@ -566,7 +568,7 @@ class MoonshineGUI(ctk.CTk):
                                            command=self._srt_clear_file)
         self.srt_clear_btn.grid(row=0, column=1, padx=(4, 0), sticky="ew")
         out_card = ctk.CTkFrame(scroll, fg_color=BG_CARD, corner_radius=12)
-        out_card.grid(row=5, column=0, sticky="ew", padx=4, pady=(0, 6))
+        out_card.grid(row=6, column=0, sticky="ew", padx=4, pady=(0, 6))
         out_card.grid_columnconfigure(0, weight=1)
         ctk.CTkLabel(out_card, text="Output Folder  (empty = same folder as video)",
                      font=("Segoe UI", 11, "bold"), text_color=FG_DIM
@@ -585,20 +587,20 @@ class MoonshineGUI(ctk.CTk):
                       command=self._srt_browse_outdir
                       ).grid(row=0, column=1, sticky="e")
         perf_card = ctk.CTkFrame(scroll, fg_color=BG_CARD, corner_radius=12)
-        perf_card.grid(row=6, column=0, sticky="ew", padx=4, pady=(0, 6))
+        perf_card.grid(row=7, column=0, sticky="ew", padx=4, pady=(0, 6))
         perf_card.grid_columnconfigure(1, weight=1)
-        ctk.CTkLabel(perf_card, text="Engine:", font=("Segoe UI", 10, "bold"),
+        ctk.CTkLabel(eng_card, text="Engine:", font=("Segoe UI", 10, "bold"),
                      text_color=FG_DIM).grid(row=0, column=0, sticky="w", padx=(12, 4), pady=(8, 2))
         self.srt_engine_var = ctk.StringVar(value="Moonshine v2")
         self.srt_engine_menu = ctk.CTkOptionMenu(
-            perf_card, variable=self.srt_engine_var,
+            eng_card, variable=self.srt_engine_var,
             values=list(ENGINE_CHOICES), width=150,
             fg_color=BG_INPUT, button_color=ACCENT,
             command=self._on_srt_engine_changed)
         self.srt_engine_menu.grid(row=0, column=1, sticky="ew", padx=4, pady=(8, 2))
         self.srt_model_var = ctk.StringVar(value="")
         self.srt_model_menu = ctk.CTkOptionMenu(
-            perf_card, variable=self.srt_model_var,
+            eng_card, variable=self.srt_model_var,
             values=[], width=190,
             fg_color=BG_INPUT, button_color=ACCENT,
             command=self._on_srt_model_changed)
@@ -662,7 +664,7 @@ class MoonshineGUI(ctk.CTk):
                      ).grid(row=3, column=2, sticky="e", padx=(4, 12), pady=(2, 8))
         self._compute_callback = None
         lang_card = ctk.CTkFrame(scroll, fg_color=BG_CARD, corner_radius=12)
-        lang_card.grid(row=7, column=0, sticky="ew", padx=4, pady=(0, 6))
+        lang_card.grid(row=8, column=0, sticky="ew", padx=4, pady=(0, 6))
         lang_card.grid_columnconfigure(1, weight=1)
         lang_card.grid_columnconfigure(3, weight=1)
         ctk.CTkLabel(lang_card, text="Input Language:",
@@ -691,7 +693,7 @@ class MoonshineGUI(ctk.CTk):
         self._srt_output_lang_cb = None
         self.lang_card = lang_card
         style_card = ctk.CTkFrame(scroll, fg_color=BG_CARD, corner_radius=12)
-        style_card.grid(row=8, column=0, sticky="ew", padx=4, pady=(0, 6))
+        style_card.grid(row=9, column=0, sticky="ew", padx=4, pady=(0, 6))
         style_card.grid_columnconfigure(1, weight=1)
         ctk.CTkLabel(style_card, text="Subtitle size:",
                      font=("Segoe UI", 10, "bold"), text_color=FG_DIM
@@ -860,7 +862,7 @@ class MoonshineGUI(ctk.CTk):
         except Exception:
             pass
         prog_card = ctk.CTkFrame(scroll, fg_color=BG_CARD, corner_radius=12)
-        prog_card.grid(row=4, column=0, sticky="ew", padx=4, pady=(0, 6))
+        prog_card.grid(row=5, column=0, sticky="ew", padx=4, pady=(0, 6))
         prog_card.grid_columnconfigure(0, weight=1)
         toprow = ctk.CTkFrame(prog_card, fg_color="transparent")
         toprow.pack(fill="x", padx=12, pady=(8, 2))
@@ -895,7 +897,7 @@ class MoonshineGUI(ctk.CTk):
         self.srt_log_box.insert("1.0", "SRT log ready.\n")
         self.srt_log_box.configure(state="disabled")
         abtn = ctk.CTkFrame(scroll, fg_color="transparent")
-        abtn.grid(row=1, column=0, sticky="ew", padx=4, pady=(0, 6))
+        abtn.grid(row=2, column=0, sticky="ew", padx=4, pady=(0, 6))
         abtn.grid_columnconfigure(0, weight=3)
         abtn.grid_columnconfigure(1, weight=1)
         abtn.grid_columnconfigure(2, weight=1)
@@ -931,9 +933,9 @@ class MoonshineGUI(ctk.CTk):
             variable=self.burn_after_var, font=("Segoe UI", 11),
             text_color=FG_PRIMARY, fg_color=ACCENT,
             command=self._on_srt_opt_toggled)
-        self.burn_after_check.grid(row=2, column=0, sticky="w", padx=16, pady=(0, 2))
+        self.burn_after_check.grid(row=3, column=0, sticky="w", padx=16, pady=(0, 2))
         finrow = ctk.CTkFrame(scroll, fg_color="transparent")
-        finrow.grid(row=3, column=0, sticky="ew", padx=16, pady=(0, 6))
+        finrow.grid(row=4, column=0, sticky="ew", padx=16, pady=(0, 6))
         self.shutdown_var = ctk.BooleanVar(value=False)
         self.shutdown_check = ctk.CTkCheckBox(
             finrow, text="Shut down PC when done",
@@ -976,7 +978,7 @@ class MoonshineGUI(ctk.CTk):
 
         # ── Header card ──
         header_card = ctk.CTkFrame(scroll, fg_color=BG_CARD, corner_radius=16)
-        header_card.grid(row=0, column=0, sticky="ew", padx=4, pady=(0, 8))
+        header_card.grid(row=1, column=0, sticky="ew", padx=4, pady=(0, 8))
         header_card.grid_columnconfigure(0, weight=1)
 
         ctk.CTkLabel(header_card, text="Note Mode",
@@ -991,7 +993,7 @@ class MoonshineGUI(ctk.CTk):
 
         # ── Record control card ──
         ctrl_card = ctk.CTkFrame(scroll, fg_color=BG_CARD, corner_radius=16)
-        ctrl_card.grid(row=1, column=0, sticky="ew", padx=4, pady=(0, 8))
+        ctrl_card.grid(row=2, column=0, sticky="ew", padx=4, pady=(0, 8))
         ctrl_card.grid_columnconfigure(0, weight=1)
 
         # Timer display
@@ -1041,7 +1043,7 @@ class MoonshineGUI(ctk.CTk):
 
         # ── Transcription output card ──
         out_card = ctk.CTkFrame(scroll, fg_color=BG_CARD, corner_radius=16)
-        out_card.grid(row=2, column=0, sticky="nsew", padx=4, pady=(0, 8))
+        out_card.grid(row=3, column=0, sticky="nsew", padx=4, pady=(0, 8))
         out_card.grid_columnconfigure(0, weight=1)
         out_card.grid_rowconfigure(1, weight=1)
 
@@ -1089,7 +1091,7 @@ class MoonshineGUI(ctk.CTk):
 
         # ── Engine pick (per-tab: independent from Live/SRT) ──
         info_card = ctk.CTkFrame(scroll, fg_color=BG_CARD, corner_radius=12)
-        info_card.grid(row=3, column=0, sticky="ew", padx=4, pady=(0, 6))
+        info_card.grid(row=0, column=0, sticky="ew", padx=4, pady=(0, 6))
         info_card.grid_columnconfigure(1, weight=1)
 
         self.note_engine_label = ctk.CTkLabel(

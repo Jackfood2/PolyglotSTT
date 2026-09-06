@@ -27,7 +27,6 @@ WHISPER_MODEL_CHOICES = {
     "Base (145MB)": "base",
     "Small (500MB)": "small",
     "Medium (1.5GB)": "medium",
-    "Large (3GB, same as v1)": "large",
     "Large v1 (3GB, oldest)": "large-v1",
     "Large v2 (3GB)": "large-v2",
     "Large v3 (3GB, best)": "large-v3",
@@ -253,6 +252,14 @@ class WhisperEngine:
                 else:
                     raise RuntimeError(f"Whisper load failed: {last_err}")
                 with self._lock:
+                    if generation != self._load_generation:
+                        try:
+                            _close = getattr(model, "close", None)
+                            if callable(_close):
+                                _close()
+                        except Exception:
+                            pass
+                        return
                     self._model = model
                     self._ready = True
                     self._last_error = None
@@ -269,6 +276,9 @@ class WhisperEngine:
                     except Exception:
                         pass
             except Exception as e:
+                with self._lock:
+                    if generation != self._load_generation:
+                        return
                 import traceback
                 traceback.print_exc()
                 with self._lock:

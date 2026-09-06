@@ -118,14 +118,14 @@ class CanaryEngine:
                     import nemo.collections.asr as nemo_asr
                     local_nemo = CANARY_CACHE / "canary-1b.nemo"
                     if local_nemo.exists() and local_nemo.stat().st_size > 100_000_000:
-                        self._model = nemo_asr.models.ASRModel.restore_from(
+                        model = nemo_asr.models.ASRModel.restore_from(
                             restore_path=str(local_nemo), map_location="cpu"
                         )
                     else:
-                        self._model = nemo_asr.models.ASRModel.from_pretrained(
+                        model = nemo_asr.models.ASRModel.from_pretrained(
                             model_name=self._model_name
                         )
-                    self._model.eval()
+                    model.eval()
                     _want = (getattr(self, "device", "auto") or "auto")
                     try:
                         import gpu as _gpumod
@@ -152,7 +152,7 @@ class CanaryEngine:
                     self._device_used = "cpu"
                     if _use_cuda and _has_cuda:
                         try:
-                            self._model.cuda()
+                            model.cuda()
                             self._device_used = "cuda"
                             print(f"[Canary] using CUDA ({_reason})")
                         except Exception as e_cuda:
@@ -180,6 +180,9 @@ class CanaryEngine:
                 if self._on_ready:
                     self._on_ready(True, None)
             except Exception as e:
+                with self._lock:
+                    if generation != self._load_generation:
+                        return
                 import traceback
                 traceback.print_exc()
                 with self._lock:
