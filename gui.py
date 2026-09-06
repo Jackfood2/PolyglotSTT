@@ -1213,7 +1213,12 @@ class MoonshineGUI(ctk.CTk):
                     return
             # Set transcription function based on current engine
             self._note_setup_transcribe_fn()
-            self._note_recorder.start()
+            try:
+                from pathlib import Path as _P
+                _notes_dir = _P(__file__).parent / "notes_audio"
+            except Exception:
+                _notes_dir = None
+            self._note_recorder.start(session_dir=_notes_dir)
             self._note_transcriber.start()
             self._note_recording = True
             self._note_start_time = time.time()
@@ -1251,10 +1256,55 @@ class MoonshineGUI(ctk.CTk):
 
         self._note_transcriber.stop()
 
+        # Full-session MP3 archive in the background: transcription and UI
+        # never wait for it; any failure only logs (WAV is kept then).
+        try:
+            _wav = getattr(self._note_recorder, "session_wav", None)
+        except Exception:
+            _wav = None
+        if _wav:
+            try:
+                import threading as _th
+                _th.Thread(target=self._note_export_mp3, args=(str(_wav),),
+                           daemon=True).start()
+            except Exception:
+                pass
+
         self.note_record_btn.configure(
             text="●  RECORD", fg_color=ACCENT, hover_color=ACCENT_DARK)
         self.note_status_label.configure(text="Stopped - review and save", text_color=SUCCESS)
         self.note_chunk_label.configure(text="")
+
+    def _note_export_mp3(self, wav_path):
+        """Background worker: session WAV -> notes_audio/note_*.mp3, then a
+        one-line status. Never touches Tk except via after()."""
+        def _say(text, color):
+            try:
+                self.after(0, lambda: self.note_status_label.configure(
+                    text=text, text_color=color))
+            except Exception:
+                pass
+
+        try:
+            from pathlib import Path as _P
+            from note_engine import wav_to_mp3
+            try:
+                import imageio_ffmpeg as _iff
+                _ff = _iff.get_ffmpeg_exe()
+            except Exception:
+                _ff = None
+            if not _ff:
+                _say("Audio archive skipped (ffmpeg missing)", WARNING)
+                return
+            wav = _P(str(wav_path))
+            mp3 = wav.with_suffix(".mp3")
+            ok, msg = wav_to_mp3(_ff, wav, mp3, 128)
+            if ok:
+                _say(f"Audio saved: {msg}", SUCCESS)
+            else:
+                _say(f"Audio archive kept as WAV ({msg}): {wav.name}", WARNING)
+        except Exception as e:
+            _say(f"Audio archive failed: {e}", WARNING)
 
     def _note_setup_transcribe_fn(self):
         """Wire up the transcription function from the app's current engine."""

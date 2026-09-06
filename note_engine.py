@@ -2,6 +2,7 @@
 # Chunked recording with adaptive silence detection for Note mode
 import threading
 import time
+import wave
 import numpy as np
 import sounddevice as sd
 from typing import Optional, Callable, List
@@ -47,6 +48,13 @@ class NoteRecorder:
         self._on_level: Optional[Callable[[float], None]] = None
         self._on_status: Optional[Callable[[str], None]] = None
         self._chunk_index: int = 0
+
+        # Full-session archive (parallel WAV for later MP3 export). Written
+        # incrementally so RAM never holds the whole session; transcription
+        # reads only the chunk copies and is unaffected by any of this.
+        self._wav = None
+        self._wav_lock = threading.Lock()
+        self.session_wav: Optional[str] = None
 
     @property
     def is_recording(self) -> bool:
@@ -111,6 +119,39 @@ class NoteRecorder:
         except Exception:
             pass
 
+    def _append_session_wav(self, frames) -> None:
+        """Best-effort incremental archive write (raw, untrimmed frames).
+        Never raises; transcription must never depend on the archive."""
+        try:
+            w = self._wav
+            if w is None or not frames:
+                return
+            with self._wav_lock:
+                try:
+                    for blk in frames:
+                        try:
+                            w.writeframes(np.ascontiguousarray(blk).tobytes())
+                        except Exception:
+                            continue
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+    def _close_session_wav(self) -> Optional[str]:
+        """Close the archive, return its path (or None). Never raises."""
+        try:
+            with self._wav_lock:
+                w, self._wav = self._wav, None
+            if w is not None:
+                try:
+                    w.close()
+                except Exception:
+                    pass
+            return self.session_wav
+        except Exception:
+            return None
+
     def _cut_chunk(self):
         """Cut current buffer into a chunk and emit it."""
         with self._chunk_lock:
@@ -122,6 +163,7 @@ class NoteRecorder:
                 self._chunk_start_time = time.monotonic()
                 self._silence_start = None
 
+            self._append_session_wav(frames)
             audio = np.concatenate(frames, axis=0)
             # Trim trailing silence (last 0.5s max)
             audio = self._trim_trailing_silence(audio, self.sample_rate)
@@ -164,7 +206,9 @@ class NoteRecorder:
             audio = audio[:-cut_samples] if cut_samples < len(audio) else audio
         return audio
 
-    def start(self):
+    def start(self, session_dir=None):
+        """Begin capture. session_dir (optional) enables the full-session
+        WAV archive alongside chunking; None keeps the old RAM-only path."""
         if self._recording:
             return
         self._frames = []
@@ -172,8 +216,33 @@ class NoteRecorder:
         self._silence_start = None
         self._chunk_start_time = time.monotonic()
         self._last_cb_time = time.monotonic()
-        # Grace from record-press: a not-yet-speaking user is not a dead mic.
         self._last_sound_time = self._last_cb_time
+        self.session_wav = None
+        try:
+            with self._wav_lock:
+                self._wav = None
+        except Exception:
+            pass
+        if session_dir:
+            try:
+                d = Path(str(session_dir))
+                d.mkdir(parents=True, exist_ok=True)
+                tag = time.strftime("%Y%m%d_%H%M%S")
+                wp = d / f"note_{tag}.wav"
+                w = wave.open(str(wp), "wb")
+                w.setnchannels(1)
+                w.setsampwidth(2)
+                w.setframerate(int(self.sample_rate))
+                with self._wav_lock:
+                    self._wav = w
+                self.session_wav = str(wp)
+            except Exception:
+                try:
+                    with self._wav_lock:
+                        self._wav = None
+                except Exception:
+                    pass
+                self.session_wav = None
         self._recording = True
 
         try:
@@ -188,6 +257,13 @@ class NoteRecorder:
         except Exception as e:
             self._recording = False
             self._stream = None
+            self._close_session_wav()
+            try:
+                if self.session_wav:
+                    Path(self.session_wav).unlink(missing_ok=True)
+            except Exception:
+                pass
+            self.session_wav = None
             raise RuntimeError(f"Microphone error: {e}")
 
     def stop(self) -> Optional[np.ndarray]:
@@ -206,6 +282,14 @@ class NoteRecorder:
         with self._lock:
             frames = self._frames[:]
             self._frames = []
+
+        # Archive the tail too, then close (path stays on session_wav).
+        try:
+            if frames:
+                self._append_session_wav(frames)
+        except Exception:
+            pass
+        self._close_session_wav()
 
         if frames:
             audio = np.concatenate(frames, axis=0)
@@ -246,6 +330,53 @@ class NoteRecorder:
             return "ok", ""
         except Exception:
             return "ok", ""
+
+
+def wav_to_mp3(ffmpeg_exe, wav_path, mp3_path, bitrate_kbps=128):
+    """Convert a session WAV to MP3 (voice archive: mono, 16 kHz).
+    Returns (ok_bool, message). Blocking - callers run it off-thread.
+    A failed convert keeps the WAV and says so; never raises."""
+    try:
+        import subprocess as _sp
+        wav = Path(str(wav_path))
+        mp3 = Path(str(mp3_path))
+        try:
+            if not wav.exists() or wav.stat().st_size < 32000:
+                return False, "too short, skipped"
+        except Exception:
+            return False, "unreadable wav"
+        try:
+            kbps = max(32, min(320, int(bitrate_kbps or 128)))
+        except Exception:
+            kbps = 128
+        try:
+            p = _sp.run([str(ffmpeg_exe), "-hide_banner", "-y", "-v", "error",
+                         "-i", str(wav), "-codec:a", "libmp3lame",
+                         "-b:a", f"{kbps}k", "-ar", "16000", "-ac", "1",
+                         str(mp3)],
+                        stdout=_sp.DEVNULL, stderr=_sp.PIPE, timeout=900,
+                        text=True, errors="replace")
+        except FileNotFoundError:
+            return False, "ffmpeg not found"
+        except Exception as e:
+            return False, f"convert failed: {e}"
+        if p.returncode != 0 or not mp3.exists() or mp3.stat().st_size <= 0:
+            try:
+                tail = ((p.stderr or "").strip()[-200:]) if p.stderr else ""
+            except Exception:
+                tail = ""
+            return False, f"ffmpeg error {tail}"
+        try:
+            mins = mp3.stat().st_size * 8 / (kbps * 1000) / 60
+        except Exception:
+            mins = 0.0
+        try:
+            wav.unlink()
+        except Exception:
+            pass
+        return True, f"{mp3.name} ({mins:.1f} min)"
+    except Exception as e:
+        return False, f"convert failed: {e}"
 
 
 class NoteTranscriber:
