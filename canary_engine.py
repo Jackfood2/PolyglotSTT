@@ -1,3 +1,4 @@
+import pathlib
 # canary_engine.py
 import threading
 import numpy as np
@@ -60,10 +61,15 @@ def delete_canary_model() -> int:
         raise FileNotFoundError("no local canary-1b.nemo to delete")
     return freed
 class CanaryEngine:
-    def __init__(self, task: str = "transcribe", source_lang: str = "ja", target_lang: str = "en", device: str = "auto", on_ready: Optional[Callable] = None):
+    def __init__(self, task: str = "transcribe", source_lang: str = "auto", target_lang: str = "en", device: str = "auto", on_ready: Optional[Callable] = None):
         self.task = task if task in CANARY_TASKS else "transcribe"
-        self.source_lang = source_lang
-        self.target_lang = target_lang
+        self.source_lang = (
+            source_lang if source_lang in CANARY_SOURCE_LANGS else "auto"
+        )
+        self.target_lang = (
+            target_lang if target_lang in CANARY_TARGET_LANGS[ self.task ]
+            else "en"
+        )
         self.device = (device or "auto").strip().lower() or "auto"
         if self.device == "gpu":
             self.device = "cuda"
@@ -76,6 +82,7 @@ class CanaryEngine:
         self._infer_lock = threading.Lock()
         self._loading = False
         self._last_error: Optional[str] = None
+        self._load_generation = 0
         self._model_name = "nvidia/canary-1b"
         self._device_used = "cpu"
         self.supported_source_langs = None
@@ -99,8 +106,8 @@ class CanaryEngine:
                 pass
     def load(self, on_progress: Optional[Callable] = None):
         with self._lock:
-            if self._loading:
-                return
+            self._load_generation += 1
+            generation = self._load_generation
             self._loading = True
             self._ready = False
         def _load():
@@ -155,6 +162,14 @@ class CanaryEngine:
                 except Exception as e_nemo:
                     raise RuntimeError(f"NeMo load failed: {e_nemo}. Install nemo_toolkit[asr] offline via wheels\\")
                 with self._lock:
+                    if generation != self._load_generation:
+                        self._loading = False
+                        try:
+                            model.close()
+                        except Exception:
+                            pass
+                        return
+                    self._model = model
                     self._ready = True
                     self._last_error = None
                     self._loading = False
@@ -180,9 +195,7 @@ class CanaryEngine:
                 self.task = task
                 if task == "translate":
                     self.target_lang = "en"
-            elif target_lang:
-                self.target_lang = target_lang
-            elif target_lang and self.task == "transcribe":
+            if target_lang:
                 self.target_lang = target_lang
             if source_lang:
                 self.source_lang = source_lang
@@ -192,29 +205,25 @@ class CanaryEngine:
         with self._lock:
             return self.task, self.source_lang, self.target_lang
     def unload(self) -> bool:
-        with self._lock:
-            if self._loading or self._model is None:
-                return False
-            self._model = None
-            self._ready = False
-            self._last_error = None
-            self.supported_source_langs = None
+        with self._infer_lock:
+            with self._lock:
+                if self._model is None:
+                    return False
+                self._load_generation += 1
+                model = self._model
+                self._model = None
+                self._ready = False
+                self._last_error = None
+                self._loading = False
         try:
-            with self._infer_lock:
-                pass
+            close = getattr(model, "close", None)
+            if callable(close):
+                close()
         except Exception:
             pass
         try:
             import gc
             gc.collect()
-        except Exception:
-            pass
-        try:
-            import torch
-            try:
-                torch.cuda.empty_cache()
-            except Exception:
-                pass
         except Exception:
             pass
         return True
@@ -245,7 +254,7 @@ class CanaryEngine:
         if not bad:
             return None
         return ("Canary-1B supports only [%s]; %s not supported. "
-                "For Japanese/Chinese/Korean use Whisper Large v3."
+                "For Japanese/Chinese/Korean use Whisper."
                 % (", ".join(sorted(supported)), " and ".join(bad)))
     def transcribe(self, audio_data: np.ndarray, sample_rate: int = 16000) -> str:
         with self._lock:
@@ -308,7 +317,7 @@ class CanaryEngine:
         except Exception as e:
             if isinstance(e, KeyError) and str(e).startswith("'<|"):
                 return ("[Canary Error: language %s not supported by this "
-                        "model. For Japanese/Chinese/Korean use Whisper Large v3.]"
+                        "model. For Japanese/Chinese/Korean use Whisper.]"
                         % str(e).strip("'"))
             import traceback
             traceback.print_exc()
@@ -363,7 +372,7 @@ class CanaryEngine:
         except Exception as e:
             if isinstance(e, KeyError) and str(e).startswith("'<|"):
                 return ("[Canary Error: language %s not supported by this "
-                        "model. For Japanese/Chinese/Korean use Whisper Large v3.]"
+                        "model. For Japanese/Chinese/Korean use Whisper.]"
                         % str(e).strip("'"))
             import traceback
             traceback.print_exc()

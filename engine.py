@@ -1,3 +1,4 @@
+import pathlib
 # engine.py
 import os
 import threading
@@ -94,6 +95,8 @@ class TranscriptionEngine:
         self._tx_lock = threading.Lock()
         self._loading = False
         self._last_error: Optional[str] = None
+        self._load_generation = 0
+        self._unload_generation = 0
     @property
     def is_ready(self) -> bool:
         return self._ready
@@ -111,8 +114,8 @@ class TranscriptionEngine:
         return MODEL_ARCH_NAMES.get(arch, str(arch) if arch is not None else "default")
     def load(self, on_progress: Optional[Callable] = None):
         with self._lock:
-            if self._loading:
-                return
+            self._load_generation += 1
+            generation = self._load_generation
             self._loading = True
             self._ready = False
             wanted_arch = self._wanted_arch
@@ -150,19 +153,30 @@ class TranscriptionEngine:
                             pass
                     except Exception:
                         raise e
+                new_transcriber = Transcriber(
+                    model_path=self._model_path,
+                    model_arch=self._model_arch,
+                )
                 with self._tx_lock:
-                    old = self._transcriber
+                    with self._lock:
+                        if generation != self._load_generation:
+                            try:
+                                new_transcriber.close()
+                            except Exception:
+                                pass
+                            return
+                        old = self._transcriber
+                        self._transcriber = new_transcriber
+                        self._ready = True
                     if old is not None:
                         try:
                             old.close()
                         except Exception:
                             pass
-                    self._transcriber = Transcriber(
-                        model_path=self._model_path,
-                        model_arch=self._model_arch,
-                    )
                 with self._lock:
-                    self._ready = True
+                    if generation != self._load_generation:
+                        self._loading = False
+                        return
                     self._last_error = None
                     one_shot = self._switch_cb
                     self._switch_cb = None
@@ -197,6 +211,9 @@ class TranscriptionEngine:
                 traceback.print_exc()
                 self._loading = False
                 with self._lock:
+                    if generation != self._load_generation:
+                        self._loading = False
+                        return
                     self._ready = False
                     self._last_error = str(e)
                     one_shot = self._switch_cb
@@ -213,17 +230,21 @@ class TranscriptionEngine:
         self.load()
     def unload(self) -> bool:
         with self._lock:
-            if self._loading or self._transcriber is None:
+            if self._transcriber is None:
                 return False
-            tr = self._transcriber
-            self._transcriber = None
+            self._load_generation += 1
+            self._unload_generation += 1
             self._ready = False
             self._last_error = None
         with self._tx_lock:
-            try:
-                tr.close()
-            except Exception:
-                pass
+            with self._lock:
+                tr = self._transcriber
+                self._transcriber = None
+            if tr is not None:
+                try:
+                    tr.close()
+                except Exception:
+                    pass
         return True
     def transcribe(self, audio_data: np.ndarray, sample_rate: int = 16000) -> str:
         with self._lock:

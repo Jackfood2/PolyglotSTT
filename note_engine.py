@@ -1,3 +1,4 @@
+import queue
 # note_engine.py
 # Chunked recording with adaptive silence detection for Note mode
 import threading
@@ -416,7 +417,7 @@ class NoteTranscriber:
     _ERROR_PREFIXES = ("[Error:", "[Whisper Error:", "[Canary Error:")
 
     def __init__(self):
-        self._queue: List[tuple] = []
+        self._queue: queue.Queue = queue.Queue(maxsize=25)
         self._queue_lock = threading.Lock()
         self._worker_thread: Optional[threading.Thread] = None
         self._stop_event = threading.Event()
@@ -441,16 +442,21 @@ class NoteTranscriber:
             # carries a stale generation - its late callbacks are dropped
             # and it never touches the new queue.
             self._gen += 1
-            self._queue = []
+            self._queue = queue.Queue(maxsize=25)
         self._stop_event.clear()
         # Never join a previous worker here: start() runs on the GUI
         # thread and the old one may be mid-transcription.
         self._worker_thread = threading.Thread(target=self._worker, daemon=True)
         self._worker_thread.start()
 
-    def submit_chunk(self, audio: np.ndarray, index: int):
-        with self._queue_lock:
-            self._queue.append((audio, index))
+    def submit_chunk(self, audio: np.ndarray, index: int) -> bool:
+        try:
+            self._queue.put_nowait((audio, index))
+            return True
+        except queue.Full:
+            if self._on_status:
+                self._on_status("Transcription queue full; chunk dropped")
+            return False
 
     def stop(self):
         # Event-only: the worker keeps draining the queue WITH callbacks
@@ -468,15 +474,17 @@ class NoteTranscriber:
     def _worker(self):
         with self._queue_lock:
             my_gen = self._gen
+            my_queue = self._queue
         while True:
             with self._queue_lock:
                 if self._gen != my_gen:
                     break  # superseded by a newer session
-                if self._stop_event.is_set() and not self._queue:
-                    break  # drained after stop
-                item = self._queue.pop(0) if self._queue else None
-            if item is None:
-                time.sleep(0.1)
+                stopping = self._stop_event.is_set()
+            try:
+                item = my_queue.get(timeout=0.1)
+            except queue.Empty:
+                if stopping:
+                    break
                 continue
 
             audio, index = item

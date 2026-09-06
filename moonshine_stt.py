@@ -1,3 +1,4 @@
+import pathlib
 # moonshine_stt.py
 import os
 import sys
@@ -29,7 +30,7 @@ except Exception as e:
     FG_SECONDARY = "#B2BEC3"
 RECORD_KEY = keyboard.Key.f2
 SAMPLE_RATE = 16000
-APP_VERSION = "1.2.15"
+APP_VERSION = "1.2.16"
 CONFIG_PATH = os.path.join(os.path.dirname(__file__), "moonshine_config.json")
 _CONFIG_LOCK = threading.RLock()
 DEFAULT_CONFIG = {
@@ -41,13 +42,13 @@ DEFAULT_CONFIG = {
     "canary_task": "transcribe",
     "canary_src_lang": "auto",
     "whisper_task": "translate",
-    "whisper_src_lang": "ja",
+    "whisper_src_lang": "auto",
     "whisper_model": "large-v3",
     "whisper_device": "auto",
     "compute": "auto",
     "srt_cpu": 0,
     "srt_out_dir": "",
-    "srt_input_lang": "ja",
+    "srt_input_lang": "auto",
     "srt_output_lang": "en",
     "burn_font_size": 18,
     "burn_sample_start": "0:30",
@@ -89,6 +90,17 @@ def save_local_config(cfg):
             os.replace(tmp, CONFIG_PATH)
     except Exception:
         pass
+def update_config(config, **changes):
+    """Atomically update and persist a configuration snapshot."""
+    with _CONFIG_LOCK:
+        snapshot = dict(config or {})
+        snapshot.update(changes)
+        config.clear()
+        config.update(snapshot)
+        save_local_config(dict(snapshot))
+        return dict(snapshot)
+
+
 def apply_suffix(text: str, suffix: str) -> str:
     if suffix == "space":
         return text + " "
@@ -121,10 +133,10 @@ class MoonshineSTTApp:
             arch = 5
             self.config["model_arch"] = 5
             needs_save = True
-        if self.config.get("engine") == "Whisper Turbo v3":
-            self.config["engine"] = "Whisper Large v3"
+        if self.config.get("engine") in ("Whisper Turbo v3", "Whisper Large v3"):
+            self.config["engine"] = "Whisper"
             needs_save = True
-        if self.config.get("engine") not in ("Moonshine v2", "Canary-1B", "Whisper Large v3"):
+        if self.config.get("engine") not in ("Moonshine v2", "Canary-1B", "Whisper"):
             self.config["engine"] = "Moonshine v2"
             needs_save = True
         if self.config.get("canary_task") not in ("transcribe", "translate"):
@@ -271,7 +283,7 @@ class MoonshineSTTApp:
             pass
         if self.config.get("engine") == "Canary-1B":
             self.engine = self._get_canary_engine()
-        elif self.config.get("engine") == "Whisper Large v3":
+        elif self.config.get("engine") == "Whisper":
             self.engine = self._get_whisper_engine()
         else:
             self.engine = self.moonshine_engine
@@ -285,7 +297,7 @@ class MoonshineSTTApp:
         self._our_root_hwnd = 0
         self._target_top_hwnd = None
         self._target_child_hwnd = None
-        self.audio_queue: queue.Queue = queue.Queue()
+        self.audio_queue: queue.Queue = queue.Queue(maxsize=25)
         self.currently_processing = False
         self._processing_thread = threading.Thread(target=self._processing_worker, daemon=True)
         self._processing_thread.start()
@@ -310,7 +322,7 @@ class MoonshineSTTApp:
                     pass
                 try:
                     _eng = self.config.get("engine", "Moonshine v2")
-                    if _eng == "Whisper Large v3":
+                    if _eng == "Whisper":
                         _t, _s = (self.config.get("whisper_task", "translate"),
                                   self.config.get("whisper_src_lang", "ja"))
                     else:
@@ -506,9 +518,9 @@ class MoonshineSTTApp:
             if tab == "live":
                 return self._get_whisper_engine(False)
             sel = self.tab_selection(tab)
-            if sel["kind"] != "Whisper Large v3":
+            if sel["kind"] != "Whisper":
                 return None
-            return self._tab_heavy(tab, "Whisper Large v3", sel["wmodel"])
+            return self._tab_heavy(tab, "Whisper", sel["wmodel"])
         except Exception:
             return None
 
@@ -609,7 +621,7 @@ class MoonshineSTTApp:
     # idle, non-diverged tabs. plan_* is pure logic (unit-testable, no Tk,
     # no loads); apply_* performs side effects (GUI thread only).
     TAB_IDS = ("live", "srt", "note")
-    ENGINE_KINDS = ("Moonshine v2", "Canary-1B", "Whisper Large v3")
+    ENGINE_KINDS = ("Moonshine v2", "Canary-1B", "Whisper")
     _WHISPER_IDS = ("tiny", "base", "small", "medium", "large",
                     "large-v1", "large-v2", "large-v3")
     _ARCHES = (0, 1, 2, 3, 4, 5)
@@ -644,7 +656,7 @@ class MoonshineSTTApp:
     @staticmethod
     def _engine_ram_mb(kind, arch=None, wmodel=None):
         try:
-            if kind == "Whisper Large v3":
+            if kind == "Whisper":
                 return int(MoonshineSTTApp._WHISPER_RAM_MB.get(
                     wmodel or "large-v3", 3200))
             return int(MoonshineSTTApp._ENGINE_RAM_MB.get(kind, 300))
@@ -754,7 +766,7 @@ class MoonshineSTTApp:
                 except Exception:
                     name = str(sel["arch"])
                 return f"Moonshine {name}"
-            if k == "Whisper Large v3":
+            if k == "Whisper":
                 return f"Whisper {sel['wmodel']}"
             return "Canary-1B"
         except Exception:
@@ -943,7 +955,7 @@ class MoonshineSTTApp:
                     device=self.config.get("compute", "auto"),
                     on_ready=None,
                 )
-            if kind == "Whisper Large v3":
+            if kind == "Whisper":
                 from whisper_engine import WhisperEngine
                 return WhisperEngine(
                     task=self.config.get("whisper_task", "translate"),
@@ -981,7 +993,7 @@ class MoonshineSTTApp:
         try:
             if kind == "Canary-1B":
                 slot = "canary"
-            elif kind == "Whisper Large v3":
+            elif kind == "Whisper":
                 slot = "whisper"
             else:
                 return None
@@ -1056,7 +1068,7 @@ class MoonshineSTTApp:
                         self.config["engine"] = kind
                         if kind == "Moonshine v2":
                             self.config["model_arch"] = int(arch)
-                        elif kind == "Whisper Large v3":
+                        elif kind == "Whisper":
                             self.config["whisper_model"] = str(wmid)
                         save_local_config(self.config)
                 node = (self._tab_sel or {}).get(tab)
@@ -1124,7 +1136,7 @@ class MoonshineSTTApp:
                 pass
             # Preload for interactive tabs (SRT loads inside its job w/ progress).
             try:
-                if tab in ("live", "note") and kind in ("Canary-1B", "Whisper Large v3"):
+                if tab in ("live", "note") and kind in ("Canary-1B", "Whisper"):
                     if tab == "live":
                         pass  # existing live flow below loads it
                     else:
@@ -1398,7 +1410,7 @@ class MoonshineSTTApp:
                 return
             _eng = self.config.get("engine", "Moonshine v2")
             try:
-                if _eng == "Whisper Large v3":
+                if _eng == "Whisper":
                     _t = self.config.get("whisper_task", "translate")
                     _s = self.config.get("whisper_src_lang", "ja")
                 else:
@@ -1433,7 +1445,7 @@ class MoonshineSTTApp:
                         eng = cache.get("whisper")
                         if eng is not None:
                             try:
-                                same = (sel["kind"] == "Whisper Large v3"
+                                same = (sel["kind"] == "Whisper"
                                         and str(getattr(eng, "model_id", "") or "")
                                         == str(sel["wmodel"]))
                             except Exception:
@@ -1506,10 +1518,15 @@ class MoonshineSTTApp:
         with _CONFIG_LOCK:
             self.config["compute"] = code
             save_local_config(self.config)
+        try:
+            import gpu as _gpumod2
+            _gpumod2.refresh_gpu_cache()
+        except Exception:
+            pass
         self._log(f"Compute -> {display} (applies on engine load)")
         active = self.config.get("engine", "Moonshine v2")
         target = None
-        if active == "Whisper Large v3" and self.whisper_engine is not None:
+        if active == "Whisper" and self.whisper_engine is not None:
             try:
                 self.whisper_engine.device = code
             except Exception:
@@ -1596,7 +1613,7 @@ class MoonshineSTTApp:
     def _model_status_fn(self):
         try:
             eng = self.config.get("engine", "Moonshine v2")
-            if eng == "Whisper Large v3":
+            if eng == "Whisper":
                 from whisper_engine import (WHISPER_MODEL_CHOICES,
                                             whisper_downloaded_map)
                 try:
@@ -1643,7 +1660,7 @@ class MoonshineSTTApp:
             except Exception:
                 pass
             fn = self._model_status_fn()
-            if eng == "Whisper Large v3":
+            if eng == "Whisper":
                 from gui import WHISPER_MODEL_CHOICES, WHISPER_MODEL_CHOICES_REV
                 cur = WHISPER_MODEL_CHOICES_REV.get(
                     self.config.get("whisper_model", "large-v3"),
@@ -1717,11 +1734,11 @@ class MoonshineSTTApp:
             dl = size > 20_000_000
             if dl:
                 total += size
-            items.append({"engine": "Whisper Large v3", "kind": "whisper",
+            items.append({"engine": "Whisper", "kind": "whisper",
                           "id": mid, "label": label,
                           "size": size if dl else None,
                           "downloaded": dl,
-                          "in_use": active == "Whisper Large v3" and wmid == mid})
+                          "in_use": active == "Whisper" and wmid == mid})
         try:
             from canary_engine import canary_cache_info
             csize = int((canary_cache_info() or {}).get("nemo", 0))
@@ -1747,7 +1764,7 @@ class MoonshineSTTApp:
                 from engine import delete_moonshine_model
                 freed = delete_moonshine_model(None, arch)
             elif kind == "whisper":
-                if (self.config.get("engine") == "Whisper Large v3"
+                if (self.config.get("engine") == "Whisper"
                         and self.config.get("whisper_model") == ident):
                     return False, "Switch to another model first."
                 from whisper_engine import delete_whisper_model
@@ -1811,7 +1828,7 @@ class MoonshineSTTApp:
             msg += f" Skipped (in use): {', '.join(skipped[:3])}."
         return True, msg
     def _on_model_changed(self, display_label: str):
-        if self.config.get("engine") == "Whisper Large v3":
+        if self.config.get("engine") == "Whisper":
             self._on_whisper_model_changed(display_label)
             return
         if self.config.get("engine") not in ("Moonshine v2",):
@@ -1875,7 +1892,7 @@ class MoonshineSTTApp:
                 pass
             return
         try:
-            if not self._live_engine_pick("Whisper Large v3", None, new_id):
+            if not self._live_engine_pick("Whisper", None, new_id):
                 return
         except Exception:
             pass
@@ -1990,7 +2007,7 @@ class MoonshineSTTApp:
         self._log(f"Engine -> {display_label}")
         try:
             if self.gui:
-                if display_label == "Whisper Large v3":
+                if display_label == "Whisper":
                     self.gui.canary_task_var.set(self.config.get("whisper_task", "translate"))
                     self.gui.canary_lang_var.set(self.config.get("whisper_src_lang", "ja"))
                 elif display_label == "Canary-1B":
@@ -2037,11 +2054,11 @@ class MoonshineSTTApp:
                         self.gui.after(0, lambda: self.gui.record_btn.configure(state="normal"))
                     except Exception:
                         pass
-        elif display_label == "Whisper Large v3":
+        elif display_label == "Whisper":
             new_engine = self._get_whisper_engine()
             self.engine = new_engine
             if self.gui:
-                self.gui.set_status("Loading Whisper Large v3...", WARNING)
+                self.gui.set_status("Loading Whisper...", WARNING)
                 try:
                     self.gui.record_btn.configure(state="disabled")
                 except Exception:
@@ -2051,7 +2068,7 @@ class MoonshineSTTApp:
             else:
                 if self.gui:
                     try:
-                        self.gui.after(0, lambda e=new_engine: self.gui.set_status(f"Ready \u2022 Whisper Large v3 ({e.task} {e.source_lang}->en)", SUCCESS))
+                        self.gui.after(0, lambda e=new_engine: self.gui.set_status(f"Ready \u2022 Whisper ({e.task} {e.source_lang}->en)", SUCCESS))
                         self.gui.after(0, lambda: self.gui.record_btn.configure(state="normal"))
                     except Exception:
                         pass
@@ -2091,7 +2108,7 @@ class MoonshineSTTApp:
                         continue
                     if active == "Canary-1B" and name == "canary_engine":
                         continue
-                    if active == "Whisper Large v3" and name == "whisper_engine":
+                    if active == "Whisper" and name == "whisper_engine":
                         continue
                     if active == "Moonshine v2" and name == "moonshine_engine":
                         continue
@@ -2105,7 +2122,7 @@ class MoonshineSTTApp:
         except Exception:
             pass
     def _on_canary_task_changed(self, value):
-        if self.config.get("engine") == "Whisper Large v3":
+        if self.config.get("engine") == "Whisper":
             self.config["whisper_task"] = value
             save_local_config(self.config)
             if self.whisper_engine:
@@ -2124,7 +2141,7 @@ class MoonshineSTTApp:
                 pass
         self._log(f"Canary task -> {value}")
     def _on_canary_lang_changed(self, value):
-        if self.config.get("engine") == "Whisper Large v3":
+        if self.config.get("engine") == "Whisper":
             self.config["whisper_src_lang"] = value
             save_local_config(self.config)
             if self.whisper_engine:
@@ -2363,13 +2380,12 @@ class MoonshineSTTApp:
             self._update_indicator()
             return
         try:
-            if self.audio_queue.qsize() >= 25:
-                self._gui_queue.put(("status", ("Queue full - wait for processing", WARNING)))
-                self._update_indicator()
-                return
-        except Exception:
-            pass
-        self.audio_queue.put((audio, settings_snapshot))
+            self.audio_queue.put_nowait((audio, settings_snapshot))
+        except queue.Full:
+            self._gui_queue.put(("status", (
+                "Queue full - wait for processing", WARNING)))
+            self._update_indicator()
+            return
         self._update_indicator()
     def _processing_worker(self):
         while True:
@@ -2517,7 +2533,7 @@ class MoonshineSTTApp:
                 if srt_out in _SRT_LANGS:
                     self.config["srt_output_lang"] = srt_out
                 _eng = self.config.get("engine", "Moonshine v2")
-                if srt_task and _eng == "Whisper Large v3":
+                if srt_task and _eng == "Whisper":
                     self.config["whisper_task"] = srt_task
                 elif srt_task and _eng == "Canary-1B":
                     self.config["canary_task"] = srt_task
@@ -2579,7 +2595,7 @@ class MoonshineSTTApp:
                 "burn_vbr_kbps": _bkbps,
                 "burn_codec": _bcode,
             }
-            if job["engine_kind"] not in ("Moonshine v2", "Canary-1B", "Whisper Large v3"):
+            if job["engine_kind"] not in ("Moonshine v2", "Canary-1B", "Whisper"):
                 job["engine_kind"] = "Moonshine v2"
             self._srt_cancel.clear()
             if self._abort_shutdown():
@@ -3143,7 +3159,7 @@ class MoonshineSTTApp:
                     "cpu_workers": int(self.config.get("srt_cpu", 0) or 0),
                     "normalize_audio": bool(self.config.get("srt_norm", False)),
                 }
-                if snap["engine_kind"] not in ("Moonshine v2", "Canary-1B", "Whisper Large v3"):
+                if snap["engine_kind"] not in ("Moonshine v2", "Canary-1B", "Whisper"):
                     snap["engine_kind"] = "Moonshine v2"
                 ffmpeg = srtmod.get_ffmpeg_exe()
                 if not ffmpeg:

@@ -1,3 +1,4 @@
+import pathlib
 # gpu.py
 import shutil
 import subprocess
@@ -7,6 +8,13 @@ _SMI_TIMEOUT = 8
 _cache = {}
 _cache_lock = threading.Lock()
 _nvenc_cache = {}
+
+
+def refresh_gpu_cache() -> None:
+    """Invalidate GPU and NVENC probe caches."""
+    with _cache_lock:
+        _cache.clear()
+        _nvenc_cache.clear()
 def _smi_gpus():
     if shutil.which("nvidia-smi") is None:
         return []

@@ -1,3 +1,4 @@
+import pathlib
 # srt.py
 import json
 import os
@@ -1027,7 +1028,7 @@ def run_srt_job(src_path: str, out_dir: str, engine_kind: str,
         audio = None
         sr = 16000
         spans: List[Tuple[float, float]] = []
-        is_whisper = (engine_kind == "Whisper Large v3")
+        is_whisper = (engine_kind == "Whisper")
         if not is_whisper:
             audio, sr = load_wav_16k(tmp_wav)
             prog(0.12, "Detecting speech segments...")
@@ -1103,7 +1104,7 @@ def run_srt_job(src_path: str, out_dir: str, engine_kind: str,
                     log(f"  chunk {i + 1}/{len(spans)}: {segments[-1][2][:60]}...")
                 else:
                     log(f"  chunk {i + 1}/{len(spans)}: (silence)")
-        elif engine_kind == "Whisper Large v3":
+        elif engine_kind == "Whisper":
             if get_whisper_engine is None:
                 raise RuntimeError("Whisper engine not wired. Update moonshine_stt.py.")
             eng = get_whisper_engine()
@@ -1402,10 +1403,17 @@ def _burn_speed_id(speed) -> str:
         key = "match"
     return key if key in BURN_SPEEDS else "match"
 def probe_media(path, ffmpeg: str) -> dict:
-    proc = subprocess.run(
-        [ffmpeg, "-hide_banner", "-i", str(path)],
-        stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
-        text=True, errors="replace")
+    try:
+        proc = subprocess.run(
+            [ffmpeg, "-hide_banner", "-i", str(path)],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+            text=True,
+            errors="replace",
+            timeout=60,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise TimeoutError(f"media probe timed out: {path}") from exc
     err = proc.stderr or ""
     info = {"duration": 0.0, "fps": 0.0, "width": 0, "height": 0,
             "vcodec": "", "acodec": "", "audio_bps": 0,
@@ -1516,8 +1524,15 @@ def stage_subtitles_filter(srt_path, font_size: int, dest_dir) -> str:
         size = max(10, min(40, int(font_size)))
     except Exception:
         size = 18
-    safe_srt = Path(dest_dir) / "subs.srt"
-    shutil.copy(str(srt_path), str(safe_srt))
+    source = Path(srt_path)
+    if not source.is_file():
+        raise FileNotFoundError(f"SRT not found: {source}")
+    destination_dir = Path(dest_dir)
+    destination_dir.mkdir(parents=True, exist_ok=True)
+    safe_srt = destination_dir / f"subs_{os.getpid()}_{threading.get_ident()}.srt"
+    shutil.copy2(str(source), str(safe_srt))
+    if not safe_srt.is_file() or safe_srt.stat().st_size == 0:
+        raise IOError(f"failed to stage SRT: {source}")
     try:
         cjk = _has_cjk(Path(srt_path).read_text(encoding="utf-8",
                                                 errors="ignore"))

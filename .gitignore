@@ -21,3 +21,5 @@ notes_audio/
 # SRT job temp files.
 *.srt_tmp16k.wav
 *.tmp
+# Patch-script backups (auto-created beside patched files, never commit).
+patch_backups/

@@ -1,3 +1,4 @@
+import pathlib
 # whisper_engine.py
 import threading
 import numpy as np
@@ -134,6 +135,7 @@ class WhisperEngine:
         self._infer_lock = threading.Lock()
         self._loading = False
         self._last_error: Optional[str] = None
+        self._load_generation = 0
         self._switch_cb: Optional[Callable] = None
     @property
     def is_ready(self) -> bool:
@@ -205,8 +207,8 @@ class WhisperEngine:
             return 4
     def load(self, on_progress: Optional[Callable] = None):
         with self._lock:
-            if self._loading:
-                return
+            self._load_generation += 1
+            generation = self._load_generation
             self._loading = True
             self._ready = False
         def _load():
@@ -291,9 +293,7 @@ class WhisperEngine:
                 self.task = task
                 if task == "translate":
                     self.target_lang = "en"
-            elif target_lang:
-                self.target_lang = target_lang
-            elif target_lang and self.task == "transcribe":
+            if target_lang:
                 self.target_lang = target_lang
             if source_lang:
                 self.source_lang = source_lang
@@ -312,6 +312,7 @@ class WhisperEngine:
             else:
                 same_cb, already = None, False
             self.model_id = model_id
+            self._load_generation += 1
             self._model = None
             self._ready = False
             self._last_error = None
@@ -325,15 +326,20 @@ class WhisperEngine:
             return
         self.load()
     def unload(self) -> bool:
-        with self._lock:
-            if self._loading or self._model is None:
-                return False
-            self._model = None
-            self._ready = False
-            self._last_error = None
+        with self._infer_lock:
+            with self._lock:
+                if self._model is None:
+                    return False
+                self._load_generation += 1
+                model = self._model
+                self._model = None
+                self._ready = False
+                self._last_error = None
+                self._loading = False
         try:
-            with self._infer_lock:
-                pass
+            close = getattr(model, "close", None)
+            if callable(close):
+                close()
         except Exception:
             pass
         try:

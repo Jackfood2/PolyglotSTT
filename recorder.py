@@ -1,3 +1,4 @@
+import pathlib
 # recorder.py
 import numpy as np
 import sounddevice as sd
@@ -52,10 +53,17 @@ class AudioRecorder:
         if not self._recording:
             return None
         self._recording = False
-        if self._stream:
-            self._stream.stop()
-            self._stream.close()
-            self._stream = None
+        stream = self._stream
+        self._stream = None
+        if stream is not None:
+            try:
+                stream.stop()
+            except Exception:
+                pass
+            try:
+                stream.close()
+            except Exception:
+                pass
         with self._lock:
             frames, self._frames = self._frames, []
         if not frames:

@@ -7,7 +7,7 @@ No API keys, no cloud, no admin rights needed once set up.
 
 > Windows 10/11 only. The app window is titled "MoonshineSTT" (original
 > project name); the repository is named PolyglotSTT because it now covers
-> Moonshine v2, NVIDIA Canary-1B, and Whisper Large v3.
+> Moonshine v2, NVIDIA Canary-1B, and Whisper.
 
 ## Engines
 
@@ -15,7 +15,7 @@ No API keys, no cloud, no admin rights needed once set up.
 |---|---|---|
 | Moonshine v2 | Fast lightweight English ASR (Tiny → Medium-Streaming) | English |
 | Canary-1B | Accurate ASR + translation to English | Source: German, English, Spanish, French (`auto` → English) |
-| Whisper Large v3 | Full-size Whisper, native timestamps, word-level alignment | ~100 source languages; `transcribe` keeps source, `translate` outputs English |
+| Whisper | Full-size Whisper, native timestamps, word-level alignment | ~100 source languages; `transcribe` keeps source, `translate` outputs English |
 
 **Why not Turbo?** OpenAI trained `large-v3-turbo` on transcription data
 only, explicitly excluding translation data — the `<|translate|>` token is
@@ -135,7 +135,7 @@ Moonshine stay on CPU.
   `setup.bat`/`run.bat` prefer a local portable `python\` folder if present,
   otherwise fall back to system Python 3.11).
 - Disk for models (see below) and patience on first run (large downloads).
-- ~16 GB RAM if you use Canary-1B; Whisper Large v3 runs on CPU
+- ~16 GB RAM if you use Canary-1B; Whisper runs on CPU
   (slower than Turbo, but it actually translates).
 
 ## Install
@@ -184,7 +184,7 @@ settings persist in `moonshine_config.json`.
 an output folder (default: next to the source), set *Input/Output
 Language* (enabled for Canary and Whisper only; `translate` always outputs
 English), tune CPU threads, then *Generate SRT*. The engine label (e.g.
-`Whisper Large v3 (translate Japanese->English)`) always shows exactly
+`Whisper (translate Japanese->English)`) always shows exactly
 what the job will do. The status line counts down remaining time from an
 estimate learned per model, per burn speed, and per audio length on this
 machine (`srt_eta.json`: `whisper:large-v3` and `tiny` track separately,
@@ -249,7 +249,7 @@ requirements*.txt  dependency pins (base / Canary / Whisper)
 - **Paste fails in admin windows** — copy from Transcription History
   manually (UAC focus protection).
 - **Japanese + Canary** — unsupported by the model (only de/en/es/fr);
-  switch Engine to Whisper Large v3.
+  switch Engine to Whisper.
 - **Model download fails** — check internet, re-run `setup.bat`; Canary
   also accepts a manually placed `canary-1b.nemo`. Whisper sizes download
   when first selected (watch the log for progress on slow links).
@@ -279,7 +279,15 @@ requirements*.txt  dependency pins (base / Canary / Whisper)
 
 ## Changelog
 
-### v1.2.15 (latest)
+### v1.2.16 (latest)
+
+- Reliability pass: engine loads carry a generation token, so a stale load can no longer overwrite the newly selected model; heavy-engine unloads take the inference lock before clearing the model
+- Fixed a VAD buffer bug that re-added already-consumed audio (wrong speech regions plus quadratic slowdown on long files)
+- Engine renamed from "Whisper Large v3" to "Whisper" everywhere, old configs migrate automatically; Whisper keeps its full language list, Canary stays auto/en/de/es/fr
+- Live and Note queues are now truly bounded (overflow reports instead of growing without limit); recorder stop can no longer raise; Note worker pinned to its own session queue
+- FFmpeg probes time out after 60s; burn staging uses a validated collision-proof temp name; GPU probe cache refreshes on compute change
+
+### v1.2.15
 
 - Note Save Audio button with location picker; unsaved session audio cleared on close, orphans swept on launch
 - Fast launch: single millisecond dependency probe instead of four heavy imports (~5s to window, was ~18s)
@@ -482,7 +490,7 @@ requirements*.txt  dependency pins (base / Canary / Whisper)
 
 ### v1.0.0
 
-- Initial release: Moonshine v2 + Canary-1B + Whisper Large v3
+- Initial release: Moonshine v2 + Canary-1B + Whisper
 - Live F2 dictation + SRT batch generation
 - Size-matched burn-in with x264 two-pass
 

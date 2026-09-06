@@ -1,3 +1,4 @@
+import pathlib
 # gui.py
 import customtkinter as ctk
 import threading
@@ -152,12 +153,12 @@ def apply_badge_map(values, status_fn=None):
         mapping[k] = v
         displays.append(k)
     return displays, mapping
-ENGINE_CHOICES = ["Moonshine v2", "Canary-1B", "Whisper Large v3"]
+ENGINE_CHOICES = ["Moonshine v2", "Canary-1B", "Whisper"]
 CANARY_TASKS = ["transcribe", "translate"]
-CANARY_LANGS = ["auto", "en", "ja", "zh", "ko", "de", "es", "fr",
-                "it", "pt", "nl", "ru", "ar", "hi", "tr", "id", "uk", "vi", "th"]
+CANARY_LANGS = ["auto", "en", "de", "es", "fr"]
 WHISPER_TASKS = ["transcribe", "translate"]
-WHISPER_LANGS = CANARY_LANGS
+WHISPER_LANGS = ["auto", "en", "ja", "zh", "ko", "de", "es", "fr",
+                 "it", "pt", "nl", "ru", "ar", "hi", "tr", "id", "uk", "vi", "th"]
 SRT_LANGS = ["auto", "en", "ja", "zh", "ko", "de", "es", "fr",
              "it", "pt", "nl", "ru", "ar", "hi", "tr", "id", "uk", "vi", "th"]
 SRT_LANG_NAMES = {
@@ -470,7 +471,7 @@ class MoonshineGUI(ctk.CTk):
         footer = ctk.CTkFrame(self, fg_color="transparent")
         footer.grid(row=3, column=0, sticky="ew", padx=20, pady=(0, 12))
         self._footer_label = ctk.CTkLabel(
-            footer, text="Moonshine v2 + Canary-1B + Whisper Large v3 \u2022 On-device \u2022 No API keys",
+            footer, text="Moonshine v2 + Canary-1B + Whisper \u2022 On-device \u2022 No API keys",
             font=("Segoe UI", 10), text_color=FG_DIM)
         self._footer_label.pack()
         self._build_srt_tab(srt_tab)
@@ -485,7 +486,7 @@ class MoonshineGUI(ctk.CTk):
             pass
     def set_footer_version(self, version: str):
         try:
-            base = "Moonshine v2 + Canary-1B + Whisper Large v3 \u2022 On-device \u2022 No API keys"
+            base = "Moonshine v2 + Canary-1B + Whisper \u2022 On-device \u2022 No API keys"
             v = str(version or "").strip()
             self._footer_label.configure(
                 text=f"{base} \u2022 v{v}" if v else base)
@@ -677,7 +678,7 @@ class MoonshineGUI(ctk.CTk):
             command=self._on_srt_output_lang_changed)
         self.srt_output_lang_menu.grid(row=0, column=3, sticky="ew", padx=4, pady=(8, 2))
         self.srt_lang_hint = ctk.CTkLabel(
-            lang_card, text="Only Whisper Large v3 and Canary-1B support language selection",
+            lang_card, text="Only Whisper and Canary-1B support language selection",
             font=("Segoe UI", 9), text_color=FG_DIM)
         self.srt_lang_hint.grid(row=1, column=0, columnspan=4, sticky="w", padx=12, pady=(2, 8))
         self._srt_input_lang_cb = None
@@ -2137,7 +2138,7 @@ class MoonshineGUI(ctk.CTk):
     def _srt_model_options(self, kind):
         """Display labels valid for an engine kind."""
         try:
-            if kind == "Whisper Large v3":
+            if kind == "Whisper":
                 return list(WHISPER_MODEL_CHOICES.keys())
             if kind == "Canary-1B":
                 return [CANARY_MODEL_LABEL]
@@ -2169,7 +2170,7 @@ class MoonshineGUI(ctk.CTk):
     def _srt_menu_label(self, kind, arch=None, wmid=None):
         """Display model label for ids (restore/mirror path)."""
         try:
-            if kind == "Whisper Large v3":
+            if kind == "Whisper":
                 return WHISPER_MODEL_CHOICES_REV.get(str(wmid or "large-v3"))
             if kind == "Canary-1B":
                 return CANARY_MODEL_LABEL
@@ -2220,7 +2221,7 @@ class MoonshineGUI(ctk.CTk):
         except Exception:
             label = ""
         try:
-            if kind == "Whisper Large v3":
+            if kind == "Whisper":
                 wmid = WHISPER_MODEL_CHOICES.get(label)
             elif kind == "Moonshine v2":
                 arch = MODEL_CHOICES.get(label)
@@ -2274,7 +2275,7 @@ class MoonshineGUI(ctk.CTk):
                 label = ""
             arch, wmid = None, None
             try:
-                if kind == "Whisper Large v3":
+                if kind == "Whisper":
                     wmid = WHISPER_MODEL_CHOICES.get(label)
                 elif kind == "Moonshine v2":
                     arch = MODEL_CHOICES.get(label)
@@ -2395,7 +2396,7 @@ class MoonshineGUI(ctk.CTk):
 
     def _note_model_options(self, kind):
         try:
-            if kind == "Whisper Large v3":
+            if kind == "Whisper":
                 return list(WHISPER_MODEL_CHOICES.keys())
             if kind == "Canary-1B":
                 return [CANARY_MODEL_LABEL]
@@ -2426,7 +2427,7 @@ class MoonshineGUI(ctk.CTk):
 
     def _note_menu_label(self, kind, arch=None, wmid=None):
         try:
-            if kind == "Whisper Large v3":
+            if kind == "Whisper":
                 return WHISPER_MODEL_CHOICES_REV.get(str(wmid or "large-v3"))
             if kind == "Canary-1B":
                 return CANARY_MODEL_LABEL
@@ -2482,11 +2483,14 @@ class MoonshineGUI(ctk.CTk):
 
     def _on_engine_changed(self, value):
         self._refresh_srt_engine_label()
-        is_heavy = (value in ("Canary-1B", "Whisper Large v3"))
+        is_canary = value == "Canary-1B"
+        is_whisper = value == "Whisper"
         try:
             self.model_menu.configure(state=self._model_menu_state(value))
-            self.canary_task_menu.configure(state="normal" if is_heavy else "disabled")
-            self.canary_lang_menu.configure(state="normal" if is_heavy else "disabled")
+            self.canary_task_menu.configure(
+                state="normal" if is_canary or is_whisper else "disabled")
+            self.canary_lang_menu.configure(
+                state="normal" if is_canary or is_whisper else "disabled")
         except Exception:
             pass
         if self._engine_callback:
@@ -2515,7 +2519,7 @@ class MoonshineGUI(ctk.CTk):
             callback)
     @staticmethod
     def _model_menu_state(engine_kind: str) -> str:
-        return ("normal" if engine_kind in ("Moonshine v2", "Whisper Large v3")
+        return ("normal" if engine_kind in ("Moonshine v2", "Whisper")
                 else "disabled")
     def set_model_options(self, values, current: str, callback: Callable,
                           status_fn: Optional[Callable] = None):
@@ -2758,7 +2762,7 @@ class MoonshineGUI(ctk.CTk):
         self.engine_var.set(engine if engine in ENGINE_CHOICES else "Moonshine v2")
         self.canary_task_var.set(task if task in CANARY_TASKS else "transcribe")
         self.canary_lang_var.set(src_lang if src_lang in CANARY_LANGS else "auto")
-        is_heavy = (engine in ("Canary-1B", "Whisper Large v3"))
+        is_heavy = (engine in ("Canary-1B", "Whisper"))
         try:
             self.model_menu.configure(state=self._model_menu_state(engine))
             self.canary_task_menu.configure(state="normal" if is_heavy else "disabled")
@@ -4173,10 +4177,10 @@ class MoonshineGUI(ctk.CTk):
     def refresh_lang_options(self, engine_kind: str = ""):
         eng = engine_kind or self.engine_var.get()
         is_canary = (eng == "Canary-1B")
-        live_codes = CANARY_LIVE_SRC_CODES if is_canary else CANARY_LANGS
+        live_codes = CANARY_LIVE_SRC_CODES if is_canary else WHISPER_LANGS
         if is_canary:
             srt_in_codes, srt_out_codes = CANARY_SRT_IN_CODES, CANARY_SRT_OUT_CODES
-        elif eng == "Whisper Large v3":
+        elif eng == "Whisper":
             srt_in_codes, srt_out_codes = WHISPER_SRT_IN_CODES, WHISPER_SRT_OUT_CODES
         else:
             srt_in_codes, srt_out_codes = WHISPER_SRT_IN_CODES, WHISPER_SRT_OUT_CODES
@@ -4210,17 +4214,17 @@ class MoonshineGUI(ctk.CTk):
         except Exception:
             pass
     def set_srt_lang_state(self, engine_kind: str):
-        has_lang = engine_kind in ("Canary-1B", "Whisper Large v3")
+        has_lang = engine_kind in ("Canary-1B", "Whisper")
         try:
             state = "normal" if has_lang else "disabled"
             self.srt_input_lang_menu.configure(state=state)
             self.srt_output_lang_menu.configure(state=state)
             if engine_kind == "Canary-1B":
                 hint = "Canary-1B supports English, German, Spanish, French only (translate always outputs English)"
-            elif engine_kind == "Whisper Large v3":
+            elif engine_kind == "Whisper":
                 hint = "SRT subtitles use these languages (translate task always outputs English)"
             else:
-                hint = "Only Whisper Large v3 and Canary-1B support language selection"
+                hint = "Only Whisper and Canary-1B support language selection"
             self.srt_lang_hint.configure(text=hint)
         except Exception:
             pass
