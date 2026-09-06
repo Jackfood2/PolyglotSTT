@@ -429,8 +429,8 @@ class MoonshineGUI(ctk.CTk):
         self.canary_task_menu = ctk.CTkOptionMenu(engine_frame, variable=self.canary_task_var, values=CANARY_TASKS, width=110, fg_color=BG_INPUT, button_color=ACCENT, command=self._on_canary_task_changed)
         self.canary_task_menu.pack(side="left", padx=4, pady=8)
         ctk.CTkLabel(engine_frame, text="Src:", font=("Segoe UI", 10), text_color=FG_DIM).pack(side="left", padx=(8, 4), pady=8)
-        self.canary_lang_var = ctk.StringVar(value="auto")
-        self.canary_lang_menu = ctk.CTkOptionMenu(engine_frame, variable=self.canary_lang_var, values=CANARY_LANGS, width=80, fg_color=BG_INPUT, button_color=ACCENT, command=self._on_canary_lang_changed)
+        self.canary_lang_var = ctk.StringVar(value="Auto-detect")
+        self.canary_lang_menu = ctk.CTkOptionMenu(engine_frame, variable=self.canary_lang_var, values=[SRT_LANG_NAMES[c] for c in CANARY_LANGS], width=140, fg_color=BG_INPUT, button_color=ACCENT, command=self._on_canary_lang_changed)
         self.canary_lang_menu.pack(side="left", padx=4, pady=8)
         self._engine_callback = None
         self._canary_task_callback = None
@@ -2772,7 +2772,7 @@ class MoonshineGUI(ctk.CTk):
         self._canary_lang_callback = lang_cb if callable(lang_cb) else None
         self.engine_var.set(engine if engine in ENGINE_CHOICES else "Moonshine v2")
         self.canary_task_var.set(task if task in CANARY_TASKS else "transcribe")
-        self.canary_lang_var.set(src_lang if src_lang in CANARY_LANGS else "auto")
+        self.canary_lang_var.set(SRT_LANG_NAMES.get(src_lang, "Auto-detect"))
         is_heavy = (engine in ("Canary-1B", "Whisper"))
         try:
             self.model_menu.configure(state=self._model_menu_state(engine))
@@ -4189,6 +4189,7 @@ class MoonshineGUI(ctk.CTk):
         eng = engine_kind or self.engine_var.get()
         is_canary = (eng == "Canary-1B")
         live_codes = CANARY_LIVE_SRC_CODES if is_canary else WHISPER_LANGS
+        live_displays = [SRT_LANG_NAMES[c] for c in live_codes]
         if is_canary:
             srt_in_codes, srt_out_codes = CANARY_SRT_IN_CODES, CANARY_SRT_OUT_CODES
         elif eng == "Whisper":
@@ -4196,7 +4197,7 @@ class MoonshineGUI(ctk.CTk):
         else:
             srt_in_codes, srt_out_codes = WHISPER_SRT_IN_CODES, WHISPER_SRT_OUT_CODES
         try:
-            self.canary_lang_menu.configure(values=live_codes)
+            self.canary_lang_menu.configure(values=live_displays)
             self.srt_input_lang_menu.configure(
                 values=[SRT_LANG_NAMES[c] for c in srt_in_codes])
             self.srt_output_lang_menu.configure(
@@ -4204,8 +4205,9 @@ class MoonshineGUI(ctk.CTk):
         except Exception:
             pass
         try:
-            if self.canary_lang_var.get() not in live_codes:
-                fallback = "auto" if "auto" in live_codes else live_codes[0]
+            if self.canary_lang_var.get() not in live_displays:
+                fallback_code = "auto" if "auto" in live_codes else live_codes[0]
+                fallback = SRT_LANG_NAMES[fallback_code]
                 self.canary_lang_var.set(fallback)
                 self._on_canary_lang_changed(fallback)
         except Exception:

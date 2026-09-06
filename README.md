@@ -285,7 +285,12 @@ requirements*.txt  dependency pins (base / Canary / Whisper)
 
 ## Changelog
 
-### v1.2.19 (latest)
+### v1.2.20 (latest)
+
+- Live Src menu spells languages in full (Japanese, not ja) for both Whisper and Canary; saved codes restore to their names on launch
+- Every Live-row change (engine, task, language, model) already saved instantly — stale Japanese fallbacks corrected to auto-detect throughout
+
+### v1.2.19
 
 - Critical Canary fix: every Canary load died with `NameError` before publishing the model, so the engine could never become ready — loads now complete and report ready correctly
 - Stale-load guards completed for Whisper too (success and failure paths discard results from superseded loads instead of clobbering the new model)

@@ -30,7 +30,7 @@ except Exception as e:
     FG_SECONDARY = "#B2BEC3"
 RECORD_KEY = keyboard.Key.f2
 SAMPLE_RATE = 16000
-APP_VERSION = "1.2.19"
+APP_VERSION = "1.2.20"
 CONFIG_PATH = os.path.join(os.path.dirname(__file__), "moonshine_config.json")
 _CONFIG_LOCK = threading.RLock()
 DEFAULT_CONFIG = {
@@ -156,7 +156,7 @@ class MoonshineSTTApp:
             _wlangs = ("auto", "en", "ja", "zh", "ko", "de", "fr", "es")
             _wmodels = ("tiny", "base", "small", "medium", "large-v3")
         if self.config.get("whisper_src_lang") not in _wlangs:
-            self.config["whisper_src_lang"] = "ja"
+            self.config["whisper_src_lang"] = "auto"
             needs_save = True
         if self.config.get("whisper_model") not in _wmodels:
             self.config["whisper_model"] = "large-v3"
@@ -324,7 +324,7 @@ class MoonshineSTTApp:
                     _eng = self.config.get("engine", "Moonshine v2")
                     if _eng == "Whisper":
                         _t, _s = (self.config.get("whisper_task", "translate"),
-                                  self.config.get("whisper_src_lang", "ja"))
+                                  self.config.get("whisper_src_lang", "auto"))
                     else:
                         _t, _s = (self.config.get("canary_task", "transcribe"),
                                   self.config.get("canary_src_lang", "auto"))
@@ -586,7 +586,7 @@ class MoonshineSTTApp:
                         from whisper_engine import WhisperEngine
                         self.whisper_engine = WhisperEngine(
                             task=self.config.get("whisper_task", "translate"),
-                            source_lang=self.config.get("whisper_src_lang", "ja"),
+                            source_lang=self.config.get("whisper_src_lang", "auto"),
                             target_lang="en",
                             model_id=self.config.get("whisper_model", "large-v3"),
                             device=self.config.get("compute", "auto"),
@@ -960,7 +960,7 @@ class MoonshineSTTApp:
                 from whisper_engine import WhisperEngine
                 return WhisperEngine(
                     task=self.config.get("whisper_task", "translate"),
-                    source_lang=self.config.get("whisper_src_lang", "ja"),
+                    source_lang=self.config.get("whisper_src_lang", "auto"),
                     target_lang="en",
                     model_id=wmid or self.config.get("whisper_model", "large-v3"),
                     device=self.config.get("compute", "auto"),
@@ -1413,7 +1413,7 @@ class MoonshineSTTApp:
             try:
                 if _eng == "Whisper":
                     _t = self.config.get("whisper_task", "translate")
-                    _s = self.config.get("whisper_src_lang", "ja")
+                    _s = self.config.get("whisper_src_lang", "auto")
                 else:
                     _t = self.config.get("canary_task", "transcribe")
                     _s = self.config.get("canary_src_lang", "auto")
@@ -2009,11 +2009,15 @@ class MoonshineSTTApp:
         try:
             if self.gui:
                 if display_label == "Whisper":
+                    from gui import SRT_LANG_NAMES as _SLN
                     self.gui.canary_task_var.set(self.config.get("whisper_task", "translate"))
-                    self.gui.canary_lang_var.set(self.config.get("whisper_src_lang", "ja"))
+                    self.gui.canary_lang_var.set(
+                        _SLN.get(self.config.get("whisper_src_lang", "auto"), "Auto-detect"))
                 elif display_label == "Canary-1B":
+                    from gui import SRT_LANG_NAMES as _SLN2
                     self.gui.canary_task_var.set(self.config.get("canary_task", "transcribe"))
-                    self.gui.canary_lang_var.set(self.config.get("canary_src_lang", "auto"))
+                    self.gui.canary_lang_var.set(
+                        _SLN2.get(self.config.get("canary_src_lang", "auto"), "Auto-detect"))
                 try:
                     self.gui.set_srt_languages(
                         self.config.get("srt_input_lang", "auto"),
@@ -2142,24 +2146,31 @@ class MoonshineSTTApp:
                 pass
         self._log(f"Canary task -> {value}")
     def _on_canary_lang_changed(self, value):
+        # Live Src menu shows full names ("Japanese"); engines need codes.
+        from gui import SRT_LANG_CODE_FROM_DISPLAY, SRT_LANGS
+        code = SRT_LANG_CODE_FROM_DISPLAY.get(value, value)
         if self.config.get("engine") == "Whisper":
-            self.config["whisper_src_lang"] = value
+            if code not in SRT_LANGS:
+                code = "auto"
+            self.config["whisper_src_lang"] = code
             save_local_config(self.config)
             if self.whisper_engine:
                 try:
-                    self.whisper_engine.switch_options(source_lang=value)
+                    self.whisper_engine.switch_options(source_lang=code)
                 except Exception:
                     pass
-            self._log(f"Whisper src -> {value}")
+            self._log(f"Whisper src -> {code}")
             return
-        self.config["canary_src_lang"] = value
+        if code not in ("auto", "en", "de", "es", "fr"):
+            code = "auto"
+        self.config["canary_src_lang"] = code
         save_local_config(self.config)
         if self.canary_engine:
             try:
-                self.canary_engine.switch_options(source_lang=value)
+                self.canary_engine.switch_options(source_lang=code)
             except Exception:
                 pass
-        self._log(f"Canary src -> {value}")
+        self._log(f"Canary src -> {code}")
     def _on_srt_input_lang_changed(self, value):
         from gui import SRT_LANG_CODE_FROM_DISPLAY, SRT_LANGS
         code = SRT_LANG_CODE_FROM_DISPLAY.get(value, "auto")
@@ -2581,7 +2592,7 @@ class MoonshineSTTApp:
                 "canary_task": self.config.get("canary_task", "transcribe"),
                 "canary_src": self.config.get("canary_src_lang", "auto"),
                 "whisper_task": self.config.get("whisper_task", "translate"),
-                "whisper_src": self.config.get("whisper_src_lang", "ja"),
+                "whisper_src": self.config.get("whisper_src_lang", "auto"),
                 "srt_input_lang": self.config.get("srt_input_lang", "auto"),
                 "srt_output_lang": self.config.get("srt_output_lang", "en"),
                 "cpu_workers": int(cpu_workers),
@@ -3154,7 +3165,7 @@ class MoonshineSTTApp:
                     "canary_task": self.config.get("canary_task", "transcribe"),
                     "canary_src": self.config.get("canary_src_lang", "auto"),
                     "whisper_task": self.config.get("whisper_task", "translate"),
-                    "whisper_src": self.config.get("whisper_src_lang", "ja"),
+                    "whisper_src": self.config.get("whisper_src_lang", "auto"),
                     "srt_input_lang": self.config.get("srt_input_lang", "auto"),
                     "srt_output_lang": self.config.get("srt_output_lang", "en"),
                     "cpu_workers": int(self.config.get("srt_cpu", 0) or 0),
