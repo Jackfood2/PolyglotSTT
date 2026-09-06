@@ -969,6 +969,8 @@ def run_srt_job(src_path: str, out_dir: str, engine_kind: str,
     log(f"Language: input={srt_input_lang}, output={srt_output_lang}")
     def _wait_for_model(eng, name: str, loading_msg: str, load_pct: float):
         import time as _t
+        if eng is None:
+            raise RuntimeError(f"{name} engine unavailable")
         if eng.is_ready:
             return
         prog(load_pct, loading_msg)

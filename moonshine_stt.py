@@ -258,6 +258,17 @@ class MoonshineSTTApp:
         self.moonshine_engine = TranscriptionEngine(language="en", model_arch=arch, on_ready=self._model_ready)
         self.canary_engine = None
         self.whisper_engine = None
+        self._tab_sel = {}
+        self._shared_sel = {"kind": "Moonshine v2", "arch": 5, "wmodel": "large-v3"}
+        self._tab_cache = {
+            "srt": {"canary": None, "whisper": None, "wmodel": None},
+            "note": {"canary": None, "whisper": None, "wmodel": None},
+        }
+        self._note_engine_obj = None
+        try:
+            self._init_tab_engines()
+        except Exception:
+            pass
         if self.config.get("engine") == "Canary-1B":
             self.engine = self._get_canary_engine()
         elif self.config.get("engine") == "Whisper Large v3":
@@ -315,7 +326,7 @@ class MoonshineSTTApp:
                     pass
                 try:
                     self.gui.set_srt_callbacks(self._srt_start, self._cancel_srt_job,
-                                               self._burn_start)
+                                               self._burn_start, self.srt_start_request)
                     self.gui.set_srt_preview_callback(self._burn_preview)
                     try:
                         self.gui.set_model_manage_callback(self._open_model_manager)
@@ -423,6 +434,24 @@ class MoonshineSTTApp:
                     self.gui.set_note_transcribe_fn(self._note_transcribe)
                 except Exception:
                     pass
+                try:
+                    self.gui.set_note_record_callback(self.note_record_request,
+                                                      self.note_record_confirm)
+                except Exception:
+                    pass
+                try:
+                    self.gui.set_tab_engine_callbacks(
+                        self.plan_tab_change, self.apply_tab_change,
+                        lambda t: self.tab_selection(t))
+                    for _t, _setter in (("srt", self.gui.set_srt_engine_state),
+                                        ("note", self.gui.set_note_engine_state)):
+                        try:
+                            _s = self.tab_selection(_t)
+                            _setter(_s["kind"], _s["arch"], _s["wmodel"])
+                        except Exception:
+                            pass
+                except Exception:
+                    pass
 
                 self.gui.protocol("WM_DELETE_WINDOW", self._on_close)
                 self.gui.update_idletasks()
@@ -446,6 +475,32 @@ class MoonshineSTTApp:
                       f"theme={self.config.get('theme', '?')})")
         except Exception:
             pass
+    def _tab_canary(self, tab):
+        """Dedicated tab instance for jobs (never the live singleton, so
+        live switches can't rebind a running batch). None on failure -
+        the job then fails loudly via _wait_for_model. Never raises."""
+        try:
+            if tab == "live":
+                return self._get_canary_engine(False)
+            sel = self.tab_selection(tab)
+            if sel["kind"] != "Canary-1B":
+                return None
+            return self._tab_heavy(tab, "Canary-1B")
+        except Exception:
+            return None
+
+    def _tab_whisper(self, tab):
+        """Dedicated tab instance for jobs (see _tab_canary)."""
+        try:
+            if tab == "live":
+                return self._get_whisper_engine(False)
+            sel = self.tab_selection(tab)
+            if sel["kind"] != "Whisper Large v3":
+                return None
+            return self._tab_heavy(tab, "Whisper Large v3", sel["wmodel"])
+        except Exception:
+            return None
+
     def _save_srt_opts(self, opts):
         try:
             with _CONFIG_LOCK:
@@ -533,12 +588,839 @@ class MoonshineSTTApp:
             except Exception:
                 pass
         return self.whisper_engine
+    # ---------------- Per-tab engines (Live / SRT / Note) ----------------
+    # Each tab picks its own engine+model. Live keeps the pre-existing
+    # singleton behavior untouched; SRT/Note get dedicated heavy instances
+    # (Moonshine is always the shared live object - tiny, serialized).
+    # Rule: changing a tab while another session is ACTIVE asks first
+    # (dual engines = dual RAM); with others idle, their cached instances
+    # are simply unloaded. Selections mirror as shared defaults across
+    # idle, non-diverged tabs. plan_* is pure logic (unit-testable, no Tk,
+    # no loads); apply_* performs side effects (GUI thread only).
+    TAB_IDS = ("live", "srt", "note")
+    ENGINE_KINDS = ("Moonshine v2", "Canary-1B", "Whisper Large v3")
+    _WHISPER_IDS = ("tiny", "base", "small", "medium", "large",
+                    "large-v1", "large-v2", "large-v3")
+    _ARCHES = (0, 1, 2, 3, 4, 5)
+    # Rough extra-RAM for the dual-engine confirm dialog (MB).
+    _ENGINE_RAM_MB = {"Moonshine v2": 300, "Canary-1B": 5500}
+    _WHISPER_RAM_MB = {"tiny": 200, "base": 300, "small": 800,
+                       "medium": 1800, "large": 3200, "large-v1": 3200,
+                       "large-v2": 3200, "large-v3": 3200}
+
+    @staticmethod
+    def _norm_tab_sel(kind, arch, wmodel):
+        try:
+            k = str(kind if kind is not None else "Moonshine v2")
+        except Exception:
+            k = "Moonshine v2"
+        if k not in MoonshineSTTApp.ENGINE_KINDS:
+            k = "Moonshine v2"
+        try:
+            a = int(arch)
+        except Exception:
+            a = 5
+        if a not in MoonshineSTTApp._ARCHES:
+            a = 5
+        try:
+            w = str(wmodel if wmodel is not None else "large-v3")
+        except Exception:
+            w = "large-v3"
+        if w not in MoonshineSTTApp._WHISPER_IDS:
+            w = "large-v3"
+        return {"kind": k, "arch": a, "wmodel": w}
+
+    @staticmethod
+    def _engine_ram_mb(kind, arch=None, wmodel=None):
+        try:
+            if kind == "Whisper Large v3":
+                return int(MoonshineSTTApp._WHISPER_RAM_MB.get(
+                    wmodel or "large-v3", 3200))
+            return int(MoonshineSTTApp._ENGINE_RAM_MB.get(kind, 300))
+        except Exception:
+            return 3000
+
+    def _init_tab_engines(self):
+        """Seed per-tab selections (migrate legacy live keys). Never raises."""
+        try:
+            legacy = self._norm_tab_sel(self.config.get("engine", "Moonshine v2"),
+                                        self.config.get("model_arch", 5),
+                                        self.config.get("whisper_model", "large-v3"))
+        except Exception:
+            legacy = {"kind": "Moonshine v2", "arch": 5, "wmodel": "large-v3"}
+        needs_save = False
+        try:
+            raw = self.config.get("tab_engines")
+            shared_raw = self.config.get("shared_engine")
+        except Exception:
+            raw, shared_raw = None, None
+        tabs = {}
+        if isinstance(raw, dict):
+            for t in self.TAB_IDS:
+                try:
+                    node = raw.get(t) or {}
+                    tabs[t] = {
+                        "kind": node.get("kind", legacy["kind"]),
+                        "arch": node.get("arch", legacy["arch"]),
+                        "wmodel": node.get("wmodel", legacy["wmodel"]),
+                        "explicit": bool(node.get("explicit", False)),
+                    }
+                except Exception:
+                    tabs[t] = dict(legacy, explicit=False)
+        else:
+            for t in self.TAB_IDS:
+                tabs[t] = dict(legacy, explicit=False)
+            needs_save = True
+        for t in self.TAB_IDS:
+            try:
+                n = self._norm_tab_sel(tabs[t].get("kind"), tabs[t].get("arch"),
+                                       tabs[t].get("wmodel"))
+                tabs[t].update(n)
+                tabs[t]["explicit"] = bool(tabs[t].get("explicit", False))
+            except Exception:
+                tabs[t] = dict(legacy, explicit=False)
+        try:
+            if isinstance(shared_raw, dict):
+                shared = self._norm_tab_sel(shared_raw.get("kind"),
+                                            shared_raw.get("arch"),
+                                            shared_raw.get("wmodel"))
+            else:
+                shared = dict(legacy)
+                needs_save = True
+        except Exception:
+            shared = dict(legacy)
+        self._tab_sel = tabs
+        self._shared_sel = {"kind": shared["kind"], "arch": shared["arch"],
+                            "wmodel": shared["wmodel"]}
+        self._tab_cache = {
+            "srt": {"canary": None, "whisper": None, "wmodel": None},
+            "note": {"canary": None, "whisper": None, "wmodel": None},
+        }
+        self._note_engine_obj = None
+        try:
+            with _CONFIG_LOCK:
+                self.config["tab_engines"] = {t: dict(v) for t, v in tabs.items()}
+                self.config["shared_engine"] = dict(self._shared_sel)
+                if needs_save:
+                    save_local_config(self.config)
+        except Exception:
+            pass
+
+    def _save_tab_sel(self):
+        try:
+            with _CONFIG_LOCK:
+                self.config["tab_engines"] = {t: dict(v)
+                                              for t, v in self._tab_sel.items()}
+                self.config["shared_engine"] = dict(self._shared_sel)
+                save_local_config(self.config)
+        except Exception:
+            pass
+
+    def tab_selection(self, tab):
+        """Validated (kind, arch, wmodel) selection for a tab. Live reads
+        the long-standing config keys (unchanged behavior); srt/note read
+        the registry. Never raises."""
+        try:
+            if tab == "live":
+                return self._norm_tab_sel(self.config.get("engine", "Moonshine v2"),
+                                          self.config.get("model_arch", 5),
+                                          self.config.get("whisper_model", "large-v3"))
+            node = (self._tab_sel or {}).get(tab) or {}
+            return self._norm_tab_sel(node.get("kind"), node.get("arch"),
+                                      node.get("wmodel"))
+        except Exception:
+            return {"kind": "Moonshine v2", "arch": 5, "wmodel": "large-v3"}
+
+    def _describe_tab_engine(self, tab):
+        """Human label of what a tab would run, e.g. 'Whisper medium'."""
+        try:
+            sel = self.tab_selection(tab)
+            k = sel["kind"]
+            if k == "Moonshine v2":
+                try:
+                    from engine import MODEL_ARCH_NAMES
+                    name = MODEL_ARCH_NAMES.get(int(sel["arch"]), str(sel["arch"]))
+                except Exception:
+                    name = str(sel["arch"])
+                return f"Moonshine {name}"
+            if k == "Whisper Large v3":
+                return f"Whisper {sel['wmodel']}"
+            return "Canary-1B"
+        except Exception:
+            return "?"
+
+    def _live_session_active(self):
+        try:
+            if bool(getattr(self, "_recording", False)):
+                return True
+            try:
+                if self.audio_queue.qsize() > 0:
+                    return True
+            except Exception:
+                pass
+            if bool(getattr(self, "currently_processing", False)):
+                return True
+            if bool(getattr(self, "_model_switching", False)):
+                return True
+            for e in (getattr(self, "moonshine_engine", None),
+                      getattr(self, "canary_engine", None),
+                      getattr(self, "whisper_engine", None)):
+                try:
+                    if e is not None and getattr(e, "is_ready", True) is False \
+                            and getattr(e, "_loading", False):
+                        return True
+                except Exception:
+                    pass
+        except Exception:
+            pass
+        return False
+
+    def _note_session_active(self):
+        try:
+            g = self.gui
+            if g is None:
+                return False
+            try:
+                if bool(g.note_session_active()):
+                    return True
+            except Exception:
+                pass
+            if bool(getattr(g, "_note_recording", False)):
+                return True
+            try:
+                sub = int(getattr(g, "_note_submitted", 0) or 0)
+                done = int(getattr(g, "_note_done", 0) or 0)
+                if sub > done:
+                    return True
+            except Exception:
+                pass
+        except Exception:
+            pass
+        return False
+
+    def tab_active(self, tab):
+        """Is this tab's session live right now (recording / processing /
+        loading)? Never raises; missing GUI counts as inactive."""
+        try:
+            if tab == "live":
+                return self._live_session_active()
+            if tab == "srt":
+                return bool(getattr(self, "_srt_busy", False))
+            if tab == "note":
+                return self._note_session_active()
+        except Exception:
+            pass
+        return False
+
+    def _tab_active_desc(self, tab):
+        try:
+            if tab == "live":
+                if bool(getattr(self, "_recording", False)):
+                    return "Live is recording"
+                return "Live is processing"
+            if tab == "srt":
+                return "SRT batch is running"
+            if tab == "note":
+                try:
+                    if self.gui is not None and bool(getattr(self.gui, "_note_recording", False)):
+                        return "Note is recording"
+                except Exception:
+                    pass
+                return "Note is transcribing"
+        except Exception:
+            pass
+        return "session active"
+
+    def plan_tab_change(self, tab, kind=None, arch=None, wmid=None):
+        """Pure verdict for a tab engine/model pick (no Tk, no loads).
+        kind/arch/wmid None = keep current. Returns {"action":...}:
+        ok | confirm{message, ram_mb, others} | revert{reason}."""
+        try:
+            if tab not in self.TAB_IDS:
+                return {"action": "revert", "reason": "unknown tab"}
+            cur = self.tab_selection(tab)
+            want_kind = str(kind) if kind is not None else cur["kind"]
+            if want_kind not in self.ENGINE_KINDS:
+                return {"action": "revert", "reason": "unknown engine"}
+            want_arch, want_wmid = cur["arch"], cur["wmodel"]
+            if arch is not None:
+                try:
+                    want_arch = int(arch)
+                except Exception:
+                    return {"action": "revert", "reason": "bad model"}
+                if want_arch not in self._ARCHES:
+                    return {"action": "revert", "reason": "bad model"}
+            if wmid is not None:
+                want_wmid = str(wmid)
+                if want_wmid not in self._WHISPER_IDS:
+                    return {"action": "revert", "reason": "bad model"}
+            if want_kind == cur["kind"] and want_arch == cur["arch"] \
+                    and want_wmid == cur["wmodel"]:
+                return {"action": "ok", "kind": want_kind, "arch": want_arch,
+                        "wmodel": want_wmid, "noop": True, "mirrored": []}
+            others = []
+            for t in self.TAB_IDS:
+                if t == tab:
+                    continue
+                try:
+                    if self.tab_active(t):
+                        others.append((t, self._tab_active_desc(t),
+                                       self.tab_selection(t)))
+                except Exception:
+                    pass
+            if others:
+                ram = self._engine_ram_mb(want_kind, want_arch, want_wmid)
+                who = "; ".join(d for _, d, _s in others)
+                if want_kind == "Moonshine v2":
+                    what = f"Moonshine (shared live engine, ~{ram} MB)"
+                elif want_kind == "Canary-1B":
+                    what = f"Canary-1B (~{ram / 1000:.1f} GB extra RAM)"
+                else:
+                    what = f"Whisper {want_wmid} (~{ram / 1000:.1f} GB extra RAM)"
+                return {"action": "confirm", "kind": want_kind,
+                        "arch": want_arch, "wmodel": want_wmid,
+                        "ram_mb": ram, "others": [t for t, _d, _s in others],
+                        "message": f"{who} still active.\nLoad {what} "
+                                   f"alongside it too?\nYes = run both engines "
+                                   f"(heavy RAM). No = stay as you are."}
+            return {"action": "ok", "kind": want_kind, "arch": want_arch,
+                    "wmodel": want_wmid, "noop": False, "mirrored": []}
+        except Exception as e:
+            return {"action": "revert", "reason": str(e)}
+
+    def _drop_tab_cache(self, tab):
+        """Unload + forget a tab's dedicated heavy instances. Returns how
+        many live objects were dropped. Never raises."""
+        dropped = 0
+        try:
+            cache = (self._tab_cache or {}).get(tab)
+            if not isinstance(cache, dict):
+                return 0
+            for slot in ("canary", "whisper"):
+                try:
+                    eng = cache.get(slot)
+                    if eng is not None:
+                        dropped += 1
+                        try:
+                            eng.unload()
+                        except Exception:
+                            pass
+                except Exception:
+                    pass
+                try:
+                    cache[slot] = None
+                except Exception:
+                    pass
+            try:
+                cache["wmodel"] = None
+            except Exception:
+                pass
+        except Exception:
+            pass
+        return dropped
+
+    def _make_engine(self, kind, arch=None, wmid=None):
+        """Build an (unloaded) dedicated engine for srt/note tabs.
+        Monkeypatchable in tests - production constructs the real ones."""
+        try:
+            if kind == "Canary-1B":
+                from canary_engine import CanaryEngine
+                return CanaryEngine(
+                    task=self.config.get("canary_task", "transcribe"),
+                    source_lang=self.config.get("canary_src_lang", "auto"),
+                    target_lang="en",
+                    device=self.config.get("compute", "auto"),
+                    on_ready=None,
+                )
+            if kind == "Whisper Large v3":
+                from whisper_engine import WhisperEngine
+                return WhisperEngine(
+                    task=self.config.get("whisper_task", "translate"),
+                    source_lang=self.config.get("whisper_src_lang", "ja"),
+                    target_lang="en",
+                    model_id=wmid or self.config.get("whisper_model", "large-v3"),
+                    device=self.config.get("compute", "auto"),
+                    on_ready=None,
+                )
+        except Exception as e:
+            print(f"tab engine build failed: {e}")
+        return None
+
+    @staticmethod
+    def _whisper_cache_ok(eng, want):
+        """Cached dedicated Whisper instance matches the wanted model id.
+        Missing model_id attr + ready counts as a match (never rebuild-loop
+        on exotic engine objects)."""
+        try:
+            if eng is None:
+                return False
+            try:
+                got = str(getattr(eng, "model_id", "") or "")
+            except Exception:
+                got = ""
+            if not got:
+                return bool(getattr(eng, "is_ready", False))
+            return bool(getattr(eng, "is_ready", False)) and got == str(want)
+        except Exception:
+            return False
+
+    def _tab_heavy(self, tab, kind, wmid=None):
+        """Get-or-create this tab's dedicated Canary/Whisper instance (no
+        load). Moonshine returns None (shared live object). Never raises."""
+        try:
+            if kind == "Canary-1B":
+                slot = "canary"
+            elif kind == "Whisper Large v3":
+                slot = "whisper"
+            else:
+                return None
+            cache = (self._tab_cache or {}).get(tab)
+            if not isinstance(cache, dict):
+                return None
+            eng = cache.get(slot)
+            if slot == "whisper":
+                try:
+                    want = str(wmid or self.tab_selection(tab)["wmodel"])
+                except Exception:
+                    want = "large-v3"
+                if eng is not None and not self._whisper_cache_ok(eng, want):
+                    try:
+                        eng.unload()
+                    except Exception:
+                        pass
+                    eng = None
+                if eng is None:
+                    eng = self._make_engine(kind, None, want)
+                    try:
+                        cache[slot] = eng
+                        cache["wmodel"] = want
+                    except Exception:
+                        pass
+            else:
+                if eng is None:
+                    eng = self._make_engine(kind)
+                    try:
+                        cache[slot] = eng
+                    except Exception:
+                        pass
+            return eng
+        except Exception:
+            return None
+
+    def apply_tab_change(self, tab, kind, arch, wmid, dual_ok=False):
+        """Apply a planned change (GUI thread only - syncs follower menus).
+        Unloads other tabs' idle caches; preloads live/note selections.
+        Returns {"action": "ok", "mirrored": [(tab, kind, arch, wmid), ...]}
+        or {"action": "revert", "reason"}. Never raises."""
+        try:
+            if tab not in self.TAB_IDS:
+                return {"action": "revert", "reason": "unknown tab"}
+            # None = keep this tab's current value (callers pass verdict
+            # fields through; GUI verdicts are always fully resolved).
+            try:
+                _cur0 = self.tab_selection(tab)
+            except Exception:
+                _cur0 = {"kind": "Moonshine v2", "arch": 5, "wmodel": "large-v3"}
+            if kind is None:
+                kind = _cur0["kind"]
+            if arch is None:
+                arch = _cur0["arch"]
+            if wmid is None:
+                wmid = _cur0["wmodel"]
+            norm = self._norm_tab_sel(kind, arch, wmid)
+            kind, arch, wmid = norm["kind"], norm["arch"], norm["wmodel"]
+            if not dual_ok:
+                for t in self.TAB_IDS:
+                    if t != tab:
+                        try:
+                            if self.tab_active(t):
+                                return {"action": "revert",
+                                        "reason": "other session active"}
+                        except Exception:
+                            pass
+            # Commit selection + shared default.
+            try:
+                if tab == "live":
+                    with _CONFIG_LOCK:
+                        self.config["engine"] = kind
+                        if kind == "Moonshine v2":
+                            self.config["model_arch"] = int(arch)
+                        elif kind == "Whisper Large v3":
+                            self.config["whisper_model"] = str(wmid)
+                        save_local_config(self.config)
+                node = (self._tab_sel or {}).get(tab)
+                if isinstance(node, dict):
+                    node.update({"kind": kind, "arch": int(arch),
+                                 "wmodel": str(wmid), "explicit": True})
+                self._shared_sel = {"kind": kind, "arch": int(arch),
+                                    "wmodel": str(wmid)}
+                self._save_tab_sel()
+            except Exception as e:
+                return {"action": "revert", "reason": str(e)}
+            # Mirror to idle, non-diverged followers (srt/note only - live
+            # is the anchor: its menus always show the running engine).
+            # Callers sync follower menus from the returned list.
+            mirrored = []
+            try:
+                for t in ("srt", "note"):
+                    if t == tab:
+                        continue
+                    try:
+                        if self.tab_active(t):
+                            continue
+                        node = (self._tab_sel or {}).get(t)
+                        if not isinstance(node, dict):
+                            continue
+                        if bool(node.get("explicit", False)):
+                            continue
+                        node.update({"kind": kind, "arch": int(arch),
+                                     "wmodel": str(wmid)})
+                        mirrored.append((t, kind, int(arch), str(wmid)))
+                    except Exception:
+                        pass
+                self._save_tab_sel()
+            except Exception:
+                pass
+            # Lifecycle: drop this tab's stale heavies, then every OTHER
+            # tab's cache that is idle right now. Active sessions always
+            # keep theirs (their turn comes when they go idle).
+            try:
+                self._drop_tab_cache(tab)
+            except Exception:
+                pass
+            try:
+                freed_tabs = []
+                for t in self.TAB_IDS:
+                    if t == tab:
+                        continue
+                    try:
+                        if self.tab_active(t):
+                            continue
+                    except Exception:
+                        pass
+                    try:
+                        if self._drop_tab_cache(t) > 0:
+                            freed_tabs.append(t)
+                    except Exception:
+                        pass
+                if freed_tabs:
+                    try:
+                        self._log("Unloaded idle engine(s) for %s (RAM reclaimed)"
+                                  % ", ".join(freed_tabs))
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+            # Preload for interactive tabs (SRT loads inside its job w/ progress).
+            try:
+                if tab in ("live", "note") and kind in ("Canary-1B", "Whisper Large v3"):
+                    if tab == "live":
+                        pass  # existing live flow below loads it
+                    else:
+                        eng = self._tab_heavy(tab, kind, wmid)
+                        try:
+                            if eng is not None and not eng.is_ready:
+                                eng.load()
+                        except Exception:
+                            pass
+            except Exception:
+                pass
+            # Push follower menu states (best effort, GUI thread).
+            # Live menus are owned by the existing engine/model flows, which
+            # repaint from config as they continue - mirrored srt/note menus
+            # are synced by the caller from the returned list.
+            return {"action": "ok", "mirrored": mirrored}
+        except Exception as e:
+            return {"action": "revert", "reason": str(e)}
+
+    def engine_start_cost(self, tab):
+        """(need_new_heavy_load, ram_mb, describe) for starting work on tab
+        now. Moonshine never needs a dialog (shared object, tiny load)."""
+        try:
+            sel = self.tab_selection(tab)
+            kind = sel["kind"]
+            if kind == "Moonshine v2":
+                return False, 0, "Moonshine (shared)"
+            if kind == "Canary-1B":
+                try:
+                    eng = ((self._tab_cache or {}).get(tab) or {}).get("canary")
+                    ready = bool(eng is not None and eng.is_ready)
+                except Exception:
+                    ready = False
+                if ready:
+                    return False, 0, "Canary-1B (ready)"
+                return True, self._engine_ram_mb(kind), "Canary-1B (not loaded)"
+            # Whisper
+            try:
+                want = str(sel["wmodel"])
+                eng = ((self._tab_cache or {}).get(tab) or {}).get("whisper")
+                ready = self._whisper_cache_ok(eng, want)
+            except Exception:
+                ready = False
+            if ready:
+                return False, 0, f"Whisper {sel['wmodel']} (ready)"
+            return True, self._engine_ram_mb(kind, None, sel["wmodel"]), \
+                f"Whisper {sel['wmodel']} (not loaded)"
+        except Exception:
+            return False, 0, "?"
+
+    def srt_start_request(self):
+        """GUI-thread pre-flight for the SRT start button. Returns
+        {"go": True} | {"confirm": message, "ram_mb": n} (user picks in
+        dialog; Yes -> spawn job, No -> abort start)."""
+        try:
+            need, ram, _desc = self.engine_start_cost("srt")
+            if not need:
+                return {"go": True}
+            others = []
+            for t in self.TAB_IDS:
+                if t == "srt":
+                    continue
+                try:
+                    if self.tab_active(t):
+                        others.append(self._tab_active_desc(t))
+                except Exception:
+                    pass
+            if not others:
+                return {"go": True}
+            sel = self.tab_selection("srt")
+            what = "Canary-1B" if sel["kind"] == "Canary-1B" \
+                else f"Whisper {sel['wmodel']}"
+            return {"confirm": f"{'; '.join(others)} still active.\n"
+                               f"Start the SRT job with {what} too?\n"
+                               f"Yes = run both engines (~{ram / 1000:.1f} GB "
+                               f"extra RAM). No = stay as you are.",
+                    "ram_mb": ram}
+        except Exception:
+            return {"go": True}
+
+    def note_record_request(self):
+        """GUI-thread pre-flight for Note RECORD. Returns {"go": True}
+        (engine snapshotted) | {"confirm": ...} | {"wait": msg} | {"abort"}.
+        Moonshine uses the shared live object (snapshot it); heavies must
+        be cached+ready (preloaded at selection) or they load now."""
+        try:
+            sel = self.tab_selection("note")
+            kind = sel["kind"]
+            if kind == "Moonshine v2":
+                try:
+                    eng = self.moonshine_engine
+                    if eng is not None and eng.is_ready:
+                        self._note_engine_obj = eng
+                        return {"go": True}
+                except Exception:
+                    pass
+                return {"wait": "Note engine (Moonshine) still loading — "
+                                "press record again when ready."}
+            try:
+                cache = (self._tab_cache or {}).get("note") or {}
+            except Exception:
+                cache = {}
+            slot = "canary" if kind == "Canary-1B" else "whisper"
+            eng = cache.get(slot)
+            ok = False
+            try:
+                if eng is not None and eng.is_ready:
+                    if slot == "whisper":
+                        ok = self._whisper_cache_ok(eng, sel["wmodel"])
+                    else:
+                        ok = True
+            except Exception:
+                ok = False
+            if ok:
+                self._note_engine_obj = eng
+                return {"go": True}
+            # Need a load: dual cost only matters against active others.
+            others = []
+            for t in self.TAB_IDS:
+                if t == "note":
+                    continue
+                try:
+                    if self.tab_active(t):
+                        others.append(self._tab_active_desc(t))
+                except Exception:
+                    pass
+            if others:
+                ram = self._engine_ram_mb(kind, sel["arch"], sel["wmodel"])
+                what = "Canary-1B" if kind == "Canary-1B" \
+                    else f"Whisper {sel['wmodel']}"
+                return {"confirm": f"{'; '.join(others)} still active.\n"
+                                   f"Load {what} for Note too?\n"
+                                   f"Yes = run both engines (~{ram / 1000:.1f} GB "
+                                   f"extra RAM), then press record again. "
+                                   f"No = stay as you are.",
+                        "ram_mb": ram}
+            try:
+                fresh = self._tab_heavy("note", kind, sel["wmodel"])
+                if fresh is not None and not fresh.is_ready:
+                    fresh.load()
+            except Exception:
+                pass
+            return {"wait": "Loading note engine — press record again when ready."}
+        except Exception:
+            return {"abort": True}
+
+    def note_record_confirm(self, dual_ok):
+        """Follow-up after the record pre-flight asked to confirm."""
+        try:
+            if not dual_ok:
+                return {"abort": True}
+            sel = self.tab_selection("note")
+            try:
+                fresh = self._tab_heavy("note", sel["kind"], sel["wmodel"])
+                if fresh is not None and not fresh.is_ready:
+                    fresh.load()
+            except Exception:
+                pass
+            return {"wait": "Loading note engine — press record again when ready."}
+        except Exception:
+            return {"abort": True}
+
+    def tab_shown(self, tabid):
+        """Tab-switch adopt: an srt/note tab that was never explicitly
+        picked follows the shared default (menus only - engines load at
+        use). Live is the anchor and never auto-adopts. Never raises."""
+        try:
+            mapping = {"SRT File": "srt", "Note": "note"}
+            tab = mapping.get(tabid)
+            if tab is None:
+                return
+            node = (self._tab_sel or {}).get(tab)
+            if not isinstance(node, dict) or bool(node.get("explicit", False)):
+                return
+            try:
+                sh = self._shared_sel
+            except Exception:
+                return
+            node.update({"kind": sh["kind"], "arch": int(sh["arch"]),
+                         "wmodel": str(sh["wmodel"])})
+            self._save_tab_sel()
+            try:
+                g = self.gui
+                if g is not None:
+                    if tab == "srt":
+                        g.set_srt_engine_state(sh["kind"], int(sh["arch"]),
+                                               str(sh["wmodel"]))
+                    elif tab == "note":
+                        g.set_note_engine_state(sh["kind"], int(sh["arch"]),
+                                                str(sh["wmodel"]))
+            except Exception:
+                pass
+        except Exception:
+            pass
+
+    def _sync_mirrored_menus(self, mirrored):
+        """Paint follower (srt/note) menu states after an apply. The live
+        tab owns its menus via the engine/model flows. Never raises."""
+        try:
+            g = self.gui
+            if g is None:
+                return
+            for (t, k, a, w) in (mirrored or []):
+                try:
+                    if t == "srt":
+                        g.set_srt_engine_state(k, a, w)
+                    elif t == "note":
+                        g.set_note_engine_state(k, a, w)
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+    def _sync_live_menus(self):
+        """Repaint Live engine/model rows from config (mirror revert path).
+        Never raises; programmatic sets don't fire menu commands."""
+        try:
+            g = self.gui
+            if g is None:
+                return
+            _eng = self.config.get("engine", "Moonshine v2")
+            try:
+                if _eng == "Whisper Large v3":
+                    _t = self.config.get("whisper_task", "translate")
+                    _s = self.config.get("whisper_src_lang", "ja")
+                else:
+                    _t = self.config.get("canary_task", "transcribe")
+                    _s = self.config.get("canary_src_lang", "auto")
+                g.set_engine(_eng, _t, _s, self._on_engine_changed,
+                             self._on_canary_task_changed,
+                             self._on_canary_lang_changed)
+            except Exception:
+                pass
+            try:
+                self._refresh_model_row()
+            except Exception:
+                pass
+        except Exception:
+            pass
+
+    def _unload_idle_tab_engines(self):
+        """Unload stale tab caches (selection drifted) and never touch an
+        active tab's instances. Called with the regular idle sweep."""
+        try:
+            for tab in ("srt", "note"):
+                try:
+                    if self.tab_active(tab):
+                        continue
+                    sel = self.tab_selection(tab)
+                    cache = (self._tab_cache or {}).get(tab)
+                    if not isinstance(cache, dict):
+                        continue
+                    # Whisper slot stale?
+                    try:
+                        eng = cache.get("whisper")
+                        if eng is not None:
+                            try:
+                                same = (sel["kind"] == "Whisper Large v3"
+                                        and str(getattr(eng, "model_id", "") or "")
+                                        == str(sel["wmodel"]))
+                            except Exception:
+                                same = False
+                            if not same:
+                                try:
+                                    eng.unload()
+                                except Exception:
+                                    pass
+                                try:
+                                    cache["whisper"] = None
+                                    cache["wmodel"] = None
+                                except Exception:
+                                    pass
+                    except Exception:
+                        pass
+                    # Canary slot stale?
+                    try:
+                        eng = cache.get("canary")
+                        if eng is not None and sel["kind"] != "Canary-1B":
+                            try:
+                                eng.unload()
+                            except Exception:
+                                pass
+                            try:
+                                cache["canary"] = None
+                            except Exception:
+                                pass
+                    except Exception:
+                        pass
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
     def _on_tab_changed(self, name: str):
-        if name not in ("Live", "SRT File"):
+        if name not in ("Live", "SRT File", "Note"):
             return
-        with _CONFIG_LOCK:
-            self.config["srt_tab"] = name
-            save_local_config(self.config)
+        if name in ("Live", "SRT File"):
+            with _CONFIG_LOCK:
+                self.config["srt_tab"] = name
+                save_local_config(self.config)
+        # Adopt-shared-default for never-explicitly-picked tabs.
+        try:
+            mapping = {"Live": "live", "SRT File": "srt", "Note": "note"}
+            if name in mapping:
+                self.tab_shown(mapping[name])
+        except Exception:
+            pass
     def _on_compute_changed(self, display: str):
         code = {"Auto": "auto", "CPU": "cpu", "GPU": "gpu"}.get(
             (display or "").strip(), "auto")
@@ -880,6 +1762,11 @@ class MoonshineSTTApp:
         old_arch = int(self.config.get("model_arch", 5))
         if new_arch == old_arch:
             return
+        try:
+            if not self._live_engine_pick("Moonshine v2", new_arch, None):
+                return
+        except Exception:
+            pass
         self.config["model_arch"] = new_arch
         save_local_config(self.config)
         self._log(f"Model -> {display_label} (arch {new_arch}), reloading...")
@@ -925,6 +1812,11 @@ class MoonshineSTTApp:
             except Exception:
                 pass
             return
+        try:
+            if not self._live_engine_pick("Whisper Large v3", None, new_id):
+                return
+        except Exception:
+            pass
         self.config["whisper_model"] = new_id
         save_local_config(self.config)
         self._log(f"Whisper model -> {display_label} ({new_id}), reloading...")
@@ -957,10 +1849,80 @@ class MoonshineSTTApp:
         except AttributeError:
             self._model_switching = False
             _whisper_switched(False, "engine unavailable")
+    def _ask_dual(self, message):
+        """GUI-thread Yes/No dialog for dual-engine loads. False on any
+        failure or headless run (safe direction: don't load)."""
+        try:
+            from tkinter import messagebox as _mb
+            try:
+                parent = self.gui if self.gui is not None else None
+            except Exception:
+                parent = None
+            return bool(_mb.askyesno("Load second engine?",
+                                     str(message or "Another session is active."),
+                                     parent=parent))
+        except Exception:
+            return False
+
+    def _live_engine_pick(self, kind, arch=None, wmid=None):
+        """Shared dual-guard for the three live menu flows (engine, model,
+        whisper size). Runs plan -> optional dialog -> apply -> follower
+        menu sync. Returns True when the caller should proceed with its
+        existing load flow; False means reverted (menus restored).
+        GUI thread. Never raises (fail-open: existing flow validates)."""
+        try:
+            _pv = self.plan_tab_change("live", kind=kind, arch=arch,
+                                       wmid=wmid)
+        except Exception:
+            return True
+        try:
+            act = (_pv or {}).get("action")
+            if act == "confirm":
+                _yes = self._ask_dual((_pv or {}).get("message"))
+                _ap = self.apply_tab_change(
+                    "live", (_pv or {}).get("kind"), (_pv or {}).get("arch"),
+                    (_pv or {}).get("wmodel"), dual_ok=bool(_yes))
+                if not _yes or (_ap or {}).get("action") != "ok":
+                    try:
+                        self._sync_live_menus()
+                    except Exception:
+                        pass
+                    return False
+            elif act == "revert":
+                try:
+                    self._sync_live_menus()
+                except Exception:
+                    pass
+                return False
+            else:
+                _ap = self.apply_tab_change(
+                    "live", (_pv or {}).get("kind", kind),
+                    (_pv or {}).get("arch", arch),
+                    (_pv or {}).get("wmodel", wmid), dual_ok=True)
+                if (_ap or {}).get("action") != "ok":
+                    try:
+                        self._sync_live_menus()
+                    except Exception:
+                        pass
+                    return False
+            try:
+                self._sync_mirrored_menus((_ap or {}).get("mirrored"))
+            except Exception:
+                pass
+            return True
+        except Exception:
+            return True
+
     def _on_engine_changed(self, display_label: str):
         old = self.config.get("engine", "Moonshine v2")
         if display_label == old:
             return
+        # Per-tab rule: another live session blocks silent switches.
+        try:
+            if not self._live_engine_pick(display_label):
+                return
+        except Exception:
+            pass
         self.config["engine"] = display_label
         save_local_config(self.config)
         self._log(f"Engine -> {display_label}")
@@ -1041,6 +2003,11 @@ class MoonshineSTTApp:
                     self.gui.set_status(f"Ready \u2022 Moonshine {self.moonshine_engine.current_arch_name}", SUCCESS)
         self._unload_idle_engines()
     def _unload_idle_engines(self):
+        """Release whichever heavy engine is NOT active (multi-GB RAM back)."""
+        try:
+            self._unload_idle_tab_engines()
+        except Exception:
+            pass
         try:
             if self._srt_busy:
                 return
@@ -1419,7 +2386,14 @@ class MoonshineSTTApp:
         from moonshine_voice import get_model_for_language, Transcriber
         from moonshine_voice.moonshine_api import ModelArch
         from engine import PORTABLE_CACHE_ROOT, MODEL_ARCH_NAMES
-        arch = int(self.config.get("model_arch", 5))
+        # SRT tab's own arch (not Live's): per-tab selections.
+        try:
+            arch = int(self.tab_selection("srt")["arch"])
+        except Exception:
+            try:
+                arch = int(self.config.get("model_arch", 5))
+            except Exception:
+                arch = 5
         try:
             wanted = ModelArch(arch)
         except Exception:
@@ -1518,9 +2492,13 @@ class MoonshineSTTApp:
                 self.config["burn_vbr_auto"] = _bauto
                 self.config["burn_vbr_kbps"] = _bkbps
                 save_local_config(self.config)
+            try:
+                _st = self.tab_selection("srt")
+            except Exception:
+                _st = {"kind": "Moonshine v2", "arch": 5, "wmodel": "large-v3"}
             job = {
-                "engine_kind": self.config.get("engine", "Moonshine v2"),
-                "moonshine_arch": int(self.config.get("model_arch", 5)),
+                "engine_kind": _st["kind"],
+                "moonshine_arch": int(_st["arch"]),
                 "canary_task": self.config.get("canary_task", "transcribe"),
                 "canary_src": self.config.get("canary_src_lang", "auto"),
                 "whisper_task": self.config.get("whisper_task", "translate"),
@@ -1581,13 +2559,13 @@ class MoonshineSTTApp:
                         canary_src=job["canary_src"],
                         cpu_workers=job["cpu_workers"],
                         get_moonshine_transcriber=self._get_srt_moonshine_transcriber,
-                        get_canary_engine=lambda: self._get_canary_engine(False),
+                        get_canary_engine=lambda: self._tab_canary("srt"),
                         progress_cb=progress_cb,
                         log_cb=log_cb,
                         cancel_event=self._srt_cancel,
                         whisper_task=job["whisper_task"],
                         whisper_src=job["whisper_src"],
-                        get_whisper_engine=lambda: self._get_whisper_engine(False),
+                        get_whisper_engine=lambda: self._tab_whisper("srt"),
                         srt_input_lang=job["srt_input_lang"],
                         srt_output_lang=job["srt_output_lang"],
                         out_path=str(_out) if _out is not None else None,
@@ -2219,11 +3197,12 @@ class MoonshineSTTApp:
         if self._recording:
             self._stop_recording()
     def _note_transcribe(self, audio, sample_rate=16000):
-        """Transcribe audio for Note mode using current engine."""
+        """Transcribe audio for Note mode using the NOTE tab's snapshotted
+        engine (stable for the session even if Live switches mid-note)."""
         try:
-            engine = self.engine
-            if not getattr(engine, "is_ready", False):
-                return "[Error: engine not ready]"
+            engine = self._note_engine_obj
+            if engine is None:
+                return "[Error: note engine not ready]"
             return engine.transcribe(audio, sample_rate)
         except Exception as e:
             return f"[Error: {e}]"

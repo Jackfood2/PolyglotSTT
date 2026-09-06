@@ -64,6 +64,12 @@ Moonshine stay on CPU.
   cancel, and a remaining-time countdown. *Boost quiet audio* applies a
   loudnorm pass before transcription for soft/uneven recordings (burns
   always re-encode from the original, so they are unaffected).
+- **Per-tab engines** — Live, SRT File, and Note each pick their own
+  engine + model. A tab you never explicitly set follows your last pick
+  elsewhere; changing a tab while another session runs asks first
+  (dual engines = dual RAM, stated upfront), otherwise idle engines are
+  unloaded to make room. Mic dictation, an SRT batch, and Note can all run
+  at once on different engines.
 - **One primary button** — the action slot morphs with the queue: files
   still need SRTs → *Generate SRT*; every queued file already has one →
   *Convert to MP4*. Tick *Burn MP4 automatically after SRT* and one click

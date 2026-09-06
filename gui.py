@@ -565,12 +565,26 @@ class MoonshineGUI(ctk.CTk):
         perf_card.grid_columnconfigure(1, weight=1)
         ctk.CTkLabel(perf_card, text="Engine:", font=("Segoe UI", 10, "bold"),
                      text_color=FG_DIM).grid(row=0, column=0, sticky="w", padx=(12, 4), pady=(8, 2))
-        self.srt_engine_label = ctk.CTkLabel(perf_card, text="Moonshine v2",
-                                             font=("Segoe UI", 11), text_color=ACCENT_GLOW)
-        self.srt_engine_label.grid(row=0, column=1, sticky="w", padx=4, pady=(8, 2))
-        ctk.CTkLabel(perf_card, text="(change in Live tab)",
-                     font=("Segoe UI", 9), text_color=FG_DIM
-                     ).grid(row=0, column=2, sticky="e", padx=(4, 12), pady=(8, 2))
+        self.srt_engine_var = ctk.StringVar(value="Moonshine v2")
+        self.srt_engine_menu = ctk.CTkOptionMenu(
+            perf_card, variable=self.srt_engine_var,
+            values=list(ENGINE_CHOICES), width=150,
+            fg_color=BG_INPUT, button_color=ACCENT,
+            command=self._on_srt_engine_changed)
+        self.srt_engine_menu.grid(row=0, column=1, sticky="ew", padx=4, pady=(8, 2))
+        self.srt_model_var = ctk.StringVar(value="")
+        self.srt_model_menu = ctk.CTkOptionMenu(
+            perf_card, variable=self.srt_model_var,
+            values=[], width=190,
+            fg_color=BG_INPUT, button_color=ACCENT,
+            command=self._on_srt_model_changed)
+        self.srt_model_menu.grid(row=0, column=2, sticky="ew", padx=(4, 12), pady=(8, 2))
+        self._srt_engine_cb = None
+        self._srt_model_cb = None
+        try:
+            self._refresh_srt_model_menu()
+        except Exception:
+            pass
         self.srt_cpu_info = ctk.CTkLabel(
             perf_card, text=f"CPU: {self._srt_max_cpu} cores detected (CPU-only)",
             font=("Segoe UI", 10), text_color=FG_DIM)
@@ -1035,14 +1049,42 @@ class MoonshineGUI(ctk.CTk):
         except Exception:
             pass
 
-        # ── Engine info ──
+        # ── Engine pick (per-tab: independent from Live/SRT) ──
         info_card = ctk.CTkFrame(scroll, fg_color=BG_CARD, corner_radius=12)
         info_card.grid(row=3, column=0, sticky="ew", padx=4, pady=(0, 6))
+        info_card.grid_columnconfigure(1, weight=1)
 
         self.note_engine_label = ctk.CTkLabel(
-            info_card, text="Engine: (uses current Live tab engine)",
+            info_card, text="Engine: following shared default",
             font=("Segoe UI", 10), text_color=FG_DIM)
-        self.note_engine_label.pack(padx=16, pady=10, anchor="w")
+        self.note_engine_label.grid(row=0, column=0, columnspan=3,
+                                     sticky="w", padx=16, pady=(10, 2))
+        ctk.CTkLabel(info_card, text="Engine:",
+                     font=("Segoe UI", 10, "bold"),
+                     text_color=FG_DIM).grid(row=1, column=0, sticky="w",
+                                             padx=(16, 4), pady=(2, 10))
+        self.note_engine_var = ctk.StringVar(value="Moonshine v2")
+        self.note_engine_menu = ctk.CTkOptionMenu(
+            info_card, variable=self.note_engine_var,
+            values=list(ENGINE_CHOICES), width=150,
+            fg_color=BG_INPUT, button_color=ACCENT,
+            command=self._on_note_engine_changed)
+        self.note_engine_menu.grid(row=1, column=1, sticky="ew",
+                                    padx=4, pady=(2, 10))
+        self.note_model_var = ctk.StringVar(value="")
+        self.note_model_menu = ctk.CTkOptionMenu(
+            info_card, variable=self.note_model_var,
+            values=[], width=190,
+            fg_color=BG_INPUT, button_color=ACCENT,
+            command=self._on_note_model_changed)
+        self.note_model_menu.grid(row=1, column=2, sticky="ew",
+                                   padx=(4, 16), pady=(2, 10))
+        self._note_engine_cb = None
+        self._note_model_cb = None
+        try:
+            self._refresh_note_model_menu()
+        except Exception:
+            pass
 
         # Init note recorder
         try:
@@ -1096,10 +1138,62 @@ class MoonshineGUI(ctk.CTk):
         except Exception:
             pass
 
+    def set_note_record_callback(self, cb, confirm_cb=None):
+        """App pre-flight for RECORD: returns go/confirm/wait/abort verdict.
+        confirm_cb(dual_ok) follows a confirm verdict. None-safe."""
+        try:
+            self._note_record_cb = cb if callable(cb) else None
+            self._note_record_confirm = confirm_cb if callable(confirm_cb) else None
+        except Exception:
+            self._note_record_cb = None
+            self._note_record_confirm = None
+
     def _note_start(self):
         if self._note_recorder is None:
             return
         try:
+            # App pre-flight: snapshots the Note tab engine, confirms dual
+            # loads, or refuses while it loads. Runs on the GUI thread.
+            if getattr(self, "_note_record_cb", None) is not None:
+                try:
+                    verdict = self._note_record_cb() or {"go": True}
+                except Exception:
+                    verdict = {"go": True}
+                if isinstance(verdict, dict) and "confirm" in verdict:
+                    try:
+                        from tkinter import messagebox as _mb
+                        _yes = bool(_mb.askyesno(
+                            "Load second engine?",
+                            str(verdict.get("confirm") or
+                                "Another session is active."),
+                            parent=self))
+                    except Exception:
+                        _yes = False
+                    try:
+                        follow = self._note_record_confirm(bool(_yes)) \
+                            if getattr(self, "_note_record_confirm", None) \
+                            is not None else {"abort": True}
+                    except Exception:
+                        follow = {"abort": True}
+                    if not (isinstance(follow, dict) and follow.get("go")):
+                        try:
+                            self.note_status_label.configure(
+                                text=str((follow or {}).get("wait") or
+                                         "Note record cancelled"),
+                                text_color=WARNING)
+                        except Exception:
+                            pass
+                        return
+                elif isinstance(verdict, dict) and "wait" in verdict:
+                    try:
+                        self.note_status_label.configure(
+                            text=str(verdict.get("wait") or "Note engine loading..."),
+                            text_color=WARNING)
+                    except Exception:
+                        pass
+                    return
+                elif isinstance(verdict, dict) and "abort" in verdict:
+                    return
             # Set transcription function based on current engine
             self._note_setup_transcribe_fn()
             self._note_recorder.start()
@@ -1312,10 +1406,7 @@ class MoonshineGUI(ctk.CTk):
         self.note_text.insert("1.0", "Transcription will appear here as you speak...")
         self.note_chunk_label.configure(text="")
         self._note_dirty = False
-        self.note_chunk_label.configure(text="")
         self.note_status_label.configure(text="Ready to record", text_color=FG_DIM)
-        if self._note_transcriber:
-            self._note_transcriber._results = []
 
     def _on_note_copy(self):
         try:
@@ -1397,7 +1488,7 @@ class MoonshineGUI(ctk.CTk):
             name = self.tabs.get()
         except Exception:
             name = value
-        if self._tab_callback and name in ("Live", "SRT File"):
+        if self._tab_callback and name in ("Live", "SRT File", "Note"):
             try:
                 self._tab_callback(name)
             except Exception:
@@ -1650,25 +1741,360 @@ class MoonshineGUI(ctk.CTk):
                 base = value
             self._model_callback(base)
     def _refresh_srt_engine_label(self):
+        """Legacy entry point (task/lang changes used to rewrite a summary
+        label). The label is now real Engine/Model menus, so this just keeps
+        the model menu's options in step with the engine menu."""
         try:
-            eng = self.engine_var.get()
-            if eng in ("Canary-1B", "Whisper Large v3"):
-                _t = self.canary_task_var.get()
-                try:
-                    _s, _o = self.get_srt_lang_codes()
-                except Exception:
-                    _s, _o = self.canary_lang_var.get(), "en"
-                _tgt = "en" if _t == "translate" else _o
-                self.set_srt_engine_label(f"{eng} ({_t} {_s}->{_tgt})")
-            else:
-                try:
-                    _mbase = (self._model_value_map or {}).get(
-                        self.model_var.get(), self.model_var.get())
-                except Exception:
-                    _mbase = self.model_var.get()
-                self.set_srt_engine_label(f"Moonshine v2 ({_mbase})")
+            self._refresh_srt_model_menu()
         except Exception:
             pass
+
+    def _srt_model_options(self, kind):
+        """Display labels valid for an engine kind."""
+        try:
+            if kind == "Whisper Large v3":
+                return list(WHISPER_MODEL_CHOICES.keys())
+            if kind == "Canary-1B":
+                return [CANARY_MODEL_LABEL]
+            return list(MODEL_CHOICES.keys())
+        except Exception:
+            return []
+
+    def _refresh_srt_model_menu(self):
+        try:
+            kind = (self.srt_engine_var.get() or "Moonshine v2").strip()
+        except Exception:
+            kind = "Moonshine v2"
+        try:
+            vals = self._srt_model_options(kind)
+            if vals:
+                cur = None
+                try:
+                    cur = self.srt_model_var.get()
+                except Exception:
+                    cur = None
+                self.srt_model_menu.configure(values=vals)
+                if cur in vals:
+                    self.srt_model_var.set(cur)
+                else:
+                    self.srt_model_var.set(vals[0])
+        except Exception:
+            pass
+
+    def _srt_menu_label(self, kind, arch=None, wmid=None):
+        """Display model label for ids (restore/mirror path)."""
+        try:
+            if kind == "Whisper Large v3":
+                return WHISPER_MODEL_CHOICES_REV.get(str(wmid or "large-v3"))
+            if kind == "Canary-1B":
+                return CANARY_MODEL_LABEL
+            return MODEL_CHOICES_REV.get(int(arch if arch is not None else 5))
+        except Exception:
+            return None
+
+    def set_srt_engine_state(self, kind, arch=None, wmid=None):
+        """Programmatic set (mirror/adopt/restore). No callbacks fired."""
+        try:
+            if kind in ENGINE_CHOICES:
+                self.srt_engine_var.set(kind)
+        except Exception:
+            pass
+        try:
+            self._refresh_srt_model_menu()
+        except Exception:
+            pass
+        try:
+            label = self._srt_menu_label(kind, arch, wmid)
+            if label:
+                try:
+                    vals = list(self.srt_model_menu.cget("values"))
+                except Exception:
+                    vals = []
+                if label in vals:
+                    self.srt_model_var.set(label)
+        except Exception:
+            pass
+
+    def get_srt_engine_kind(self):
+        try:
+            k = (self.srt_engine_var.get() or "Moonshine v2").strip()
+        except Exception:
+            k = "Moonshine v2"
+        return k if k in ENGINE_CHOICES else "Moonshine v2"
+
+    def set_srt_engine_callbacks(self, eng_cb, model_cb):
+        self._srt_engine_cb = eng_cb if callable(eng_cb) else None
+        self._srt_model_cb = model_cb if callable(model_cb) else None
+
+    def _srt_ids_from_menus(self):
+        """(kind, arch|None, wmid|None) from current menu values."""
+        kind = self.get_srt_engine_kind()
+        arch, wmid = None, None
+        try:
+            label = self.srt_model_var.get()
+        except Exception:
+            label = ""
+        try:
+            if kind == "Whisper Large v3":
+                wmid = WHISPER_MODEL_CHOICES.get(label)
+            elif kind == "Moonshine v2":
+                arch = MODEL_CHOICES.get(label)
+        except Exception:
+            pass
+        return kind, arch, wmid
+
+    def _revert_srt_menus(self):
+        """Restore menus from the app registry (after a declined dialog)."""
+        try:
+            get_cb = getattr(self, "_tab_get_cb", None)
+            if get_cb is None:
+                return
+            sel = get_cb("srt") or {}
+            self.set_srt_engine_state(sel.get("kind"), sel.get("arch"),
+                                      sel.get("wmodel"))
+        except Exception:
+            pass
+
+    def set_tab_engine_callbacks(self, plan_cb, apply_cb, get_cb):
+        """App plan/apply/getter for per-tab engine picks (SRT + Note menus
+        share this one flow). All None-safe."""
+        try:
+            self._tab_plan_cb = plan_cb if callable(plan_cb) else None
+            self._tab_apply_cb = apply_cb if callable(apply_cb) else None
+            self._tab_get_cb = get_cb if callable(get_cb) else None
+        except Exception:
+            pass
+
+    def _translate_engine_pick(self, tab, kind_display=None,
+                               model_display=None):
+        """Menu display values -> (kind, arch|None, wmid|None) ids."""
+        try:
+            if tab == "srt":
+                kvar, mvar = self.srt_engine_var, self.srt_model_var
+            elif tab == "note":
+                kvar, mvar = self.note_engine_var, self.note_model_var
+            else:
+                return "Moonshine v2", None, None
+            try:
+                kind = (kind_display if kind_display is not None
+                        else kvar.get() or "Moonshine v2").strip()
+            except Exception:
+                kind = "Moonshine v2"
+            if kind not in ENGINE_CHOICES:
+                kind = "Moonshine v2"
+            try:
+                label = (model_display if model_display is not None
+                         else mvar.get() or "")
+            except Exception:
+                label = ""
+            arch, wmid = None, None
+            try:
+                if kind == "Whisper Large v3":
+                    wmid = WHISPER_MODEL_CHOICES.get(label)
+                elif kind == "Moonshine v2":
+                    arch = MODEL_CHOICES.get(label)
+            except Exception:
+                pass
+            return kind, arch, wmid
+        except Exception:
+            return "Moonshine v2", None, None
+
+    def _sync_tab_menus(self, tab, kind, arch=None, wmid=None):
+        """Paint one tab's menus from ids (mirror/restore path)."""
+        try:
+            if tab == "srt":
+                self.set_srt_engine_state(kind, arch, wmid)
+            elif tab == "note":
+                self.set_note_engine_state(kind, arch, wmid)
+        except Exception:
+            pass
+
+    def _revert_tab_menus(self, tab):
+        try:
+            get_cb = getattr(self, "_tab_get_cb", None)
+            if get_cb is None:
+                return
+            sel = get_cb(tab) or {}
+            self._sync_tab_menus(tab, sel.get("kind"), sel.get("arch"),
+                                 sel.get("wmodel"))
+        except Exception:
+            pass
+
+    def _request_tab_engine(self, tab, kind_display=None,
+                            model_display=None):
+        """Shared SRT/Note menu-pick flow: plan -> optional dual dialog ->
+        apply -> sync self + mirrored tabs. GUI thread only."""
+        try:
+            plan_cb = getattr(self, "_tab_plan_cb", None)
+            apply_cb = getattr(self, "_tab_apply_cb", None)
+            if plan_cb is None or apply_cb is None:
+                return
+            kind, arch, wmid = self._translate_engine_pick(
+                tab, kind_display, model_display)
+            try:
+                v = plan_cb(tab, kind, arch, wmid) or {}
+            except Exception:
+                return
+            act = (v or {}).get("action")
+            if act == "confirm":
+                try:
+                    from tkinter import messagebox as _mb
+                    yes = bool(_mb.askyesno(
+                        "Load second engine?",
+                        str(v.get("message") or "Another session is active."),
+                        parent=self))
+                except Exception:
+                    yes = False
+                try:
+                    r = apply_cb(tab, v.get("kind"), v.get("arch"),
+                                 v.get("wmodel"), bool(yes))
+                except Exception:
+                    r = {"action": "revert"}
+                if not yes or (r or {}).get("action") != "ok":
+                    self._revert_tab_menus(tab)
+                    return
+            elif act == "ok":
+                try:
+                    r = apply_cb(tab, v.get("kind"), v.get("arch"),
+                                 v.get("wmodel"), True)
+                except Exception:
+                    r = {"action": "revert"}
+                if (r or {}).get("action") != "ok":
+                    self._revert_tab_menus(tab)
+                    return
+            else:
+                self._revert_tab_menus(tab)
+                return
+            try:
+                self._sync_tab_menus(tab, v.get("kind"), v.get("arch"),
+                                     v.get("wmodel"))
+                for (t, k, a, w) in ((r or {}).get("mirrored") or []):
+                    if t != tab:
+                        self._sync_tab_menus(t, k, a, w)
+            except Exception:
+                pass
+        except Exception:
+            pass
+
+    def _on_srt_engine_changed(self, value):
+        try:
+            self._refresh_srt_model_menu()
+        except Exception:
+            pass
+        try:
+            self._request_tab_engine("srt", kind_display=value)
+        except Exception:
+            pass
+
+    def _on_srt_model_changed(self, value):
+        try:
+            self._request_tab_engine("srt", model_display=value)
+        except Exception:
+            pass
+
+    def _on_note_engine_changed(self, value):
+        try:
+            self._refresh_note_model_menu()
+        except Exception:
+            pass
+        try:
+            self._request_tab_engine("note", kind_display=value)
+        except Exception:
+            pass
+
+    def _on_note_model_changed(self, value):
+        try:
+            self._request_tab_engine("note", model_display=value)
+        except Exception:
+            pass
+
+    def _note_model_options(self, kind):
+        try:
+            if kind == "Whisper Large v3":
+                return list(WHISPER_MODEL_CHOICES.keys())
+            if kind == "Canary-1B":
+                return [CANARY_MODEL_LABEL]
+            return list(MODEL_CHOICES.keys())
+        except Exception:
+            return []
+
+    def _refresh_note_model_menu(self):
+        try:
+            kind = (self.note_engine_var.get() or "Moonshine v2").strip()
+        except Exception:
+            kind = "Moonshine v2"
+        try:
+            vals = self._note_model_options(kind)
+            if vals:
+                cur = None
+                try:
+                    cur = self.note_model_var.get()
+                except Exception:
+                    cur = None
+                self.note_model_menu.configure(values=vals)
+                if cur in vals:
+                    self.note_model_var.set(cur)
+                else:
+                    self.note_model_var.set(vals[0])
+        except Exception:
+            pass
+
+    def _note_menu_label(self, kind, arch=None, wmid=None):
+        try:
+            if kind == "Whisper Large v3":
+                return WHISPER_MODEL_CHOICES_REV.get(str(wmid or "large-v3"))
+            if kind == "Canary-1B":
+                return CANARY_MODEL_LABEL
+            return MODEL_CHOICES_REV.get(int(arch if arch is not None else 5))
+        except Exception:
+            return None
+
+    def set_note_engine_state(self, kind, arch=None, wmid=None):
+        """Programmatic set (mirror/adopt/restore). No callbacks fired."""
+        try:
+            if kind in ENGINE_CHOICES:
+                self.note_engine_var.set(kind)
+        except Exception:
+            pass
+        try:
+            self._refresh_note_model_menu()
+        except Exception:
+            pass
+        try:
+            label = self._note_menu_label(kind, arch, wmid)
+            if label:
+                try:
+                    vals = list(self.note_model_menu.cget("values"))
+                except Exception:
+                    vals = []
+                if label in vals:
+                    self.note_model_var.set(label)
+        except Exception:
+            pass
+        try:
+            self.note_engine_label.configure(
+                text=f"Engine: {kind}" + (f" ({label})" if label else ""))
+        except Exception:
+            pass
+
+    def get_note_engine_kind(self):
+        try:
+            k = (self.note_engine_var.get() or "Moonshine v2").strip()
+        except Exception:
+            k = "Moonshine v2"
+        return k if k in ENGINE_CHOICES else "Moonshine v2"
+
+    def note_session_active(self):
+        """True while Note records or transcriptions are outstanding."""
+        try:
+            if bool(getattr(self, "_note_recording", False)):
+                return True
+            sub = int(getattr(self, "_note_submitted", 0) or 0)
+            done = int(getattr(self, "_note_done", 0) or 0)
+            return sub > done
+        except Exception:
+            return False
+
     def _on_engine_changed(self, value):
         self._refresh_srt_engine_label()
         is_heavy = (value in ("Canary-1B", "Whisper Large v3"))
@@ -2976,6 +3402,28 @@ class MoonshineGUI(ctk.CTk):
             pass
         for i in order:
             self.set_srt_file_status(i, "queued")
+        # Dual-engine pre-flight (another session may be running): the app
+        # verdict arrives synchronously on this GUI thread.
+        if getattr(self, "_srt_prequest_cb", None) is not None:
+            try:
+                _pv = self._srt_prequest_cb() or {"go": True}
+            except Exception:
+                _pv = {"go": True}
+            if isinstance(_pv, dict) and "confirm" in _pv:
+                try:
+                    from tkinter import messagebox as _mb2
+                    _yes = bool(_mb2.askyesno(
+                        "Load second engine?",
+                        str(_pv.get("confirm") or "Another session is active."),
+                        parent=self))
+                except Exception:
+                    _yes = False
+                if not _yes:
+                    try:
+                        self.set_srt_progress(0, "SRT start cancelled")
+                    except Exception:
+                        pass
+                    return
         if self._srt_start_cb:
             try:
                 out_dir = self.srt_out_entry.get().strip()
@@ -3149,13 +3597,19 @@ class MoonshineGUI(ctk.CTk):
             pass
         self.add_srt_files([path])
     def set_srt_callbacks(self, on_start: Callable, on_cancel: Callable,
-                          on_burn: Optional[Callable] = None):
+                          on_burn: Optional[Callable] = None,
+                          on_prequest: Optional[Callable] = None):
         self._srt_start_cb = on_start if callable(on_start) else None
         self._srt_cancel_cb = on_cancel if callable(on_cancel) else None
         self._srt_burn_cb = on_burn if callable(on_burn) else None
+        self._srt_prequest_cb = on_prequest if callable(on_prequest) else None
     def set_srt_engine_label(self, text: str):
+        """Legacy no-op (the summary label is real Engine/Model menus now).
+        Kept so old callers never break."""
         try:
-            self.srt_engine_label.configure(text=text)
+            w = getattr(self, "srt_engine_label", None)
+            if w is not None:
+                w.configure(text=text)
         except Exception:
             pass
     def set_srt_running(self, running: bool):
