@@ -2229,6 +2229,11 @@ class MoonshineSTTApp:
             return f"[Error: {e}]"
 
     def _on_close(self):
+        try:
+            if self.gui and not self.gui.confirm_note_close():
+                return
+        except Exception:
+            pass
         if self._recording:
             try:
                 self.recorder.stop()

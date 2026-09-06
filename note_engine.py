@@ -17,6 +17,10 @@ class NoteRecorder:
     SILENCE_AT_MAX = 0.4   # silence needed at 80s mark
     FRAME_MS = 30
     RMS_THRESHOLD = 0.008  # below this = silence
+    # Mic-health watchdog thresholds (read by the GUI timer tick).
+    HEALTH_RMS_FLOOR = 0.001  # at/above this counts as "real input"
+    DEAD_AFTER_SEC = 5.0  # no callback frames at all -> stream dead
+    SILENT_AFTER_SEC = 10.0  # callbacks flow but digital-zero -> suspicious
 
     def __init__(self, sample_rate: int = 16000):
         self.sample_rate = sample_rate
@@ -32,6 +36,11 @@ class NoteRecorder:
         # Silence detection
         self._silence_start: Optional[float] = None
         self._current_elapsed: float = 0.0
+
+        # Mic-health timestamps (plain attributes, no locks: single-float
+        # stores are atomic enough, and the GUI only reads them ~1/sec).
+        self._last_cb_time: float = 0.0
+        self._last_sound_time: float = 0.0
 
         # Callbacks
         self._on_chunk_ready: Optional[Callable[[np.ndarray, int], None]] = None
@@ -77,6 +86,9 @@ class NoteRecorder:
 
                 now = time.monotonic()
                 elapsed = now - self._chunk_start_time
+                self._last_cb_time = now
+                if rms > self.HEALTH_RMS_FLOOR:
+                    self._last_sound_time = now
 
                 if rms < self.RMS_THRESHOLD:
                     if self._silence_start is None:
@@ -159,6 +171,9 @@ class NoteRecorder:
         self._chunk_index = 0
         self._silence_start = None
         self._chunk_start_time = time.monotonic()
+        self._last_cb_time = time.monotonic()
+        # Grace from record-press: a not-yet-speaking user is not a dead mic.
+        self._last_sound_time = self._last_cb_time
         self._recording = True
 
         try:
@@ -204,6 +219,34 @@ class NoteRecorder:
             return 0.0
         return time.monotonic() - self._chunk_start_time
 
+    def mic_health(self):
+        """(state, detail) for the GUI watchdog tick: "ok" | "dead" (no
+        callback frames or stream down) | "silent" (frames flow but only
+        digital-zero for a while) | "idle" (not recording). Lock-free
+        read; the tick runs ~1/sec so cost is nil."""
+        try:
+            if not self._recording:
+                return "idle", ""
+            now = time.monotonic()
+            try:
+                alive = self._stream is not None
+                if alive:
+                    try:
+                        alive = bool(self._stream.active)
+                    except Exception:
+                        pass
+            except Exception:
+                alive = False
+            if not alive:
+                return "dead", "stream down"
+            if now - (self._last_cb_time or now) > self.DEAD_AFTER_SEC:
+                return "dead", "no audio frames"
+            if now - (self._last_sound_time or now) > self.SILENT_AFTER_SEC:
+                return "silent", "digital silence"
+            return "ok", ""
+        except Exception:
+            return "ok", ""
+
 
 class NoteTranscriber:
     """Processes chunks asynchronously and accumulates text."""
@@ -214,9 +257,6 @@ class NoteTranscriber:
     _ERROR_PREFIXES = ("[Error:", "[Whisper Error:", "[Canary Error:")
 
     def __init__(self):
-        self._results: List[str] = []
-        self._lock = threading.Lock()
-        self._processing = False
         self._queue: List[tuple] = []
         self._queue_lock = threading.Lock()
         self._worker_thread: Optional[threading.Thread] = None
@@ -236,27 +276,12 @@ class NoteTranscriber:
         """Set the transcription function: fn(audio, sr) -> str"""
         self._transcribe_fn = fn
 
-    @property
-    def is_processing(self) -> bool:
-        return self._processing
-
-    @property
-    def full_text(self) -> str:
-        with self._lock:
-            return "\n".join(self._results)
-
-    @property
-    def result_count(self) -> int:
-        with self._lock:
-            return len(self._results)
-
     def start(self):
         with self._queue_lock:
             # New session: old worker (if still finishing a tail chunk)
             # carries a stale generation - its late callbacks are dropped
             # and it never touches the new queue.
             self._gen += 1
-            self._results = []
             self._queue = []
         self._stop_event.clear()
         # Never join a previous worker here: start() runs on the GUI
@@ -296,7 +321,6 @@ class NoteTranscriber:
                 continue
 
             audio, index = item
-            self._processing = True
             try:
                 if self._on_status and self._current_gen(my_gen):
                     self._on_status(f"Transcribing chunk {index}...")
@@ -307,8 +331,6 @@ class NoteTranscriber:
 
                 txt = (text or "").strip()
                 if txt and not txt.startswith(self._ERROR_PREFIXES):
-                    with self._lock:
-                        self._results.append(txt)
                     if self._on_text and self._current_gen(my_gen):
                         self._on_text(txt, index)
                     if self._on_status and self._current_gen(my_gen):
@@ -334,5 +356,3 @@ class NoteTranscriber:
                     self._on_status(f"Chunk {index} error: {e}")
                 if self._on_done and self._current_gen(my_gen):
                     self._on_done(index, False)
-            finally:
-                self._processing = False

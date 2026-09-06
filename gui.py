@@ -922,6 +922,9 @@ class MoonshineGUI(ctk.CTk):
         self._note_timer_id = None
         self._note_submitted = 0  # chunks cut by the recorder
         self._note_done = 0  # chunks fully transcribed (ok or not)
+        self._note_dirty = False  # unsaved note content present
+        self._note_mic_warned = False  # mic-dead popup latch (per episode)
+        self._note_last_level_t = 0.0  # level-post throttle stamp
 
         scroll = ctk.CTkScrollableFrame(tab, fg_color="transparent")
         scroll.pack(fill="both", expand=True, padx=4, pady=4)
@@ -958,6 +961,14 @@ class MoonshineGUI(ctk.CTk):
             ctrl_card, text="Ready to record",
             font=("Segoe UI", 11), text_color=FG_DIM)
         self.note_status_label.pack(pady=(0, 8))
+
+        # Live input meter (proves the mic is alive long before chunk 1
+        # lands 40-80s in; doubles as the mic-death visual).
+        try:
+            self.note_meter = LevelMeter(ctrl_card, width=360, height=8)
+            self.note_meter.pack(pady=(0, 8))
+        except Exception:
+            self.note_meter = None
 
         # Record / Stop button
         btn_row = ctk.CTkFrame(ctrl_card, fg_color="transparent")
@@ -1019,6 +1030,10 @@ class MoonshineGUI(ctk.CTk):
             corner_radius=10, wrap="word", height=280)
         self.note_text.grid(row=1, column=0, sticky="nsew", padx=12, pady=(4, 12))
         self.note_text.insert("1.0", "Transcription will appear here as you speak...")
+        try:
+            self.note_text.bind("<Key>", self._note_mark_dirty)
+        except Exception:
+            pass
 
         # ── Engine info ──
         info_card = ctk.CTkFrame(scroll, fg_color=BG_CARD, corner_radius=12)
@@ -1053,6 +1068,34 @@ class MoonshineGUI(ctk.CTk):
         else:
             self._note_start()
 
+    def _note_mark_dirty(self, event=None):
+        try:
+            self._note_dirty = True
+        except Exception:
+            pass
+
+    def _note_prepare_box(self):
+        """Start-of-session textbox prep. A fresh/placeholder box is cleared;
+        a continued note keeps its text and gets a timestamp separator, so
+        RECORD-after-STOP appends instead of wiping. Sets the dirty flag."""
+        try:
+            current = self.note_text.get("1.0", "end").strip()
+        except Exception:
+            current = ""
+        try:
+            if not current or current == "Transcription will appear here as you speak...":
+                self.note_text.delete("1.0", "end")
+                self._note_dirty = False
+            else:
+                self.note_text.insert("end", f"\n─── {time.strftime('%H:%M')} ───\n\n")
+                try:
+                    self.note_text.see("end")
+                except Exception:
+                    pass
+                self._note_dirty = True
+        except Exception:
+            pass
+
     def _note_start(self):
         if self._note_recorder is None:
             return
@@ -1070,8 +1113,8 @@ class MoonshineGUI(ctk.CTk):
             self.note_record_btn.configure(
                 text="■  STOP", fg_color=DANGER, hover_color=BTN_DANGER_HOVER)
             self.note_status_label.configure(text="Recording...", text_color=DANGER)
-            self.note_text.configure(state="normal")
-            self.note_text.delete("1.0", "end")
+            self._note_prepare_box()
+            self._note_mic_warned = False
 
             self._note_update_timer()
         except Exception as e:
@@ -1156,7 +1199,30 @@ class MoonshineGUI(ctk.CTk):
             pass
 
     def _note_on_level(self, level):
-        pass  # Could add a level meter later
+        # Audio-thread callback (~64/s): throttle, hop to the GUI thread,
+        # and never touch Tk off-thread (a canvas call from here would
+        # eventually crash the interpreter).
+        try:
+            now = time.monotonic()
+            if now - float(getattr(self, "_note_last_level_t", 0.0)) < 0.066:
+                return
+            self._note_last_level_t = now
+            meter = getattr(self, "note_meter", None)
+            try:
+                value = max(0.0, min(1.0, float(level or 0.0)))
+            except Exception:
+                return
+            self.after(0, lambda: self._note_safe_level(meter, value))
+        except Exception:
+            pass
+
+    @staticmethod
+    def _note_safe_level(meter, value):
+        try:
+            if meter is not None and meter.winfo_exists():
+                meter.set_level(value)
+        except Exception:
+            pass
 
     def _note_on_rec_status(self, msg):
         try:
@@ -1175,6 +1241,7 @@ class MoonshineGUI(ctk.CTk):
                     self.note_text.delete("1.0", "end")
                 self.note_text.insert("end", text + "\n\n")
                 self.note_text.see("end")
+                self._note_dirty = True
             except Exception:
                 pass
         try:
@@ -1197,7 +1264,46 @@ class MoonshineGUI(ctk.CTk):
         m = int((elapsed % 3600) // 60)
         s = int(elapsed % 60)
         self.note_timer_label.configure(text=f"{h:02d}:{m:02d}:{s:02d}")
+        # Mic watchdog (this tick is the only per-second work added: one
+        # timestamp read, no threads, no audio work - nil perf impact).
+        try:
+            rec = getattr(self, "_note_recorder", None)
+            if rec is not None:
+                state, _detail = rec.mic_health()
+                if state == "dead":
+                    self.note_status_label.configure(
+                        text="No microphone input — check mic", text_color=DANGER)
+                    # Popup-focus once per dead episode, recording only.
+                    # Latch clears when input resumes; no modal (a modal
+                    # would block the STOP button mid-record).
+                    if not getattr(self, "_note_mic_warned", False):
+                        self._note_mic_warned = True
+                        try:
+                            self.lift()
+                        except Exception:
+                            pass
+                        try:
+                            self.attributes("-topmost", True)
+                            self.after(1500, self._note_drop_topmost)
+                        except Exception:
+                            pass
+                elif state == "silent":
+                    self.note_status_label.configure(
+                        text="Microphone silent — check input level",
+                        text_color=WARNING)
+                elif getattr(self, "_note_mic_warned", False):
+                    self._note_mic_warned = False
+                    self.note_status_label.configure(text="Recording...",
+                                                     text_color=DANGER)
+        except Exception:
+            pass
         self._note_timer_id = self.after(1000, self._note_update_timer)
+
+    def _note_drop_topmost(self):
+        try:
+            self.attributes("-topmost", False)
+        except Exception:
+            pass
 
     def _on_note_clear(self):
         if self._note_recording:
@@ -1205,6 +1311,7 @@ class MoonshineGUI(ctk.CTk):
         self.note_text.delete("1.0", "end")
         self.note_text.insert("1.0", "Transcription will appear here as you speak...")
         self.note_chunk_label.configure(text="")
+        self._note_dirty = False
         self.note_chunk_label.configure(text="")
         self.note_status_label.configure(text="Ready to record", text_color=FG_DIM)
         if self._note_transcriber:
@@ -1239,10 +1346,50 @@ class MoonshineGUI(ctk.CTk):
             if path:
                 with open(path, "w", encoding="utf-8") as f:
                     f.write(text)
+                self._note_dirty = False
                 self.note_status_label.configure(
                     text=f"Saved: {Path(path).name}", text_color=SUCCESS)
         except Exception as e:
             self.note_status_label.configure(text=f"Save error: {e}", text_color=DANGER)
+
+    def note_has_unsaved(self) -> bool:
+        """True when the box holds real, unsaved note content."""
+        try:
+            if not bool(getattr(self, "_note_dirty", False)):
+                return False
+            text = self.note_text.get("1.0", "end").strip()
+            return bool(text) and text != "Transcription will appear here as you speak..."
+        except Exception:
+            return False
+
+    def confirm_note_close(self) -> bool:
+        """True = proceed with close. Asks once (Save / discard / cancel)
+        only when unsaved note content exists; otherwise returns True
+        untouched. Never raises (close must never brick)."""
+        try:
+            if not self.note_has_unsaved():
+                return True
+            from tkinter import messagebox as _mb
+            r = _mb.askyesnocancel(
+                "Save note?",
+                "You have an unsaved note.\nSave it before closing?",
+                parent=self)
+        except Exception:
+            return True
+        if r is None:
+            return False
+        if r is True:
+            try:
+                self._on_note_save()
+            except Exception:
+                return False
+            # Save clears dirty only on success; a cancelled file dialog
+            # keeps the text, so closing aborts (safe direction).
+            try:
+                return not self.note_has_unsaved()
+            except Exception:
+                return False
+        return True
 
 
     def _on_tab_changed(self, value=None):
@@ -1368,6 +1515,16 @@ class MoonshineGUI(ctk.CTk):
                 except Exception:
                     pass
                 self.meter.set_level(float(getattr(self.meter, "level", 0.0)))
+        except Exception:
+            pass
+        try:
+            _nm = getattr(self, "note_meter", None)
+            if _nm is not None:
+                try:
+                    _nm.configure(bg=BG_CARD)
+                except Exception:
+                    pass
+                _nm.set_level(float(getattr(_nm, "level", 0.0)))
         except Exception:
             pass
         try:
