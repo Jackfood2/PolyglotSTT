@@ -472,7 +472,15 @@ class MoonshineGUI(ctk.CTk):
         self._footer_label = ctk.CTkLabel(
             footer, text="Moonshine v2 + Canary-1B + Whisper \u2022 On-device \u2022 No API keys",
             font=("Segoe UI", 10), text_color=FG_DIM)
-        self._footer_label.pack()
+        self._footer_label.pack(side="left")
+        self.windowless_var = ctk.BooleanVar(value=False)
+        self.windowless_check = ctk.CTkCheckBox(
+            footer, text="Windowless next launch",
+            variable=self.windowless_var, font=("Segoe UI", 10),
+            text_color=FG_DIM, fg_color=ACCENT,
+            command=self._on_windowless_toggled)
+        self.windowless_check.pack(side="right")
+        self._windowless_callback = None
         self._build_srt_tab(srt_tab)
         self._build_note_tab(note_tab)
         try:
@@ -495,6 +503,22 @@ class MoonshineGUI(ctk.CTk):
         try:
             v = str(version or "").strip()
             self.title(f"MoonshineSTT v{v}" if v else "MoonshineSTT")
+        except Exception:
+            pass
+    def _on_windowless_toggled(self):
+        try:
+            value = bool(self.windowless_var.get())
+        except Exception:
+            value = False
+        if self._windowless_callback:
+            try:
+                self._windowless_callback(value)
+            except Exception:
+                pass
+    def set_windowless(self, value: bool, callback):
+        self._windowless_callback = callback if callable(callback) else None
+        try:
+            self.windowless_var.set(bool(value))
         except Exception:
             pass
     def _build_srt_tab(self, tab):

@@ -100,10 +100,17 @@ if not errorlevel 1 (
 echo Note: NVIDIA GPU found but torch is CPU-only. Run setup.bat once for GPU support.
 :RUN_APP
 if not exist "models_cache\download.moonshine.ai" echo Warning: models_cache not found. Will try APPDATA cache.
+rem GUI switch "Windowless next launch" (moonshine_config.json holds "windowless": true).
+findstr /r /c:"windowless.: *true" "moonshine_config.json" >nul 2>&1
+if not errorlevel 1 (
+    start "PolyglotSTT" "%~dp0venv\Scripts\pythonw.exe" moonshine_stt.py %*
+    goto END_APP
+)
 "%~dp0venv\Scripts\python.exe" moonshine_stt.py %*
 if errorlevel 1 (
     echo.
     echo MoonshineSTT exited with an error.
     pause
 )
+:END_APP
 endlocal

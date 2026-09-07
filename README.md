@@ -151,6 +151,7 @@ git clone https://github.com/jackfood2/PolyglotSTT.git
 cd PolyglotSTT
 setup.bat      :: creates venv, installs deps, downloads the Moonshine model
 run.bat        :: launches the app (rechecks deps each start)
+run_windowless.vbs :: same, with no console window at all (needs venv set up)
 ```
 
 `setup.bat` installs online with `pip`, falling back to a local `wheels\`
@@ -285,7 +286,12 @@ requirements*.txt  dependency pins (base / Canary / Whisper)
 
 ## Changelog
 
-### v1.2.20 (latest)
+### v1.2.21 (latest)
+
+- Windowless launch: `run_windowless.vbs` starts the app with no console window at all (`run_windowless.bat` if you prefer bat); output goes to `logs\app.log` since pythonw has no console
+- Footer switch "Windowless next launch": tick it and the next `run.bat` start goes windowless by itself (stored in config, so it survives restarts)
+
+### v1.2.20
 
 - Live Src menu spells languages in full (Japanese, not ja) for both Whisper and Canary; saved codes restore to their names on launch
 - Every Live-row change (engine, task, language, model) already saved instantly — stale Japanese fallbacks corrected to auto-detect throughout

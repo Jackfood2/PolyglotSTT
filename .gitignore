@@ -23,3 +23,5 @@ notes_audio/
 *.tmp
 # Patch-script backups (auto-created beside patched files, never commit).
 patch_backups/
+# Windowless-run log (pythonw has no console; app.log lives here).
+logs/

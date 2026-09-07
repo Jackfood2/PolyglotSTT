@@ -7,6 +7,20 @@ import threading
 import queue
 import json
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+if sys.stdout is None or sys.stderr is None:
+    # Windowless launch (pythonw.exe): there is no console, and any print
+    # would raise. Keep a rolling log next to the script instead.
+    try:
+        _logdir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "logs")
+        os.makedirs(_logdir, exist_ok=True)
+        _winlog = open(os.path.join(_logdir, "app.log"), "a",
+                       encoding="utf-8", errors="replace", buffering=1)
+        if sys.stdout is None:
+            sys.stdout = _winlog
+        if sys.stderr is None:
+            sys.stderr = _winlog
+    except Exception:
+        pass
 from pynput import keyboard
 from engine import TranscriptionEngine
 from recorder import AudioRecorder
@@ -30,7 +44,7 @@ except Exception as e:
     FG_SECONDARY = "#B2BEC3"
 RECORD_KEY = keyboard.Key.f2
 SAMPLE_RATE = 16000
-APP_VERSION = "1.2.20"
+APP_VERSION = "1.2.21"
 CONFIG_PATH = os.path.join(os.path.dirname(__file__), "moonshine_config.json")
 _CONFIG_LOCK = threading.RLock()
 DEFAULT_CONFIG = {
@@ -63,6 +77,7 @@ DEFAULT_CONFIG = {
     "auto_shutdown": False,
     "completion_alert": True,
     "theme": "dark",
+    "windowless": False,
 }
 def load_local_config():
     try:
@@ -166,6 +181,9 @@ class MoonshineSTTApp:
             needs_save = True
         if self.config.get("compute") not in ("auto", "cpu", "gpu"):
             self.config["compute"] = "auto"
+            needs_save = True
+        if not isinstance(self.config.get("windowless"), bool):
+            self.config["windowless"] = False
             needs_save = True
         try:
             _th = str(self.config.get("theme", "dark")).lower()
@@ -441,6 +459,11 @@ class MoonshineSTTApp:
                 try:
                     self.gui.set_footer_version(APP_VERSION)
                     self.gui.set_title_version(APP_VERSION)
+                except Exception:
+                    pass
+                try:
+                    self.gui.set_windowless(self.config.get("windowless", False),
+                                            self._on_windowless_changed)
                 except Exception:
                     pass
                 try:
@@ -2189,6 +2212,13 @@ class MoonshineSTTApp:
             self.config["srt_output_lang"] = code
             save_local_config(self.config)
         self._log(f"SRT output lang -> {code}")
+    def _on_windowless_changed(self, value: bool):
+        with _CONFIG_LOCK:
+            self.config["windowless"] = bool(value)
+            save_local_config(self.config)
+        mode = "windowless (no console)" if value else "console window"
+        self._log(f"Next launch via run.bat uses {mode} (takes effect on restart)")
+
     def _log(self, msg, color=None):
         print(f"[MoonshineSTT] {msg}")
         if self.gui and color:
