@@ -96,7 +96,6 @@ class TranscriptionEngine:
         self._loading = False
         self._last_error: Optional[str] = None
         self._load_generation = 0
-        self._unload_generation = 0
     @property
     def is_ready(self) -> bool:
         return self._ready
@@ -233,7 +232,6 @@ class TranscriptionEngine:
             if self._transcriber is None:
                 return False
             self._load_generation += 1
-            self._unload_generation += 1
             self._ready = False
             self._last_error = None
         with self._tx_lock:

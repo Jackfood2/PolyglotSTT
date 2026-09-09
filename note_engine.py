@@ -80,8 +80,13 @@ class NoteRecorder:
         return self.SILENCE_AT_MIN - t * (self.SILENCE_AT_MIN - self.SILENCE_AT_MAX)
 
     def _audio_callback(self, indata, frames, time_info, status):
+        # Runs on the sounddevice audio thread: never invoke callbacks while
+        # holding the lock (a slow/blocked callback would stall the stream
+        # and drop live audio). Snapshot what the callback needs, release,
+        # then call out.
         try:
             should_cut = False
+            level = None
             with self._lock:
                 if not self._recording:
                     return
@@ -89,9 +94,7 @@ class NoteRecorder:
 
                 f = indata.astype(np.float32) / 32768.0
                 rms = float(np.sqrt(np.mean(f ** 2)))
-
-                if self._on_level:
-                    self._on_level(min(1.0, rms * 5.0))
+                level = min(1.0, rms * 5.0)
 
                 now = time.monotonic()
                 elapsed = now - self._chunk_start_time
@@ -115,6 +118,16 @@ class NoteRecorder:
                 if elapsed >= self.MAX_CHUNK_SEC + 2.0:
                     should_cut = True
 
+            if level is not None:
+                try:
+                    cb = self._on_level
+                except Exception:
+                    cb = None
+                if cb:
+                    try:
+                        cb(level)
+                    except Exception:
+                        pass
             if should_cut:
                 self._cut_chunk()
         except Exception:

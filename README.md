@@ -286,7 +286,13 @@ requirements*.txt  dependency pins (base / Canary / Whisper)
 
 ## Changelog
 
-### v1.2.22 (latest)
+### v1.2.23 (latest)
+
+- Note mic callback no longer calls out while holding the recorder lock — a slow level-meter update can never stall the audio stream and drop live speech
+- Removed dead code the audit proved unreferenced (unused config helper, write-only unload counter)
+- Investigated, no change: overwrite already replaces in place for SRT and burns (reserve lists only dedupe within a batch, e.g. same clip queued twice) — verified prompt to file-write path end to end
+
+### v1.2.22
 
 - Note Stop now drains honestly: the tail audio up to the click becomes a final chunk, the status reads "Finishing last N chunks" until the drain lands, and dropped (queue-full) chunks no longer inflate the counter
 - Quitting mid-Note warns first: still recording or still transcribing blocks exit with a "lose it?" prompt, before the unsaved-note question

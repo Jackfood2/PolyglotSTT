@@ -44,7 +44,7 @@ except Exception as e:
     FG_SECONDARY = "#B2BEC3"
 RECORD_KEY = keyboard.Key.f2
 SAMPLE_RATE = 16000
-APP_VERSION = "1.2.22"
+APP_VERSION = "1.2.23"
 CONFIG_PATH = os.path.join(os.path.dirname(__file__), "moonshine_config.json")
 _CONFIG_LOCK = threading.RLock()
 DEFAULT_CONFIG = {
@@ -105,15 +105,6 @@ def save_local_config(cfg):
             os.replace(tmp, CONFIG_PATH)
     except Exception:
         pass
-def update_config(config, **changes):
-    """Atomically update and persist a configuration snapshot."""
-    with _CONFIG_LOCK:
-        snapshot = dict(config or {})
-        snapshot.update(changes)
-        config.clear()
-        config.update(snapshot)
-        save_local_config(dict(snapshot))
-        return dict(snapshot)
 
 
 def apply_suffix(text: str, suffix: str) -> str:
