@@ -44,7 +44,7 @@ except Exception as e:
     FG_SECONDARY = "#B2BEC3"
 RECORD_KEY = keyboard.Key.f2
 SAMPLE_RATE = 16000
-APP_VERSION = "1.2.21"
+APP_VERSION = "1.2.22"
 CONFIG_PATH = os.path.join(os.path.dirname(__file__), "moonshine_config.json")
 _CONFIG_LOCK = threading.RLock()
 DEFAULT_CONFIG = {
@@ -3337,6 +3337,11 @@ class MoonshineSTTApp:
             return f"[Error: {e}]"
 
     def _on_close(self):
+        try:
+            if self.gui and not self.gui.confirm_note_processing():
+                return
+        except Exception:
+            pass
         try:
             if self.gui and not self.gui.confirm_note_close():
                 return

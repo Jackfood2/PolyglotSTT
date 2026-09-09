@@ -286,7 +286,12 @@ requirements*.txt  dependency pins (base / Canary / Whisper)
 
 ## Changelog
 
-### v1.2.21 (latest)
+### v1.2.22 (latest)
+
+- Note Stop now drains honestly: the tail audio up to the click becomes a final chunk, the status reads "Finishing last N chunks" until the drain lands, and dropped (queue-full) chunks no longer inflate the counter
+- Quitting mid-Note warns first: still recording or still transcribing blocks exit with a "lose it?" prompt, before the unsaved-note question
+
+### v1.2.21
 
 - Windowless launch: `run_windowless.vbs` starts the app with no console window at all (`run_windowless.bat` if you prefer bat); output goes to `logs\app.log` since pythonw has no console
 - Footer switch "Windowless next launch": tick it and the next `run.bat` start goes windowless by itself (stored in config, so it survives restarts)

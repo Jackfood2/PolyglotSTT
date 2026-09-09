@@ -1407,10 +1407,25 @@ class MoonshineGUI(ctk.CTk):
                 pass
             self._note_timer_id = None
 
-        # Get remaining audio
+        # Tail audio (everything up to the click) becomes one last chunk:
+        # the mic stops now, but the transcriber drains it after Stop.
+        try:
+            tail_idx = int(self._note_recorder.chunk_count) + 1
+        except Exception:
+            tail_idx = int(getattr(self, "_note_submitted", 0) or 0) + 1
         remaining = self._note_recorder.stop()
         if remaining is not None and len(remaining) > 16000:
-            self._note_transcriber.submit_chunk(remaining, self._note_recorder.chunk_count + 1)
+            try:
+                accepted = (self._note_transcriber.submit_chunk(remaining, tail_idx)
+                            if self._note_transcriber else False)
+            except Exception:
+                accepted = False
+            if accepted is not False:
+                try:
+                    if tail_idx > int(getattr(self, "_note_submitted", 0) or 0):
+                        self._note_submitted = tail_idx
+                except Exception:
+                    pass
 
         self._note_transcriber.stop()
 
@@ -1430,7 +1445,17 @@ class MoonshineGUI(ctk.CTk):
 
         self.note_record_btn.configure(
             text="●  RECORD", fg_color=ACCENT, hover_color=ACCENT_DARK)
-        self.note_status_label.configure(text="Stopped - review and save", text_color=SUCCESS)
+        try:
+            _pend = (int(getattr(self, "_note_submitted", 0) or 0)
+                     - int(getattr(self, "_note_done", 0) or 0))
+        except Exception:
+            _pend = 0
+        if _pend > 0:
+            self.note_status_label.configure(
+                text=f"Finishing last {_pend} chunk{'s' if _pend != 1 else ''}…",
+                text_color=WARNING)
+        else:
+            self.note_status_label.configure(text="Stopped - review and save", text_color=SUCCESS)
         self.note_chunk_label.configure(text="")
 
     def _note_export_mp3(self, wav_path):
@@ -1506,11 +1531,27 @@ class MoonshineGUI(ctk.CTk):
         except Exception:
             self._note_done = 1
         self._note_update_counter()
+        try:
+            # Drain finished after Stop: replace only our own interim status.
+            if (not getattr(self, "_note_recording", False)
+                    and int(getattr(self, "_note_done", 0) or 0)
+                    >= int(getattr(self, "_note_submitted", 0) or 0) > 0
+                    and "Finishing" in str(self.note_status_label.cget("text"))):
+                self.note_status_label.configure(text="Stopped - review and save",
+                                                 text_color=SUCCESS)
+        except Exception:
+            pass
 
     def _note_on_chunk(self, audio, index):
         """Called from recorder thread when a chunk is ready."""
-        if self._note_transcriber:
-            self._note_transcriber.submit_chunk(audio, index)
+        try:
+            accepted = True
+            if self._note_transcriber:
+                accepted = self._note_transcriber.submit_chunk(audio, index)
+        except Exception:
+            accepted = True
+        if accepted is False:
+            return  # queue full: dropped, and _note_done will never come
         try:
             if int(index) > int(getattr(self, "_note_submitted", 0) or 0):
                 self._note_submitted = int(index)
@@ -1710,6 +1751,44 @@ class MoonshineGUI(ctk.CTk):
             except Exception:
                 return False
         return True
+
+    def note_processing_pending(self):
+        """(recording, pending_chunks) snapshot for the close path.
+        Never raises."""
+        try:
+            recording = bool(getattr(self, "_note_recording", False))
+        except Exception:
+            recording = False
+        try:
+            pending = (int(getattr(self, "_note_submitted", 0) or 0)
+                       - int(getattr(self, "_note_done", 0) or 0))
+        except Exception:
+            pending = 0
+        return recording, max(0, pending)
+
+    def confirm_note_processing(self) -> bool:
+        """True = proceed with close. Warns when the mic is still open or
+        chunks are still transcribing - quitting then loses audio/text in
+        flight. Never raises (close must never brick)."""
+        try:
+            recording, pending = self.note_processing_pending()
+        except Exception:
+            return True
+        if not recording and pending <= 0:
+            return True
+        try:
+            from tkinter import messagebox as _mb
+            if recording:
+                what = "still recording"
+            else:
+                what = (f"{pending} chunk{'s' if pending != 1 else ''} "
+                        f"still transcribing")
+            return bool(_mb.askyesno(
+                "Transcription in progress",
+                f"Note is {what}.\nQuit now and lose it?",
+                parent=self))
+        except Exception:
+            return True
 
     def _on_note_save_audio(self):
         """Save Audio button: copy the last auto-saved session MP3 to a
