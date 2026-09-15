@@ -44,7 +44,7 @@ except Exception as e:
     FG_SECONDARY = "#B2BEC3"
 RECORD_KEY = keyboard.Key.f2
 SAMPLE_RATE = 16000
-APP_VERSION = "1.2.23"
+APP_VERSION = "1.3.0"
 CONFIG_PATH = os.path.join(os.path.dirname(__file__), "moonshine_config.json")
 _CONFIG_LOCK = threading.RLock()
 DEFAULT_CONFIG = {
@@ -270,7 +270,7 @@ class MoonshineSTTApp:
         if self.config.get("burn_codec") != _bc:
             self.config["burn_codec"] = _bc
             needs_save = True
-        if self.config.get("srt_tab") not in ("Live", "SRT File"):
+        if self.config.get("srt_tab") not in ("Live", "SRT File", "Note"):
             self.config["srt_tab"] = "Live"
             needs_save = True
         if needs_save:
@@ -314,6 +314,10 @@ class MoonshineSTTApp:
         self._srt_lock = threading.Lock()
         self._srt_thread = None
         self._srt_cancel = threading.Event()
+        self._note_file_busy = False
+        self._note_file_lock = threading.Lock()
+        self._note_file_thread = None
+        self._note_file_cancel = threading.Event()
         if MoonshineGUI is not None:
             try:
                 self.gui = MoonshineGUI()
@@ -465,6 +469,12 @@ class MoonshineSTTApp:
                     self.gui.set_note_record_callback(self.note_record_request,
                                                       self.note_record_confirm,
                                                       self.note_engine_ready)
+                except Exception:
+                    pass
+                try:
+                    self.gui.set_note_file_callbacks(self._note_file_start,
+                                                     self._note_file_cancel,
+                                                     self.note_file_request)
                 except Exception:
                     pass
                 try:
@@ -1238,6 +1248,14 @@ class MoonshineSTTApp:
         Moonshine uses the shared live object (snapshot it); heavies must
         be cached+ready (preloaded at selection) or they load now."""
         try:
+            try:
+                if bool(getattr(self, "_note_file_busy", False)):
+                    return {"abort": True}
+                if self.gui is not None and bool(
+                        getattr(self.gui, "_note_file_running", False)):
+                    return {"abort": True}
+            except Exception:
+                pass
             sel = self.tab_selection("note")
             kind = sel["kind"]
             if kind == "Moonshine v2":
@@ -1499,7 +1517,7 @@ class MoonshineSTTApp:
     def _on_tab_changed(self, name: str):
         if name not in ("Live", "SRT File", "Note"):
             return
-        if name in ("Live", "SRT File"):
+        if name in ("Live", "SRT File", "Note"):
             with _CONFIG_LOCK:
                 self.config["srt_tab"] = name
                 save_local_config(self.config)
@@ -3327,6 +3345,465 @@ class MoonshineSTTApp:
         except Exception as e:
             return f"[Error: {e}]"
 
+    # ── Note file import (drag & drop audio/video -> sentences) ──
+    def note_file_request(self):
+        """GUI-thread pre-flight for Note file Transcribe. Returns
+        {"go": True} | {"confirm": msg} | {"wait": msg} | {"abort": True}.
+        Refuses while mic recording or another file job runs."""
+        try:
+            try:
+                if self.gui is not None and bool(
+                        getattr(self.gui, "_note_recording", False)):
+                    return {"abort": True}
+            except Exception:
+                pass
+            if bool(getattr(self, "_note_file_busy", False)):
+                return {"abort": True}
+            try:
+                if self.gui is not None and bool(
+                        getattr(self.gui, "_note_file_running", False)) \
+                        and not bool(getattr(self, "_note_file_busy", False)):
+                    # GUI flag set but no worker yet (starting) - treat busy.
+                    pass
+            except Exception:
+                pass
+            sel = self.tab_selection("note")
+            kind = sel["kind"]
+            # Ready now? -> go (snapshot like mic path).
+            try:
+                if kind == "Moonshine v2":
+                    eng = self.moonshine_engine
+                    if eng is not None and eng.is_ready:
+                        return {"go": True}
+                else:
+                    cache = (self._tab_cache or {}).get("note") or {}
+                    slot = "canary" if kind == "Canary-1B" else "whisper"
+                    eng = cache.get(slot)
+                    ok = False
+                    try:
+                        if eng is not None and eng.is_ready:
+                            if slot == "whisper":
+                                ok = self._whisper_cache_ok(eng, sel["wmodel"])
+                            else:
+                                ok = True
+                    except Exception:
+                        ok = False
+                    if ok:
+                        return {"go": True}
+            except Exception:
+                pass
+            # Need a load: dual cost only matters against active others.
+            others = []
+            for t in self.TAB_IDS:
+                if t == "note":
+                    continue
+                try:
+                    if self.tab_active(t):
+                        others.append(self._tab_active_desc(t))
+                except Exception:
+                    pass
+            if others:
+                try:
+                    ram = self._engine_ram_mb(kind, sel["arch"], sel["wmodel"])
+                except Exception:
+                    ram = 3000
+                what = ("Canary-1B" if kind == "Canary-1B"
+                        else (f"Whisper {sel['wmodel']}" if kind == "Whisper"
+                              else "Moonshine (shared)"))
+                return {"confirm": f"{'; '.join(others)} still active.\n"
+                                    f"Transcribe this file with {what} too?\n"
+                                    f"Yes = run both engines (~{ram / 1000:.1f} GB "
+                                    f"extra RAM). No = stay as you are.",
+                        "ram_mb": ram}
+            # No conflict: kick the load (or re-kick Moonshine) and ask the
+            # GUI to wait - user presses Transcribe File again when ready.
+            try:
+                if kind == "Moonshine v2":
+                    try:
+                        if (self.moonshine_engine is not None
+                                and not self.moonshine_engine.is_ready
+                                and not getattr(self.moonshine_engine,
+                                                "_loading", False)):
+                            self.moonshine_engine.load()
+                    except Exception:
+                        pass
+                else:
+                    fresh = self._tab_heavy("note", kind, sel["wmodel"])
+                    if fresh is not None and not fresh.is_ready:
+                        fresh.load()
+            except Exception:
+                pass
+            return {"wait": "Loading note engine - press Transcribe File again when ready."}
+        except Exception:
+            return {"abort": True}
+
+    def _note_file_cancel(self):
+        """Cancel the running Note file job (thread-safe, never raises)."""
+        try:
+            self._note_file_cancel.set()
+        except Exception:
+            pass
+        try:
+            if self.gui is not None:
+                try:
+                    self.gui.after(
+                        0, lambda: self.gui.set_note_file_progress(
+                            0, "Cancelling..."))
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+    def _note_file_start(self, path: str):
+        """Background entry for Note file transcription (GUI spawns a thread
+        around this; this method blocks until done). Never raises."""
+        try:
+            with self._note_file_lock:
+                if self._note_file_busy:
+                    return
+                self._note_file_busy = True
+            self._note_file_cancel.clear()
+            self._note_file_work(str(path or ""))
+        except Exception as e:
+            try:
+                if self.gui is not None:
+                    self.gui.after(
+                        0, lambda m=str(e): self.gui.note_file_done(
+                            False, f"File error: {m}"))
+            except Exception:
+                pass
+        finally:
+            try:
+                with self._note_file_lock:
+                    self._note_file_busy = False
+            except Exception:
+                pass
+
+    def _note_file_prog(self, frac: float, msg: str = ""):
+        try:
+            g = self.gui
+            if g is None:
+                return
+            try:
+                g.after(0, lambda f=frac, m=msg: g.set_note_file_progress(f, m))
+            except Exception:
+                pass
+        except Exception:
+            pass
+
+    def _note_file_resolve_engine(self, sel, cancel_event, prog):
+        """Return (engine, kind) for the Note tab selection, waiting for the
+        load (with progress + cancel). Raises RuntimeError on failure."""
+        import time as _t
+        kind = sel["kind"]
+        if kind == "Moonshine v2":
+            eng = self.moonshine_engine
+            if eng is None:
+                raise RuntimeError("Moonshine engine unavailable")
+            if not eng.is_ready:
+                try:
+                    if not getattr(eng, "_loading", False):
+                        eng.load()
+                except Exception:
+                    pass
+                waited = 0
+                while not eng.is_ready:
+                    if cancel_event.is_set():
+                        raise InterruptedError("cancelled")
+                    if not getattr(eng, "_loading", True):
+                        err = getattr(eng, "_last_error", None) or "load failed"
+                        raise RuntimeError(f"Moonshine failed to load: {err}")
+                    if waited % 5 == 0:
+                        prog(0.05, f"Loading Moonshine ({waited}s)...")
+                    _t.sleep(0.5)
+                    waited += 1
+                    if waited > 240:
+                        raise RuntimeError("Moonshine load timed out")
+            return eng, kind
+        # Heavy tab instance (never the live singleton).
+        eng = self._tab_heavy("note", kind, sel.get("wmodel"))
+        if eng is None:
+            raise RuntimeError(f"{kind} engine unavailable")
+        if not eng.is_ready:
+            try:
+                if not getattr(eng, "_loading", False):
+                    eng.load()
+            except Exception:
+                pass
+        waited = 0
+        label = ("Canary-1B" if kind == "Canary-1B"
+                 else f"Whisper {sel.get('wmodel', '')}")
+        while not eng.is_ready:
+            if cancel_event.is_set():
+                raise InterruptedError("cancelled")
+            if not getattr(eng, "_loading", True):
+                err = getattr(eng, "_last_error", None) or "load failed"
+                raise RuntimeError(f"{label} failed to load: {err}")
+            if waited % 5 == 0:
+                prog(0.05, f"Loading {label} ({waited}s)...")
+            _t.sleep(0.5)
+            waited += 1
+            if waited > 1200:
+                raise RuntimeError(f"{label} load timed out")
+        if kind == "Whisper":
+            try:
+                if not self._whisper_cache_ok(eng, sel.get("wmodel")):
+                    raise RuntimeError(f"{label} model mismatch - retry")
+            except RuntimeError:
+                raise
+            except Exception:
+                pass
+        return eng, kind
+
+    def _note_file_work(self, path: str):
+        """Extract -> transcribe (chunked) -> sentences -> append. Runs off
+        the GUI thread; all Tk touches go via after()."""
+        import os as _os
+        from pathlib import Path as _P
+        cancel_event = self._note_file_cancel
+        prog = self._note_file_prog
+        gui = self.gui
+
+        def _done(ok, msg):
+            try:
+                if gui is not None:
+                    gui.after(0, lambda: gui.note_file_done(ok, msg))
+            except Exception:
+                pass
+
+        try:
+            if not path or not _os.path.exists(path):
+                _done(False, "File not found - pick it again")
+                return
+            try:
+                from srt import SUPPORTED_EXTS
+                if _P(path).suffix.lower() not in SUPPORTED_EXTS:
+                    _done(False,
+                          f"Unsupported type {_P(path).suffix} "
+                          f"({', '.join(SUPPORTED_EXTS)})")
+                    return
+            except Exception:
+                pass
+            if cancel_event.is_set():
+                _done(False, "Cancelled")
+                return
+            sel = self.tab_selection("note")
+            prog(0.03, "Resolving note engine...")
+            try:
+                eng, kind = self._note_file_resolve_engine(sel, cancel_event,
+                                                           prog)
+            except InterruptedError:
+                _done(False, "Cancelled")
+                return
+            except Exception as e:
+                _done(False, f"Engine error: {e}")
+                return
+            # ffmpeg extract to 16k mono wav (temp, beside source to avoid
+            # cross-drive moves; always cleaned up).
+            try:
+                import srt as _srtmod
+                ffmpeg = _srtmod.get_ffmpeg_exe()
+            except Exception:
+                ffmpeg = None
+            if not ffmpeg:
+                _done(False, "ffmpeg not found - run setup.bat once")
+                return
+            src = _P(path)
+            tmp_wav = src.parent / (src.stem + ".note_tmp16k.wav")
+            try:
+                if tmp_wav.resolve() == src.resolve():
+                    tmp_wav = tmp_wav.with_name(src.stem + "_note16k.wav")
+            except Exception:
+                pass
+            try:
+                prog(0.08, "Extracting audio (ffmpeg 16kHz mono)...")
+                _srtmod.extract_audio(src, tmp_wav, ffmpeg, cancel_event,
+                                      normalize_audio=False)
+            except InterruptedError:
+                try:
+                    tmp_wav.unlink(missing_ok=True)
+                except Exception:
+                    pass
+                _done(False, "Cancelled")
+                return
+            except Exception as e:
+                try:
+                    tmp_wav.unlink(missing_ok=True)
+                except Exception:
+                    pass
+                _done(False, f"Audio extract failed: {e}")
+                return
+            try:
+                if cancel_event.is_set():
+                    _done(False, "Cancelled")
+                    return
+                texts = self._note_file_transcribe(
+                    eng, kind, sel, tmp_wav, cancel_event, prog)
+            finally:
+                try:
+                    tmp_wav.unlink(missing_ok=True)
+                except Exception:
+                    pass
+            if cancel_event.is_set():
+                _done(False, "Cancelled")
+                return
+            raw = " ".join(t for t in (texts or []) if t and t.strip()).strip()
+            if not raw:
+                _done(False, "No speech detected in file")
+                return
+            try:
+                from note_engine import (format_note_sentences as _fmt,
+                                         format_note_file_text as _head)
+            except Exception:
+                _fmt = lambda t: (t or "").strip()  # noqa: E731
+                _head = lambda n, e, b: (b or "").strip()  # noqa: E731
+            try:
+                engine_label = self._describe_tab_engine("note")
+            except Exception:
+                engine_label = str(kind)
+            sentences = _fmt(raw)
+            if not sentences:
+                sentences = raw.strip()
+            try:
+                formatted = _head(src.name, engine_label, sentences)
+            except Exception:
+                formatted = sentences
+            try:
+                if gui is not None:
+                    gui.after(
+                        0, lambda f=formatted: gui.append_note_file_text(f))
+            except Exception:
+                pass
+            # Sentence count for an honest completion line.
+            try:
+                n_sent = len([l for l in sentences.split("\n") if l.strip()])
+            except Exception:
+                n_sent = 0
+            _done(True,
+                  f"File done: {src.name} ({n_sent} sentence"
+                  f"{'' if n_sent == 1 else 's'}) - review, Save TXT or Copy")
+        except InterruptedError:
+            _done(False, "Cancelled")
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            _done(False, f"File error: {e}")
+
+    def _note_file_transcribe(self, eng, kind, sel, tmp_wav, cancel_event,
+                              prog):
+        """Chunked file transcription -> list of plain texts. Raises on
+        cancel; engine failure strings become RuntimeError (never sentences)."""
+        import os as _os
+        import tempfile as _tf
+        texts = []
+        first_error = None
+
+        def _is_err(t):
+            try:
+                s = str(t or "").strip()
+                return (not s) or s.startswith(
+                    ("[Error:", "[Whisper Error:", "[Canary Error:"))
+            except Exception:
+                return True
+
+        # Whisper fast path: single native pass with timestamps.
+        if kind == "Whisper":
+            try:
+                eff_src = "auto"
+                try:
+                    # Note tab has no per-file language picker: follow the
+                    # shared live whisper src lang (translate outputs en).
+                    eff_src = str(self.config.get("whisper_src_lang",
+                                                  "auto") or "auto")
+                except Exception:
+                    eff_src = "auto"
+                try:
+                    eff_task = str(self.config.get("whisper_task",
+                                                   "translate") or "translate")
+                except Exception:
+                    eff_task = "translate"
+                prog(0.15, "Whisper transcribing (single pass)...")
+                fn = getattr(eng, "transcribe_file_segments", None)
+                if cancel_event.is_set():
+                    raise InterruptedError("cancelled")
+                if callable(fn):
+                    native = fn(str(tmp_wav), task=eff_task,
+                                source_lang=eff_src)
+                else:
+                    native = []
+                joined = " ".join(
+                    str(t or "").strip() for _, _, t in (native or [])
+                    if str(t or "").strip())
+                if joined and not _is_err(joined):
+                    return [joined]
+                if _is_err(joined) and joined:
+                    first_error = joined.strip()
+                # Empty native pass -> fall through to VAD chunks.
+            except InterruptedError:
+                raise
+            except Exception as e:
+                import traceback
+                traceback.print_exc()
+                first_error = first_error or f"[Whisper Error: {e}]"
+        # Chunked path (Moonshine/Canary always; Whisper fallback).
+        try:
+            import srt as _srtmod
+            import soundfile as _sf
+            audio, sr = _srtmod.load_wav_16k(tmp_wav)
+            spans = _srtmod.vad_segments(audio, sr)
+            if not spans:
+                if first_error:
+                    raise RuntimeError(first_error)
+                return []
+            n = max(1, len(spans))
+            for i, (s, e) in enumerate(spans):
+                if cancel_event.is_set():
+                    raise InterruptedError("cancelled")
+                base = 0.15 + 0.75 * i / n
+                prog(base, f"Transcribing {i + 1}/{n} ({s:.0f}s)...")
+                s_i, e_i = int(s * sr), int(e * sr)
+                chunk = audio[s_i:e_i]
+                text = ""
+                try:
+                    if kind == "Canary-1B":
+                        # Canary transcribes wav files; write the slice out.
+                        with _tf.NamedTemporaryFile(suffix=".wav",
+                                                     delete=False) as tf:
+                            tmp_c = tf.name
+                        try:
+                            _sf.write(tmp_c, chunk, samplerate=sr)
+                            text = eng.transcribe_file(tmp_c)
+                        finally:
+                            try:
+                                _os.unlink(tmp_c)
+                            except Exception:
+                                pass
+                    else:
+                        # Moonshine + Whisper fallback: in-memory array.
+                        text = eng.transcribe(chunk, sr)
+                except Exception as ex:
+                    text = f"[Error: {ex}]"
+                t = str(text or "").strip()
+                if t and not _is_err(t):
+                    texts.append(t)
+                elif t and first_error is None:
+                    first_error = t
+                prog(0.15 + 0.75 * (i + 1) / n,
+                     f"Chunk {i + 1}/{n} done")
+            if texts:
+                return texts
+            if first_error:
+                raise RuntimeError(first_error)
+            return []
+        except InterruptedError:
+            raise
+        except RuntimeError:
+            raise
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            raise RuntimeError(f"transcription failed: {e}")
+
     def _on_close(self):
         try:
             if self.gui and not self.gui.confirm_note_processing():
@@ -3336,6 +3813,10 @@ class MoonshineSTTApp:
         try:
             if self.gui and not self.gui.confirm_note_close():
                 return
+        except Exception:
+            pass
+        try:
+            self._note_file_cancel.set()
         except Exception:
             pass
         try:

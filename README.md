@@ -74,6 +74,13 @@ Moonshine stay on CPU.
   (dual engines = dual RAM, stated upfront), otherwise idle engines are
   unloaded to make room. Mic dictation, an SRT batch, and Note can all run
   at once on different engines.
+- **Note tab** — mic dictation in 40–80s chunks plus **file import**:
+  drag & drop (or Browse) any audio/video (`wav/mp3/m4a/mp4/mkv/avi/mov/…`),
+  *Transcribe File* runs it through this tab's engine (Whisper single-pass,
+  Canary/Moonshine VAD-chunked) with progress + cancel, then appends the
+  result **one sentence per line** (Latin + CJK aware, abbreviations kept).
+  *Save as TXT* writes UTF-8, *Copy All* copies to clipboard; mic and file
+  notes share the same editable box (quit warns while a file still runs).
 - **One primary button** — the action slot morphs with the queue: files
   still need SRTs → *Generate SRT*; every queued file already has one →
   *Convert to MP4*. Tick *Burn MP4 automatically after SRT* and one click
@@ -232,7 +239,7 @@ overwriting (all / per-file / abort); the app remembers your last tab.
 moonshine_stt.py   main app: F2 hook, live queue, SRT jobs, config
 gui.py             customtkinter dark UI (Live + SRT File + Note tabs)
 engine.py          Moonshine v2 wrapper
-note_engine.py     Note-mode chunked recorder + async transcriber
+note_engine.py     Note-mode chunked recorder + async transcriber + sentence formatter (file import)
 recorder.py        microphone capture (16 kHz)
 input_sim.py       clipboard + Ctrl+V insertion
 srt.py             SRT backend: ffmpeg extract, VAD, word-anchored cue packing,
@@ -286,7 +293,12 @@ requirements*.txt  dependency pins (base / Canary / Whisper)
 
 ## Changelog
 
-### v1.2.23 (latest)
+### v1.3.0 (latest)
+
+- Note file import: drag & drop (or Browse) audio/video (wav, mp3, mp4, mkv, …) into the Note tab — transcribes with the Note tab's engine (Whisper single-pass, Canary/Moonshine VAD-chunked) with progress + cancel, then appends one sentence per line (Latin + CJK, abbreviations kept)
+- Note export stays UTF-8 TXT + clipboard: imported sentences land in the same editable box, so Save as TXT (UTF-8) and Copy All work for mic and file notes alike; quit warns while a file import still runs and the tab is remembered across restarts
+
+### v1.2.23
 
 - Note mic callback no longer calls out while holding the recorder lock — a slow level-meter update can never stall the audio stream and drop live speech
 - Removed dead code the audit proved unreferenced (unused config helper, write-only unload counter)

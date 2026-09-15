@@ -995,6 +995,11 @@ class MoonshineGUI(ctk.CTk):
         self._note_pending = False  # auto-start armed while engine loads
         self._note_auto_mp3s = set()  # session MP3s auto-saved this run
         self._note_saved_mp3s = set()  # ...of which the user kept via Save Audio
+        self._note_file_path = None  # imported audio/video file for Note
+        self._note_file_running = False
+        self._note_file_start_cb = None
+        self._note_file_cancel_cb = None
+        self._note_file_prequest_cb = None
 
         scroll = ctk.CTkScrollableFrame(tab, fg_color="transparent")
         scroll.pack(fill="both", expand=True, padx=4, pady=4)
@@ -1112,6 +1117,89 @@ class MoonshineGUI(ctk.CTk):
             self.note_text.bind("<Key>", self._note_mark_dirty)
         except Exception:
             pass
+
+        # ── Import audio/video file card (drag & drop -> note sentences) ──
+        import_card = ctk.CTkFrame(scroll, fg_color=BG_CARD, corner_radius=16)
+        import_card.grid(row=4, column=0, sticky="ew", padx=4, pady=(0, 8))
+        import_card.grid_columnconfigure(0, weight=1)
+        ctk.CTkLabel(import_card, text="Import Audio / Video File",
+                     font=("Segoe UI", 12, "bold"),
+                     text_color=FG_DIM).pack(anchor="w", padx=16, pady=(12, 2))
+        ctk.CTkLabel(import_card,
+                     text="Drop a wav, mp3, mp4, mkv… file below (or Browse). "
+                          "It transcribes with this tab's engine and appends "
+                          "one sentence per line. Save as TXT (UTF-8) or Copy All.",
+                     font=("Segoe UI", 10), text_color=FG_DIM,
+                     wraplength=400, justify="left"
+                     ).pack(anchor="w", padx=16, pady=(0, 6))
+        self.note_file_drop = ctk.CTkTextbox(
+            import_card, font=("Segoe UI", 11),
+            fg_color=BG_INPUT, text_color=FG_SECONDARY,
+            corner_radius=8, height=52,
+            activate_scrollbars=False, wrap="word")
+        self.note_file_drop.pack(fill="x", padx=12, pady=(0, 6))
+        self.note_file_drop.insert(
+            "1.0", "Drag & drop audio/video here,\nor click Browse...")
+        self.note_file_drop.configure(state="disabled")
+        try:
+            self._enable_drop_to(self.note_file_drop,
+                                 self._on_note_drop_files)
+        except Exception:
+            try:
+                self._enable_drop(self.note_file_drop)
+            except Exception:
+                pass
+        try:
+            self._enable_drop_to(import_card, self._on_note_drop_files)
+        except Exception:
+            pass
+        self.note_file_label = ctk.CTkLabel(
+            import_card, text="No file selected",
+            font=("Segoe UI", 10), text_color=FG_DIM,
+            wraplength=400, justify="left")
+        self.note_file_label.pack(anchor="w", padx=16, pady=(0, 6))
+        file_btn_row = ctk.CTkFrame(import_card, fg_color="transparent")
+        file_btn_row.pack(fill="x", padx=12, pady=(0, 6))
+        file_btn_row.grid_columnconfigure(0, weight=1)
+        file_btn_row.grid_columnconfigure(1, weight=1)
+        file_btn_row.grid_columnconfigure(2, weight=1)
+        self.note_file_browse_btn = ctk.CTkButton(
+            file_btn_row, text="Browse...", font=("Segoe UI", 12),
+            fg_color=BTN_DIM, hover_color=BTN_DIM_HOVER, height=36,
+            corner_radius=8, text_color=FG_SECONDARY,
+            command=self._note_browse_file)
+        self.note_file_browse_btn.grid(row=0, column=0, padx=(0, 4), sticky="ew")
+        self.note_file_start_btn = ctk.CTkButton(
+            file_btn_row, text="▶  Transcribe File", font=("Segoe UI", 12, "bold"),
+            fg_color=SUCCESS, hover_color=BTN_GO_HOVER, height=36,
+            corner_radius=8, text_color=BTN_TEXT,
+            command=self._on_note_file_start)
+        self.note_file_start_btn.grid(row=0, column=1, padx=(4, 4), sticky="ew")
+        self.note_file_cancel_btn = ctk.CTkButton(
+            file_btn_row, text="Cancel", font=("Segoe UI", 12),
+            fg_color=DANGER, hover_color=BTN_DANGER_HOVER, height=36,
+            corner_radius=8, text_color=BTN_TEXT, state="disabled",
+            command=self._on_note_file_cancel)
+        self.note_file_cancel_btn.grid(row=0, column=2, padx=(4, 0), sticky="ew")
+        self.note_file_bar = ctk.CTkProgressBar(
+            import_card, fg_color=BG_INPUT, progress_color=ACCENT,
+            height=10, corner_radius=6)
+        self.note_file_bar.pack(fill="x", padx=12, pady=(0, 4))
+        try:
+            self.note_file_bar.set(0)
+        except Exception:
+            pass
+        file_prog_row = ctk.CTkFrame(import_card, fg_color="transparent")
+        file_prog_row.pack(fill="x", padx=16, pady=(0, 12))
+        self.note_file_pct = ctk.CTkLabel(
+            file_prog_row, text="0%", font=("Segoe UI", 10, "bold"),
+            text_color=FG_SECONDARY)
+        self.note_file_pct.pack(side="right")
+        self.note_file_status = ctk.CTkLabel(
+            file_prog_row, text="Idle - pick a file to begin",
+            font=("Segoe UI", 10), text_color=FG_DIM,
+            wraplength=320, justify="left")
+        self.note_file_status.pack(side="left")
 
         # ── Engine pick (per-tab: independent from Live/SRT) ──
         info_card = ctk.CTkFrame(scroll, fg_color=BG_CARD, corner_radius=12)
@@ -1767,19 +1855,25 @@ class MoonshineGUI(ctk.CTk):
         return recording, max(0, pending)
 
     def confirm_note_processing(self) -> bool:
-        """True = proceed with close. Warns when the mic is still open or
-        chunks are still transcribing - quitting then loses audio/text in
-        flight. Never raises (close must never brick)."""
+        """True = proceed with close. Warns when the mic is still open,
+        chunks are still transcribing, or a file import is running -
+        quitting then loses audio/text in flight. Never raises."""
         try:
             recording, pending = self.note_processing_pending()
         except Exception:
             return True
-        if not recording and pending <= 0:
+        try:
+            file_running = bool(getattr(self, "_note_file_running", False))
+        except Exception:
+            file_running = False
+        if not recording and pending <= 0 and not file_running:
             return True
         try:
             from tkinter import messagebox as _mb
             if recording:
                 what = "still recording"
+            elif file_running:
+                what = "still transcribing an imported file"
             else:
                 what = (f"{pending} chunk{'s' if pending != 1 else ''} "
                         f"still transcribing")
@@ -1900,6 +1994,252 @@ class MoonshineGUI(ctk.CTk):
             pass
 
 
+    # ── Note file import (drag & drop audio/video -> sentences) ──
+    def _note_browse_file(self):
+        if getattr(self, "_note_file_running", False):
+            return
+        try:
+            from tkinter import filedialog
+            try:
+                from srt import SUPPORTED_EXTS
+                exts = " ".join(f"*{e}" for e in SUPPORTED_EXTS)
+            except Exception:
+                exts = "*.wav *.mp3 *.mp4 *.mkv *.m4a"
+            paths = filedialog.askopenfilenames(
+                title="Pick an audio or video file for Note",
+                filetypes=[("Media", exts), ("All files", "*.*")])
+            if paths:
+                self.add_note_files(list(paths))
+        except Exception:
+            pass
+
+    def add_note_files(self, paths) -> int:
+        """Queue a single file for Note import (last valid file wins).
+        Returns 1 when a file was accepted, else 0. Never raises."""
+        try:
+            try:
+                from srt import SUPPORTED_EXTS as _exts
+            except Exception:
+                _exts = ()
+            import os as _os
+            picked = None
+            for raw in (paths or []):
+                p = str(raw or "").strip().strip('"')
+                if not p:
+                    continue
+                if _exts and _os.path.splitext(p)[1].lower() not in _exts:
+                    try:
+                        self.set_note_file_progress(
+                            0, f"skip (unsupported type): {_os.path.basename(p)}")
+                    except Exception:
+                        pass
+                    continue
+                if not _os.path.exists(p):
+                    continue
+                picked = p
+            if picked is None:
+                return 0
+            if getattr(self, "_note_file_running", False):
+                try:
+                    self.set_note_file_progress(0, "Busy - wait for current file")
+                except Exception:
+                    pass
+                return 0
+            self._note_file_path = picked
+            try:
+                import os as _os2
+                self.note_file_label.configure(
+                    text=f"Selected: {_os2.path.basename(picked)}")
+            except Exception:
+                pass
+            try:
+                self.note_file_drop.configure(state="normal")
+                self.note_file_drop.delete("1.0", "end")
+                import os as _os3
+                self.note_file_drop.insert(
+                    "1.0", f"Ready: {_os3.path.basename(picked)}\n"
+                           "Press Transcribe File.")
+                self.note_file_drop.configure(state="disabled")
+            except Exception:
+                pass
+            try:
+                self.set_note_file_progress(0, "Ready - press Transcribe File")
+            except Exception:
+                pass
+            return 1
+        except Exception:
+            return 0
+
+    def _on_note_drop_files(self, event):
+        try:
+            files = self._parse_drop(getattr(event, "data", ""))
+            if files:
+                self.add_note_files(files)
+        except Exception:
+            pass
+
+    def get_note_file_path(self):
+        try:
+            return str(getattr(self, "_note_file_path", None) or "")
+        except Exception:
+            return ""
+
+    def set_note_file_callbacks(self, on_start=None, on_cancel=None,
+                                on_prequest=None):
+        try:
+            self._note_file_start_cb = on_start if callable(on_start) else None
+            self._note_file_cancel_cb = on_cancel if callable(on_cancel) else None
+            self._note_file_prequest_cb = (
+                on_prequest if callable(on_prequest) else None)
+        except Exception:
+            pass
+
+    def set_note_file_progress(self, frac: float, msg: str = ""):
+        try:
+            frac = max(0.0, min(1.0, float(frac)))
+        except Exception:
+            frac = 0.0
+        try:
+            self.note_file_bar.set(frac)
+            self.note_file_pct.configure(text=f"{int(round(frac * 100))}%")
+            if msg:
+                self.note_file_status.configure(text=msg)
+        except Exception:
+            pass
+
+    def set_note_file_running(self, running: bool):
+        self._note_file_running = bool(running)
+        try:
+            self.note_file_start_btn.configure(
+                state="disabled" if running else "normal")
+        except Exception:
+            pass
+        try:
+            self.note_file_cancel_btn.configure(
+                state="normal" if running else "disabled")
+        except Exception:
+            pass
+        try:
+            self.note_file_browse_btn.configure(
+                state="disabled" if running else "normal")
+        except Exception:
+            pass
+
+    def note_file_done(self, ok: bool, msg: str):
+        self.set_note_file_running(False)
+        try:
+            self.set_note_file_progress(1.0 if ok else 0.0, msg)
+        except Exception:
+            pass
+        try:
+            self.note_status_label.configure(
+                text=msg, text_color=(SUCCESS if ok else DANGER))
+        except Exception:
+            pass
+
+    def append_note_file_text(self, formatted_text: str):
+        """Append imported-file sentences to the note box (editable box is
+        preserved; placeholder cleared; dirty flagged). Never raises."""
+        try:
+            txt = str(formatted_text or "").strip()
+            if not txt:
+                return
+            try:
+                current = self.note_text.get("1.0", "end").strip()
+            except Exception:
+                current = ""
+            try:
+                if (not current
+                        or current == "Transcription will appear here as you speak..."):
+                    self.note_text.delete("1.0", "end")
+                else:
+                    # Separate from previous content (mic or file).
+                    if not current.endswith("\n"):
+                        self.note_text.insert("end", "\n")
+                    self.note_text.insert("end", "\n")
+                self.note_text.insert("end", txt + "\n\n")
+                try:
+                    self.note_text.see("end")
+                except Exception:
+                    pass
+                self._note_dirty = True
+            except Exception:
+                pass
+        except Exception:
+            pass
+
+    def _on_note_file_start(self):
+        if getattr(self, "_note_recording", False):
+            try:
+                self.set_note_file_progress(0, "Stop recording first")
+            except Exception:
+                pass
+            return
+        if getattr(self, "_note_file_running", False):
+            return
+        path = self.get_note_file_path()
+        if not path:
+            try:
+                self.set_note_file_progress(0, "Pick a file first (Browse or drop)")
+            except Exception:
+                pass
+            return
+        # Dual-engine pre-flight (another session may hold a heavy engine).
+        if getattr(self, "_note_file_prequest_cb", None) is not None:
+            try:
+                _pv = self._note_file_prequest_cb() or {"go": True}
+            except Exception:
+                _pv = {"go": True}
+            if isinstance(_pv, dict) and "confirm" in _pv:
+                try:
+                    from tkinter import messagebox as _mb2
+                    _yes = bool(_mb2.askyesno(
+                        "Load second engine?",
+                        str(_pv.get("confirm") or "Another session is active."),
+                        parent=self))
+                except Exception:
+                    _yes = False
+                if not _yes:
+                    try:
+                        self.set_note_file_progress(0, "File transcription cancelled")
+                    except Exception:
+                        pass
+                    return
+            elif isinstance(_pv, dict) and "wait" in _pv:
+                try:
+                    self.set_note_file_progress(
+                        0, str(_pv.get("wait") or "Engine loading..."))
+                except Exception:
+                    pass
+                return
+            elif isinstance(_pv, dict) and "abort" in _pv:
+                try:
+                    self.set_note_file_progress(0, "Engine not ready - try again")
+                except Exception:
+                    pass
+                return
+        if self._note_file_start_cb:
+            try:
+                import threading as _th
+                self.set_note_file_running(True)
+                self.set_note_file_progress(0.02, "Starting file transcription...")
+                _th.Thread(target=self._note_file_start_cb,
+                           args=(path,), daemon=True).start()
+            except Exception:
+                try:
+                    self.set_note_file_running(False)
+                except Exception:
+                    pass
+
+    def _on_note_file_cancel(self):
+        if self._note_file_cancel_cb:
+            try:
+                import threading as _th
+                _th.Thread(target=self._note_file_cancel_cb,
+                           daemon=True).start()
+            except Exception:
+                pass
+
     def _on_tab_changed(self, value=None):
         try:
             name = self.tabs.get()
@@ -1914,7 +2254,7 @@ class MoonshineGUI(ctk.CTk):
         self._tab_callback = cb if callable(cb) else None
     def set_active_tab(self, name: str):
         try:
-            if name in ("Live", "SRT File"):
+            if name in ("Live", "SRT File", "Note"):
                 self.tabs.set(name)
         except Exception:
             pass
@@ -2585,9 +2925,11 @@ class MoonshineGUI(ctk.CTk):
         return k if k in ENGINE_CHOICES else "Moonshine v2"
 
     def note_session_active(self):
-        """True while Note records or transcriptions are outstanding."""
+        """True while Note records, transcribes, or imports a file."""
         try:
             if bool(getattr(self, "_note_recording", False)):
+                return True
+            if bool(getattr(self, "_note_file_running", False)):
                 return True
             sub = int(getattr(self, "_note_submitted", 0) or 0)
             done = int(getattr(self, "_note_done", 0) or 0)
@@ -2893,14 +3235,22 @@ class MoonshineGUI(ctk.CTk):
     def set_record_callback(self, on_start: Callable, on_stop: Callable):
         self._on_record_start = on_start if callable(on_start) else None
         self._on_record_stop = on_stop if callable(on_stop) else None
-    def _enable_drop(self, widget) -> bool:
+    def _enable_drop_to(self, widget, handler) -> bool:
+        """Register a drop target with an explicit handler (Note vs SRT).
+        Never raises; returns True when tkinterdnd2 accepted the widget."""
         try:
             from tkinterdnd2 import DND_FILES
             import tkinterdnd2.TkinterDnD as _dndmod
             _dndmod._require(widget)
             _dndmod.DnDWrapper.drop_target_register(widget, DND_FILES)
-            _dndmod.DnDWrapper.dnd_bind(widget, "<<Drop>>", self._on_drop_files)
+            _dndmod.DnDWrapper.dnd_bind(widget, "<<Drop>>", handler)
             return True
+        except Exception:
+            return False
+
+    def _enable_drop(self, widget) -> bool:
+        try:
+            return self._enable_drop_to(widget, self._on_drop_files)
         except Exception:
             return False
     def _parse_drop(self, data: str):
