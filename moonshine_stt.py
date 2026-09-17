@@ -420,7 +420,9 @@ class MoonshineSTTApp:
                             self._on_srt_input_lang_changed,
                             self._on_srt_output_lang_changed,
                         )
-                        self.gui.set_srt_lang_state(self.config.get("engine", "Moonshine v2"))
+                        # SRT menus follow the SRT tab's engine (aligned when
+                        # its engine state is painted below); Live flows
+                        # must not drive them.
                         try:
                             self.gui.refresh_lang_options(
                                 self.config.get("engine", "Moonshine v2"))
@@ -2390,7 +2392,10 @@ class MoonshineSTTApp:
                 except Exception:
                     pass
                 try:
-                    self.gui.set_srt_lang_state(display_label)
+                    # A Live engine switch must not drive the SRT language
+                    # menus: they follow the SRT tab's own engine (aligned
+                    # whenever its engine state is painted).
+                    self.gui._refresh_srt_lang_state()
                 except Exception:
                     pass
                 try:

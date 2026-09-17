@@ -306,7 +306,17 @@ requirements*.txt  dependency pins (base / Canary / Whisper)
 
 ## Changelog
 
-### v1.4.0 (latest)
+### v1.4.1 (latest)
+
+- Subtitle timing: a batch no longer fails when only a minority of segments
+  lack matching word timestamps (common in Whisper translate mode) — the
+  matched majority keeps exact timing, the rest is estimated; the hard fail
+  now only triggers on systemic loss (>50% unmatched)
+- SRT language menus follow the SRT tab's own engine (they used to track
+  the Live engine, so they stayed greyed out with SRT=Whisper + Live=
+  Moonshine); lists narrow per engine with safe fallbacks
+
+### v1.4.0
 
 - Import tab: the Note tab's *Import Audio / Video File* card is now a
   standalone 4th tab with its own engine + model row, progress, and

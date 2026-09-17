@@ -65,6 +65,15 @@ CUE_START_LEAD_S = 0.060
 CUE_END_EARLY_S = 0.030
 WORD_PAUSE_BREAK_S = 0.65
 
+# Strict-timing tolerance: fail the job only when MORE than this fraction
+# of segments lack matching word timestamps (systemic alignment failure -
+# wrong engine/language, broken words). A minority of unmatched segments
+# is normal - especially in Whisper translate mode, where the generated
+# English tokens don't align 1:1 to the source audio - so those keep exact
+# word timing for the matched majority and get estimated timing instead
+# of failing the whole batch.
+STRICT_TIMING_MAX_MISSING_RATIO = 0.5
+
 SUPPORTED_EXTS = (
     ".mp4", ".mkv", ".avi", ".mov", ".wmv", ".flv", ".webm",
     ".m4v", ".mpeg", ".mpg", ".ts", ".mts", ".m2ts",
@@ -2239,17 +2248,22 @@ def run_srt_job(
             ]
 
         if missing and strict_timing and all_words:
-            raise SubtitleTimingError(
-                f"{len(missing)} of {len(segments)} segments lack matching "
-                "word timestamps. Accurate sentence splitting requires "
-                "word timestamps or an appropriate alignment engine. "
-                "No approximate SRT was written."
-            )
+            missing_ratio = len(missing) / max(1, len(segments))
+            if missing_ratio > STRICT_TIMING_MAX_MISSING_RATIO:
+                raise SubtitleTimingError(
+                    f"{len(missing)} of {len(segments)} segments lack "
+                    "matching word timestamps. Accurate sentence splitting "
+                    "requires word timestamps or an appropriate alignment "
+                    "engine. No approximate SRT was written."
+                )
 
         if missing:
             log(
-                f"Approximate timing enabled for {len(missing)} segments. "
-                "Their word boundaries are estimated, not measured."
+                f"Approximate timing enabled for {len(missing)} of "
+                f"{len(segments)} segments. "
+                "Their word boundaries are estimated, not measured "
+                "(common in translate mode, where generated tokens "
+                "don't align 1:1 to the source audio)."
             )
         else:
             log(

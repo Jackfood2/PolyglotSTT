@@ -546,6 +546,49 @@ class SrtTabMixin:
                     self.srt_model_var.set(label)
         except Exception:
             pass
+        # The Input/Output language menus belong to THIS tab's engine, not
+        # Live's: re-align them on every engine paint (init, mirror,
+        # adopt, revert, user pick). Without this they stayed frozen on
+        # whatever the Live engine was when the app started.
+        try:
+            self._refresh_srt_lang_state()
+        except Exception:
+            pass
+
+    def _refresh_srt_lang_state(self):
+        """Align SRT language menus + hint with the SRT tab's own engine.
+        Never touches the Live Src menu. Never raises."""
+        try:
+            kind = self.get_srt_engine_kind()
+        except Exception:
+            kind = "Moonshine v2"
+        try:
+            self.set_srt_lang_state(kind)
+        except Exception:
+            pass
+        if kind == "Canary-1B":
+            srt_in_codes = list(CANARY_SRT_IN_CODES)
+            srt_out_codes = list(CANARY_SRT_OUT_CODES)
+        else:
+            srt_in_codes = list(WHISPER_SRT_IN_CODES)
+            srt_out_codes = list(WHISPER_SRT_OUT_CODES)
+        try:
+            self.srt_input_lang_menu.configure(
+                values=[SRT_LANG_NAMES[c] for c in srt_in_codes])
+            self.srt_output_lang_menu.configure(
+                values=[SRT_LANG_NAMES[c] for c in srt_out_codes])
+        except Exception:
+            pass
+        try:
+            in_code, out_code = self.get_srt_lang_codes()
+            if in_code not in srt_in_codes:
+                self.srt_input_lang_var.set(
+                    SRT_LANG_NAMES[srt_in_codes[0]])
+            if out_code not in srt_out_codes:
+                self.srt_output_lang_var.set(
+                    SRT_LANG_NAMES[srt_out_codes[0]])
+        except Exception:
+            pass
 
     def get_srt_engine_kind(self):
         try:
@@ -1910,22 +1953,15 @@ class SrtTabMixin:
         return in_code, out_code
 
     def refresh_lang_options(self, engine_kind: str = ""):
+        # engine_kind drives the LIVE Src menu only. The SRT Input/Output
+        # menus follow the SRT tab's own engine (see
+        # _refresh_srt_lang_state) - a Live switch must never rewrite them.
         eng = engine_kind or self.engine_var.get()
         is_canary = (eng == "Canary-1B")
         live_codes = CANARY_LIVE_SRC_CODES if is_canary else WHISPER_LANGS
         live_displays = [SRT_LANG_NAMES[c] for c in live_codes]
-        if is_canary:
-            srt_in_codes, srt_out_codes = CANARY_SRT_IN_CODES, CANARY_SRT_OUT_CODES
-        elif eng == "Whisper":
-            srt_in_codes, srt_out_codes = WHISPER_SRT_IN_CODES, WHISPER_SRT_OUT_CODES
-        else:
-            srt_in_codes, srt_out_codes = WHISPER_SRT_IN_CODES, WHISPER_SRT_OUT_CODES
         try:
             self.canary_lang_menu.configure(values=live_displays)
-            self.srt_input_lang_menu.configure(
-                values=[SRT_LANG_NAMES[c] for c in srt_in_codes])
-            self.srt_output_lang_menu.configure(
-                values=[SRT_LANG_NAMES[c] for c in srt_out_codes])
         except Exception:
             pass
         try:
@@ -1937,13 +1973,7 @@ class SrtTabMixin:
         except Exception:
             pass
         try:
-            in_code, out_code = self.get_srt_lang_codes()
-            if in_code not in srt_in_codes:
-                self.srt_input_lang_var.set(
-                    SRT_LANG_NAMES[srt_in_codes[0]])
-            if out_code not in srt_out_codes:
-                self.srt_output_lang_var.set(
-                    SRT_LANG_NAMES[srt_out_codes[0]])
+            self._refresh_srt_lang_state()
         except Exception:
             pass
         try:
