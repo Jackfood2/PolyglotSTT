@@ -21,6 +21,20 @@ CANARY_TARGET_LANGS = {
     "transcribe": ["en", "de", "es", "fr"],
     "translate": ["en"],
 }
+_CANARY_TRANSCRIBE_KWARGS = ("source_lang", "target_lang", "task", "pnc", "batch_size", "verbose")
+def _is_canary_signature_mismatch(exc: BaseException) -> bool:
+    try:
+        msg = str(exc).lower()
+    except Exception:
+        return False
+    if "unexpected keyword" in msg or "got an unexpected keyword" in msg:
+        return True
+    if "unexpected argument" in msg or "unknown keyword" in msg or "unknown argument" in msg:
+        return True
+    for _kw in _CANARY_TRANSCRIBE_KWARGS:
+        if _kw in msg:
+            return True
+    return False
 def _canary_dir_size(path) -> int:
     import os as _os
     try:
@@ -80,6 +94,7 @@ class CanaryEngine:
         self._on_ready = on_ready
         self._lock = threading.Lock()
         self._infer_lock = threading.Lock()
+        self._load_lock = threading.Lock()
         self._loading = False
         self._last_error: Optional[str] = None
         self._load_generation = 0
@@ -110,87 +125,110 @@ class CanaryEngine:
             generation = self._load_generation
             self._loading = True
             self._ready = False
+            self._last_error = None
         def _load():
+            # FIX 3: fast lock-free staleness check before serializing builds.
+            if generation != self._load_generation:
+                return
+            model = None
             try:
-                self._ensure_dirs()
-                import torch
-                try:
-                    import nemo.collections.asr as nemo_asr
-                    local_nemo = CANARY_CACHE / "canary-1b.nemo"
-                    if local_nemo.exists() and local_nemo.stat().st_size > 100_000_000:
-                        model = nemo_asr.models.ASRModel.restore_from(
-                            restore_path=str(local_nemo), map_location="cpu"
-                        )
-                    else:
-                        model = nemo_asr.models.ASRModel.from_pretrained(
-                            model_name=self._model_name
-                        )
-                    model.eval()
-                    _want = (getattr(self, "device", "auto") or "auto")
-                    try:
-                        import gpu as _gpumod
-                        if _want == "cuda":
-                            _use_cuda = True
-                            _reason = "forced by compute setting"
-                            try:
-                                _tc = _gpumod.torch_cuda()
-                                if not _tc.get("ok"):
-                                    _use_cuda = False
-                                    _reason = f"forced cuda unusable ({_tc.get('reason', '?')})"
-                            except Exception:
-                                _use_cuda, _reason = False, "probe failed"
-                        elif _want == "cpu":
-                            _use_cuda, _reason = False, "forced by compute setting"
+                with self._load_lock:
+                    with self._lock:
+                        if generation != self._load_generation:
+                            _stale_before_build = True
                         else:
-                            _use_cuda, _reason = _gpumod.recommend_canary()
-                    except Exception:
-                        _use_cuda, _reason = False, "no gpu probe"
+                            _stale_before_build = False
+                    if _stale_before_build:
+                        return
+                    self._ensure_dirs()
+                    import torch
                     try:
-                        _has_cuda = bool(torch.cuda.is_available())
-                    except Exception:
-                        _has_cuda = False
-                    self._device_used = "cpu"
-                    if _use_cuda and _has_cuda:
+                        import nemo.collections.asr as nemo_asr
+                        local_nemo = CANARY_CACHE / "canary-1b.nemo"
+                        if local_nemo.exists() and local_nemo.stat().st_size > 100_000_000:
+                            model = nemo_asr.models.ASRModel.restore_from(
+                                restore_path=str(local_nemo), map_location="cpu"
+                            )
+                        else:
+                            model = nemo_asr.models.ASRModel.from_pretrained(
+                                model_name=self._model_name
+                            )
+                        model.eval()
+                        _want = (getattr(self, "device", "auto") or "auto")
                         try:
-                            model.cuda()
-                            self._device_used = "cuda"
-                            print(f"[Canary] using CUDA ({_reason})")
-                        except Exception as e_cuda:
-                            print(f"[Canary] cuda() failed ({e_cuda}) - staying on CPU")
-                    else:
-                        print(f"[Canary] using CPU ({_reason})")
-                except Exception as e_nemo:
-                    raise RuntimeError(f"NeMo load failed: {e_nemo}. Install nemo_toolkit[asr] offline via wheels\\")
+                            import gpu as _gpumod
+                            if _want == "cuda":
+                                _use_cuda = True
+                                _reason = "forced by compute setting"
+                                try:
+                                    _tc = _gpumod.torch_cuda()
+                                    if not _tc.get("ok"):
+                                        _use_cuda = False
+                                        _reason = f"forced cuda unusable ({_tc.get('reason', '?')})"
+                                except Exception:
+                                    _use_cuda, _reason = False, "probe failed"
+                            elif _want == "cpu":
+                                _use_cuda, _reason = False, "forced by compute setting"
+                            else:
+                                _use_cuda, _reason = _gpumod.recommend_canary()
+                        except Exception:
+                            _use_cuda, _reason = False, "no gpu probe"
+                        try:
+                            _has_cuda = bool(torch.cuda.is_available())
+                        except Exception:
+                            _has_cuda = False
+                        self._device_used = "cpu"
+                        if _use_cuda and _has_cuda:
+                            try:
+                                model.cuda()
+                                self._device_used = "cuda"
+                                print(f"[Canary] using CUDA ({_reason})")
+                            except Exception as e_cuda:
+                                print(f"[Canary] cuda() failed ({e_cuda}) - staying on CPU")
+                        else:
+                            print(f"[Canary] using CPU ({_reason})")
+                    except Exception as e_nemo:
+                        raise RuntimeError(f"NeMo load failed: {e_nemo}. Install nemo_toolkit[asr] offline via wheels\\")
                 with self._lock:
                     if generation != self._load_generation:
+                        stale_model = model
+                    else:
+                        stale_model = None
+                        self._model = model
+                        self._ready = True
+                        self._last_error = None
                         self._loading = False
-                        try:
-                            model.close()
-                        except Exception:
-                            pass
-                        return
-                    self._model = model
-                    self._ready = True
-                    self._last_error = None
-                    self._loading = False
+                        model = None
+                if stale_model is not None:
+                    try:
+                        stale_model.close()
+                    except Exception:
+                        pass
+                    return
                 try:
                     self.supported_source_langs = self._detect_supported_langs()
                 except Exception:
                     self.supported_source_langs = None
-                if self._on_ready:
-                    self._on_ready(True, None)
             except Exception as e:
                 with self._lock:
                     if generation != self._load_generation:
                         return
-                import traceback
-                traceback.print_exc()
-                with self._lock:
                     self._ready = False
                     self._last_error = str(e)
                     self._loading = False
+                import traceback
+                traceback.print_exc()
+                try:
+                    if self._on_ready:
+                        self._on_ready(False, str(e))
+                except Exception:
+                    pass
+                return
+            try:
                 if self._on_ready:
-                    self._on_ready(False, str(e))
+                    self._on_ready(True, None)
+            except Exception:
+                pass
         threading.Thread(target=_load, daemon=True).start()
     def switch_options(self, task: Optional[str] = None, source_lang: Optional[str] = None, target_lang: Optional[str] = None, on_ready: Optional[Callable] = None):
         with self._lock:
@@ -202,8 +240,12 @@ class CanaryEngine:
                 self.target_lang = target_lang
             if source_lang:
                 self.source_lang = source_lang
-            if on_ready:
-                on_ready(True, None)
+            cb = on_ready
+        if cb:
+            try:
+                cb(True, None)
+            except Exception:
+                pass
     def _snapshot_opts(self) -> tuple:
         with self._lock:
             return self.task, self.source_lang, self.target_lang
@@ -211,6 +253,10 @@ class CanaryEngine:
         with self._infer_lock:
             with self._lock:
                 if self._model is None:
+                    self._load_generation += 1
+                    self._loading = False
+                    self._ready = False
+                    self._last_error = None
                     return False
                 self._load_generation += 1
                 model = self._model
@@ -269,10 +315,18 @@ class CanaryEngine:
         if err:
             return "[Canary Error: %s]" % err
         try:
-            arr = np.asarray(audio_data).flatten()
-            if arr.dtype == np.int16:
+            _raw = np.asarray(audio_data)
+            if _raw.size == 0:
+                return ""
+            if _raw.ndim == 2:
+                arr = _raw.mean(axis=1)
+            else:
+                arr = _raw.flatten()
+            if arr.size == 0:
+                return ""
+            if _raw.dtype == np.int16:
                 audio_float = arr.astype(np.float32) / 32768.0
-            elif arr.dtype == np.int32:
+            elif _raw.dtype == np.int32:
                 audio_float = arr.astype(np.float32) / 2147483648.0
             else:
                 audio_float = arr.astype(np.float32)
@@ -286,12 +340,15 @@ class CanaryEngine:
                 task_arg = "ast" if eff_task == "translate" else "asr"
                 src = eff_src if eff_src != "auto" else None
                 tgt = eff_tgt
-                with self._lock:
-                    model = self._model
-                if model is None:
-                    return ""
-                try:
-                    with self._infer_lock:
+                with self._infer_lock:
+                    with self._lock:
+                        if not self._ready or self._model is None:
+                            model = None
+                        else:
+                            model = self._model
+                    if model is None:
+                        return ""
+                    try:
                         results = model.transcribe(
                             [tmp_path],
                             batch_size=1,
@@ -301,9 +358,11 @@ class CanaryEngine:
                             pnc="yes",
                             verbose=False,
                         )
-                except TypeError:
-                    with self._infer_lock:
-                        results = model.transcribe([tmp_path])
+                    except TypeError as e_te:
+                        if _is_canary_signature_mismatch(e_te):
+                            results = model.transcribe([tmp_path])
+                        else:
+                            raise
                 if results and len(results) > 0:
                     r = results[0]
                     if isinstance(r, str):
@@ -331,7 +390,6 @@ class CanaryEngine:
         with self._lock:
             if not self._ready or self._model is None:
                 return ""
-            model = self._model
             snap_task, snap_src, snap_tgt = self.task, self.source_lang, self.target_lang
             supported = self.supported_source_langs
         try:
@@ -346,12 +404,15 @@ class CanaryEngine:
             task_arg = "ast" if eff_task == "translate" else "asr"
             src = eff_src if eff_src != "auto" else None
             tgt = eff_tgt
-            with self._lock:
-                if not self._ready or self._model is None:
+            with self._infer_lock:
+                with self._lock:
+                    if not self._ready or self._model is None:
+                        model = None
+                    else:
+                        model = self._model
+                if model is None:
                     return ""
-                model = self._model
-            try:
-                with self._infer_lock:
+                try:
                     results = model.transcribe(
                         [wav_path],
                         batch_size=1,
@@ -361,9 +422,11 @@ class CanaryEngine:
                         pnc="yes",
                         verbose=False,
                     )
-            except TypeError:
-                with self._infer_lock:
-                    results = model.transcribe([wav_path])
+                except TypeError as e_te:
+                    if _is_canary_signature_mismatch(e_te):
+                        results = model.transcribe([wav_path])
+                    else:
+                        raise
             if results and len(results) > 0:
                 r = results[0]
                 if isinstance(r, str):

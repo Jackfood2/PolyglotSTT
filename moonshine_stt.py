@@ -44,77 +44,92 @@ except Exception as e:
     FG_SECONDARY = "#B2BEC3"
 RECORD_KEY = keyboard.Key.f2
 SAMPLE_RATE = 16000
-APP_VERSION = "1.3.0"
-CONFIG_PATH = os.path.join(os.path.dirname(__file__), "moonshine_config.json")
-_CONFIG_LOCK = threading.RLock()
-DEFAULT_CONFIG = {
-    "typing_method": "clipboard",
-    "suffix": "none",
-    "typing_delay_ms": 0,
-    "model_arch": 5,
-    "engine": "Moonshine v2",
-    "canary_task": "transcribe",
-    "canary_src_lang": "auto",
-    "whisper_task": "translate",
-    "whisper_src_lang": "auto",
-    "whisper_model": "large-v3",
-    "whisper_device": "auto",
-    "compute": "auto",
-    "srt_cpu": 0,
-    "srt_out_dir": "",
-    "srt_input_lang": "auto",
-    "srt_output_lang": "en",
-    "burn_font_size": 18,
-    "burn_sample_start": "0:30",
-    "burn_sample_len": 15,
-    "burn_vbr_auto": True,
-    "burn_vbr_kbps": 2000,
-    "burn_speed": "match",
-    "burn_codec": "h264",
-    "srt_tab": "Live",
-    "srt_norm": False,
-    "burn_after": False,
-    "auto_shutdown": False,
-    "completion_alert": True,
-    "theme": "dark",
-    "windowless": False,
-}
-def load_local_config():
-    try:
-        if os.path.exists(CONFIG_PATH):
-            with open(CONFIG_PATH, "r", encoding="utf-8") as f:
-                cfg = json.load(f)
-            out = dict(DEFAULT_CONFIG)
-            out.update(cfg)
-            if any(k not in cfg for k in DEFAULT_CONFIG):
-                try:
-                    with open(CONFIG_PATH, "w", encoding="utf-8") as wf:
-                        json.dump(out, wf, indent=2)
-                except Exception:
-                    pass
-            return out
-    except Exception:
-        pass
-    return dict(DEFAULT_CONFIG)
-def save_local_config(cfg):
-    try:
-        with _CONFIG_LOCK:
-            tmp = CONFIG_PATH + ".tmp"
-            with open(tmp, "w", encoding="utf-8") as f:
-                json.dump(cfg, f, indent=2)
-            os.replace(tmp, CONFIG_PATH)
-    except Exception:
-        pass
+# v1.4.0: config lives in core/config.py. Same names are re-exported here
+# so `from moonshine_stt import DEFAULT_CONFIG` keeps working.
+try:
+    from core.config import (
+        APP_VERSION,
+        CONFIG_PATH,
+        _CONFIG_LOCK,
+        DEFAULT_CONFIG,
+        load_local_config,
+        save_local_config,
+        apply_suffix,
+    )
+except Exception:  # pragma: no cover - fallback if core/ is missing
+    import json as _json
+    APP_VERSION = "1.4.0"
+    CONFIG_PATH = os.path.join(os.path.dirname(__file__), "moonshine_config.json")
+    _CONFIG_LOCK = threading.RLock()
+    DEFAULT_CONFIG = {
+        "typing_method": "clipboard",
+        "suffix": "none",
+        "typing_delay_ms": 0,
+        "model_arch": 5,
+        "engine": "Moonshine v2",
+        "canary_task": "transcribe",
+        "canary_src_lang": "auto",
+        "whisper_task": "translate",
+        "whisper_src_lang": "auto",
+        "whisper_model": "large-v3",
+        "whisper_device": "auto",
+        "compute": "auto",
+        "srt_cpu": 0,
+        "srt_out_dir": "",
+        "srt_input_lang": "auto",
+        "srt_output_lang": "en",
+        "burn_font_size": 18,
+        "burn_sample_start": "0:30",
+        "burn_sample_len": 15,
+        "burn_vbr_auto": True,
+        "burn_vbr_kbps": 2000,
+        "burn_speed": "match",
+        "burn_codec": "h264",
+        "srt_tab": "Live",
+        "srt_norm": False,
+        "burn_after": False,
+        "auto_shutdown": False,
+        "completion_alert": True,
+        "theme": "dark",
+        "windowless": False,
+    }
 
+    def load_local_config():
+        try:
+            if os.path.exists(CONFIG_PATH):
+                with open(CONFIG_PATH, "r", encoding="utf-8") as f:
+                    cfg = _json.load(f)
+                out = dict(DEFAULT_CONFIG)
+                out.update(cfg)
+                if any(k not in cfg for k in DEFAULT_CONFIG):
+                    try:
+                        with open(CONFIG_PATH, "w", encoding="utf-8") as wf:
+                            _json.dump(out, wf, indent=2)
+                    except Exception:
+                        pass
+                return out
+        except Exception:
+            pass
+        return dict(DEFAULT_CONFIG)
 
-def apply_suffix(text: str, suffix: str) -> str:
-    if suffix == "space":
-        return text + " "
-    if suffix == "newline":
-        return text + "\n"
-    if suffix == "period_space":
-        return text + ". "
-    return text
+    def save_local_config(cfg):
+        try:
+            with _CONFIG_LOCK:
+                tmp = CONFIG_PATH + ".tmp"
+                with open(tmp, "w", encoding="utf-8") as f:
+                    _json.dump(cfg, f, indent=2)
+                os.replace(tmp, CONFIG_PATH)
+        except Exception:
+            pass
+
+    def apply_suffix(text: str, suffix: str) -> str:
+        if suffix == "space":
+            return text + " "
+        if suffix == "newline":
+            return text + "\n"
+        if suffix == "period_space":
+            return text + ". "
+        return text
 def _speed_label(speed_id: str) -> str:
     try:
         from srt import BURN_SPEED_LABELS
@@ -270,7 +285,7 @@ class MoonshineSTTApp:
         if self.config.get("burn_codec") != _bc:
             self.config["burn_codec"] = _bc
             needs_save = True
-        if self.config.get("srt_tab") not in ("Live", "SRT File", "Note"):
+        if self.config.get("srt_tab") not in ("Live", "SRT File", "Note", "Import"):
             self.config["srt_tab"] = "Live"
             needs_save = True
         if needs_save:
@@ -284,6 +299,7 @@ class MoonshineSTTApp:
         self._tab_cache = {
             "srt": {"canary": None, "whisper": None, "wmodel": None},
             "note": {"canary": None, "whisper": None, "wmodel": None},
+            "import": {"canary": None, "whisper": None, "wmodel": None},
         }
         self._note_engine_obj = None
         try:
@@ -317,7 +333,12 @@ class MoonshineSTTApp:
         self._note_file_busy = False
         self._note_file_lock = threading.Lock()
         self._note_file_thread = None
-        self._note_file_cancel = threading.Event()
+        self._note_cancel_event = threading.Event()
+        # Import tab file job (primary since v1.4.0; note_* mirrors it).
+        self._import_file_busy = False
+        self._import_file_lock = threading.Lock()
+        self._import_file_thread = None
+        self._import_cancel_event = threading.Event()
         if MoonshineGUI is not None:
             try:
                 self.gui = MoonshineGUI()
@@ -478,11 +499,18 @@ class MoonshineSTTApp:
                 except Exception:
                     pass
                 try:
+                    self.gui.set_import_file_callbacks(self._import_file_start,
+                                                       self._import_file_cancel,
+                                                       self.import_file_request)
+                except Exception:
+                    pass
+                try:
                     self.gui.set_tab_engine_callbacks(
                         self.plan_tab_change, self.apply_tab_change,
                         lambda t: self.tab_selection(t))
                     for _t, _setter in (("srt", self.gui.set_srt_engine_state),
-                                        ("note", self.gui.set_note_engine_state)):
+                                        ("note", self.gui.set_note_engine_state),
+                                        ("import", self.gui.set_import_engine_state)):
                         try:
                             _s = self.tab_selection(_t)
                             _setter(_s["kind"], _s["arch"], _s["wmodel"])
@@ -585,6 +613,14 @@ class MoonshineSTTApp:
                     except Exception as e:
                         print(f"Canary engine failed to create: {e}")
                         import traceback; traceback.print_exc()
+                        # Degraded fallback - never silent: the caller asked
+                        # for Canary, so say so on the status line too.
+                        try:
+                            self._gui_queue.put(
+                                ("status", ("Canary unavailable - using Moonshine",
+                                            WARNING)))
+                        except Exception:
+                            pass
                         return self.moonshine_engine
         if apply_live_options:
             try:
@@ -619,6 +655,13 @@ class MoonshineSTTApp:
                     except Exception as e:
                         print(f"Whisper engine failed to create: {e}")
                         import traceback; traceback.print_exc()
+                        # Degraded fallback - never silent (see Canary).
+                        try:
+                            self._gui_queue.put(
+                                ("status", ("Whisper unavailable - using Moonshine",
+                                            WARNING)))
+                        except Exception:
+                            pass
                         return self.moonshine_engine
         if apply_live_options:
             try:
@@ -636,16 +679,17 @@ class MoonshineSTTApp:
             except Exception:
                 pass
         return self.whisper_engine
-    # ---------------- Per-tab engines (Live / SRT / Note) ----------------
+    # ---------------- Per-tab engines (Live / SRT / Note / Import) ------
     # Each tab picks its own engine+model. Live keeps the pre-existing
-    # singleton behavior untouched; SRT/Note get dedicated heavy instances
-    # (Moonshine is always the shared live object - tiny, serialized).
+    # singleton behavior untouched; SRT/Note/Import get dedicated heavy
+    # instances (Moonshine is always the shared live object - tiny,
+    # serialized).
     # Rule: changing a tab while another session is ACTIVE asks first
     # (dual engines = dual RAM); with others idle, their cached instances
     # are simply unloaded. Selections mirror as shared defaults across
     # idle, non-diverged tabs. plan_* is pure logic (unit-testable, no Tk,
     # no loads); apply_* performs side effects (GUI thread only).
-    TAB_IDS = ("live", "srt", "note")
+    TAB_IDS = ("live", "srt", "note", "import")
     ENGINE_KINDS = ("Moonshine v2", "Canary-1B", "Whisper")
     _WHISPER_IDS = ("tiny", "base", "small", "medium", "large",
                     "large-v1", "large-v2", "large-v3")
@@ -743,6 +787,7 @@ class MoonshineSTTApp:
         self._tab_cache = {
             "srt": {"canary": None, "whisper": None, "wmodel": None},
             "note": {"canary": None, "whisper": None, "wmodel": None},
+            "import": {"canary": None, "whisper": None, "wmodel": None},
         }
         self._note_engine_obj = None
         try:
@@ -856,6 +901,9 @@ class MoonshineSTTApp:
                 return bool(getattr(self, "_srt_busy", False))
             if tab == "note":
                 return self._note_session_active()
+            if tab == "import":
+                return bool(getattr(self, "_import_file_busy", False)
+                            or getattr(self, "_note_file_busy", False))
         except Exception:
             pass
         return False
@@ -875,6 +923,8 @@ class MoonshineSTTApp:
                 except Exception:
                     pass
                 return "Note is transcribing"
+            if tab == "import":
+                return "Import file is transcribing"
         except Exception:
             pass
         return "session active"
@@ -906,6 +956,15 @@ class MoonshineSTTApp:
                     and want_wmid == cur["wmodel"]:
                 return {"action": "ok", "kind": want_kind, "arch": want_arch,
                         "wmodel": want_wmid, "noop": True, "mirrored": []}
+            # Never retarget a tab that is live right now: unloading or
+            # mutating its engine mid-session corrupts the running job.
+            # (A dual-engine confirm only covers *other* tabs.)
+            if self.tab_active(tab):
+                return {
+                    "action": "revert",
+                    "reason": ("Stop this tab's recording, processing, or "
+                               "loading before changing its engine."),
+                }
             others = []
             for t in self.TAB_IDS:
                 if t == tab:
@@ -935,6 +994,17 @@ class MoonshineSTTApp:
                     "wmodel": want_wmid, "noop": False, "mirrored": []}
         except Exception as e:
             return {"action": "revert", "reason": str(e)}
+
+    def _tab_cache_loading(self, tab) -> bool:
+        """True when one of the tab's cached heavy engines is mid-load.
+        Callers must not unload/replace then: the load owns the instance
+        until it settles (engines discard stale generations themselves)."""
+        try:
+            cache = (self._tab_cache or {}).get(tab) or {}
+            return any(bool(getattr(cache.get(s), "_loading", False))
+                       for s in ("canary", "whisper"))
+        except Exception:
+            return False
 
     def _drop_tab_cache(self, tab):
         """Unload + forget a tab's dedicated heavy instances. Returns how
@@ -996,9 +1066,9 @@ class MoonshineSTTApp:
 
     @staticmethod
     def _whisper_cache_ok(eng, want):
-        """Cached dedicated Whisper instance matches the wanted model id.
-        Missing model_id attr + ready counts as a match (never rebuild-loop
-        on exotic engine objects)."""
+        """Ready-for-use check: instance matches the wanted model id AND is
+        ready. Missing model_id attr + ready counts as a match (never
+        rebuild-loop on exotic engine objects)."""
         try:
             if eng is None:
                 return False
@@ -1009,6 +1079,21 @@ class MoonshineSTTApp:
             if not got:
                 return bool(getattr(eng, "is_ready", False))
             return bool(getattr(eng, "is_ready", False)) and got == str(want)
+        except Exception:
+            return False
+
+    @staticmethod
+    def _whisper_instance_matches(eng, want, cached_model=None):
+        """Identity check independent of loading/readiness state. A matching
+        engine that is still loading must be kept, never unloaded and
+        recreated (that churn is pure waste)."""
+        if eng is None:
+            return False
+        try:
+            model_id = getattr(eng, "model_id", None)
+            if not model_id:
+                model_id = cached_model
+            return str(model_id or "") == str(want)
         except Exception:
             return False
 
@@ -1031,9 +1116,27 @@ class MoonshineSTTApp:
                     want = str(wmid or self.tab_selection(tab)["wmodel"])
                 except Exception:
                     want = "large-v3"
-                if eng is not None and not self._whisper_cache_ok(eng, want):
+                if eng is not None and not self._whisper_instance_matches(
+                        eng, want, cache.get("wmodel")):
+                    # Never replace while its tab is active or the instance
+                    # is mid-load: creates the expensive load -> unload ->
+                    # recreate churn (or yanks a running job's engine).
+                    if self.tab_active(tab) or getattr(eng, "_loading", False):
+                        try:
+                            self._log(f"Cannot replace {tab} Whisper engine "
+                                      f"while busy")
+                        except Exception:
+                            pass
+                        return None
                     try:
                         eng.unload()
+                    except Exception:
+                        import traceback
+                        traceback.print_exc()
+                        return None
+                    try:
+                        cache["whisper"] = None
+                        cache["wmodel"] = None
                     except Exception:
                         pass
                     eng = None
@@ -1077,15 +1180,25 @@ class MoonshineSTTApp:
                 wmid = _cur0["wmodel"]
             norm = self._norm_tab_sel(kind, arch, wmid)
             kind, arch, wmid = norm["kind"], norm["arch"], norm["wmodel"]
-            if not dual_ok:
-                for t in self.TAB_IDS:
-                    if t != tab:
-                        try:
-                            if self.tab_active(t):
-                                return {"action": "revert",
-                                        "reason": "other session active"}
-                        except Exception:
-                            pass
+            # Revalidate at application time: activity may have changed
+            # while a confirmation dialog was open (TOCTOU). Never commit
+            # on a stale verdict.
+            plan = self.plan_tab_change(tab, kind=kind, arch=arch,
+                                        wmid=wmid)
+            action = (plan or {}).get("action")
+            if action == "revert":
+                return plan
+            if action not in ("ok", "confirm"):
+                return {"action": "revert",
+                        "reason": "invalid engine-change verdict"}
+            if plan.get("noop"):
+                return {"action": "ok", "mirrored": []}
+            if action == "confirm" and not dual_ok:
+                return {"action": "revert",
+                        "reason": "other session active"}
+            kind = plan["kind"]
+            arch = plan["arch"]
+            wmid = plan["wmodel"]
             # Commit selection + shared default.
             try:
                 if tab == "live":
@@ -1105,12 +1218,12 @@ class MoonshineSTTApp:
                 self._save_tab_sel()
             except Exception as e:
                 return {"action": "revert", "reason": str(e)}
-            # Mirror to idle, non-diverged followers (srt/note only - live
-            # is the anchor: its menus always show the running engine).
+            # Mirror to idle, non-diverged followers (srt/note/import -
+            # live is the anchor: its menus always show the running engine).
             # Callers sync follower menus from the returned list.
             mirrored = []
             try:
-                for t in ("srt", "note"):
+                for t in ("srt", "note", "import"):
                     if t == tab:
                         continue
                     try:
@@ -1131,9 +1244,12 @@ class MoonshineSTTApp:
                 pass
             # Lifecycle: drop this tab's stale heavies, then every OTHER
             # tab's cache that is idle right now. Active sessions always
-            # keep theirs (their turn comes when they go idle).
+            # keep theirs (their turn comes when they go idle); instances
+            # with a load in flight are never dropped (TOCTOU between the
+            # plan verdict and now) - the idle sweep reclaims them later.
             try:
-                self._drop_tab_cache(tab)
+                if not self._tab_cache_loading(tab):
+                    self._drop_tab_cache(tab)
             except Exception:
                 pass
             try:
@@ -1143,6 +1259,11 @@ class MoonshineSTTApp:
                         continue
                     try:
                         if self.tab_active(t):
+                            continue
+                    except Exception:
+                        pass
+                    try:
+                        if self._tab_cache_loading(t):
                             continue
                     except Exception:
                         pass
@@ -1182,35 +1303,51 @@ class MoonshineSTTApp:
             return {"action": "revert", "reason": str(e)}
 
     def engine_start_cost(self, tab):
-        """(need_new_heavy_load, ram_mb, describe) for starting work on tab
-        now. Moonshine never needs a dialog (shared object, tiny load)."""
+        """Return (needs_load, estimated_mb, description) for starting work
+        on tab now. Live heavy engines live in self.canary_engine /
+        self.whisper_engine (never in _tab_cache["live"]) - the old code
+        always reported them "not loaded" and forced bogus dual-engine
+        dialogs on Live. needs_load False for an already-loading engine
+        means "no additional allocation", NOT "ready to transcribe" -
+        callers must still wait for readiness."""
         try:
+            if tab not in self.TAB_IDS:
+                raise ValueError(f"Unknown tab: {tab}")
             sel = self.tab_selection(tab)
             kind = sel["kind"]
             if kind == "Moonshine v2":
                 return False, 0, "Moonshine (shared)"
-            if kind == "Canary-1B":
+            slot = "canary" if kind == "Canary-1B" else "whisper"
+            label = ("Canary-1B" if slot == "canary"
+                     else f"Whisper {sel['wmodel']}")
+            if tab == "live":
+                eng = getattr(self, f"{slot}_engine", None)
+                cached_model = None
+            else:
+                cache = (self._tab_cache or {}).get(tab) or {}
+                eng = cache.get(slot)
+                cached_model = cache.get("wmodel")
+            matches = eng is not None
+            if matches and slot == "whisper":
+                model_id = getattr(eng, "model_id", None) or cached_model
+                matches = str(model_id or "") == str(sel["wmodel"])
+            if matches:
                 try:
-                    eng = ((self._tab_cache or {}).get(tab) or {}).get("canary")
-                    ready = bool(eng is not None and eng.is_ready)
+                    if bool(getattr(eng, "is_ready", False)):
+                        return False, 0, f"{label} (ready)"
+                    if bool(getattr(eng, "_loading", False)):
+                        return False, 0, f"{label} (loading)"
                 except Exception:
-                    ready = False
-                if ready:
-                    return False, 0, "Canary-1B (ready)"
-                return True, self._engine_ram_mb(kind), "Canary-1B (not loaded)"
-            # Whisper
+                    pass
+            ram = self._engine_ram_mb(kind, sel["arch"], sel["wmodel"])
+            return True, ram, f"{label} (not loaded)"
+        except Exception as exc:
             try:
-                want = str(sel["wmodel"])
-                eng = ((self._tab_cache or {}).get(tab) or {}).get("whisper")
-                ready = self._whisper_cache_ok(eng, want)
+                self._log(f"Engine cost check failed for {tab}: {exc}")
             except Exception:
-                ready = False
-            if ready:
-                return False, 0, f"Whisper {sel['wmodel']} (ready)"
-            return True, self._engine_ram_mb(kind, None, sel["wmodel"]), \
-                f"Whisper {sel['wmodel']} (not loaded)"
-        except Exception:
-            return False, 0, "?"
+                pass
+            # Unknown state must never be reported as a ready engine.
+            return True, 3000, "Engine state unavailable"
 
     def srt_start_request(self):
         """GUI-thread pre-flight for the SRT start button. Returns
@@ -1317,21 +1454,31 @@ class MoonshineSTTApp:
             return {"abort": True}
 
     def note_engine_ready(self):
-        """(ready_bool, problem_str) for the Note tab's current selection.
-        Kicks a missing load (never blocks). GUI thread safe."""
+        """Return (ready, problem) for the current Note selection.
+
+        Reports missing engines and recorded load failures instead of
+        polling "still loading" forever, never restarts an engine that
+        already recorded a load error on every poll (the record pre-flight
+        re-kicks on the next explicit user attempt), and snapshots the
+        engine when ready. Kicks a missing load, never blocks. Assumes
+        eng.load() starts an asynchronous load."""
         try:
             sel = self.tab_selection("note")
             kind = sel["kind"]
             if kind == "Moonshine v2":
+                eng = self.moonshine_engine
+                if eng is None:
+                    return False, "Note engine unavailable."
                 try:
-                    eng = self.moonshine_engine
-                    if eng is not None and eng.is_ready:
+                    if bool(getattr(eng, "is_ready", False)):
+                        self._note_engine_obj = eng
                         return True, ""
-                    if eng is not None and not getattr(eng, "_loading", False):
-                        try:
-                            eng.load()
-                        except Exception:
-                            pass
+                    if bool(getattr(eng, "_loading", False)):
+                        return False, ""
+                    err = getattr(eng, "_last_error", None)
+                    if err:
+                        return False, f"Note engine failed: {err}"
+                    eng.load()
                 except Exception:
                     pass
                 return False, ""
@@ -1344,28 +1491,50 @@ class MoonshineSTTApp:
             if eng is None:
                 try:
                     eng = self._tab_heavy("note", kind, sel["wmodel"])
-                    if eng is not None and not eng.is_ready:
+                except Exception:
+                    eng = None
+                if eng is None:
+                    return False, "Note engine could not be created."
+                try:
+                    if not bool(getattr(eng, "is_ready", False)):
                         eng.load()
                 except Exception:
                     pass
                 return False, ""
+            if slot == "whisper":
+                try:
+                    model_id = (getattr(eng, "model_id", None)
+                                or cache.get("wmodel"))
+                    if str(model_id or "") != str(sel["wmodel"]):
+                        return False, ("Note engine does not match the "
+                                       "selected Whisper model. Reselect "
+                                       "the model.")
+                except Exception:
+                    pass
             try:
-                if eng.is_ready:
-                    if slot == "whisper" and not self._whisper_cache_ok(
-                            eng, sel["wmodel"]):
-                        return False, ""
+                if bool(getattr(eng, "_loading", False)):
+                    return False, ""
+                if bool(getattr(eng, "is_ready", False)):
+                    self._note_engine_obj = eng
                     return True, ""
-            except Exception:
-                pass
-            try:
-                if not getattr(eng, "_loading", True):
-                    err = getattr(eng, "_last_error", None) or "unknown error"
+                err = getattr(eng, "_last_error", None)
+                if err:
+                    return False, f"Note engine failed: {err}"
+                eng.load()
+                if bool(getattr(eng, "is_ready", False)):
+                    # Synchronous implementations can finish immediately.
+                    self._note_engine_obj = eng
+                    return True, ""
+                err = getattr(eng, "_last_error", None)
+                if err and not bool(getattr(eng, "_loading", False)):
                     return False, f"Note engine failed: {err}"
             except Exception:
                 pass
             return False, ""
-        except Exception:
-            return False, ""
+        except Exception as exc:
+            import traceback
+            traceback.print_exc()
+            return False, f"Note engine failed: {exc}"
 
     def note_record_confirm(self, dual_ok):
         """Follow-up after the record pre-flight asked to confirm."""
@@ -1384,41 +1553,75 @@ class MoonshineSTTApp:
             return {"abort": True}
 
     def tab_shown(self, tabid):
-        """Tab-switch adopt: an srt/note tab that was never explicitly
-        picked follows the shared default (menus only - engines load at
-        use). Live is the anchor and never auto-adopts. Never raises."""
+        """Tab-switch adopt: an idle srt/note/import tab that was never
+        explicitly picked follows the shared default (menus only - engines
+        load at use). Live is the anchor and never auto-adopts. Never
+        raises; never touches an active tab or a tab with a load in
+        flight, and never rewrites config when nothing changed."""
         try:
-            mapping = {"SRT File": "srt", "Note": "note"}
-            tab = mapping.get(tabid)
-            if tab is None:
+            # Accept both tab ids ("srt") and display names ("SRT File"):
+            # _on_tab_changed passes ids, older callers passed names.
+            if tabid in ("live", "srt", "note", "import"):
+                tab = tabid
+            else:
+                mapping = {"SRT File": "srt", "Note": "note",
+                           "Import": "import", "Live": "live"}
+                tab = mapping.get(tabid)
+            if tab not in ("srt", "note", "import"):
+                return
+            if self.tab_active(tab):
                 return
             node = (self._tab_sel or {}).get(tab)
             if not isinstance(node, dict) or bool(node.get("explicit", False)):
                 return
+            # tab_active() does not cover a kicked load with no chunks yet:
+            # adopting mid-load would yank the selection under it.
+            try:
+                cache = (self._tab_cache or {}).get(tab) or {}
+                if any(bool(getattr(cache.get(slot), "_loading", False))
+                       for slot in ("canary", "whisper")):
+                    return
+            except Exception:
+                pass
             try:
                 sh = self._shared_sel
             except Exception:
                 return
-            node.update({"kind": sh["kind"], "arch": int(sh["arch"]),
-                         "wmodel": str(sh["wmodel"])})
-            self._save_tab_sel()
+            try:
+                selection = self._norm_tab_sel(sh.get("kind"),
+                                               sh.get("arch"),
+                                               sh.get("wmodel"))
+            except Exception:
+                return
+            if any(node.get(k) != v for k, v in selection.items()):
+                try:
+                    node.update(selection)
+                    self._save_tab_sel()
+                except Exception:
+                    pass
             try:
                 g = self.gui
                 if g is not None:
                     if tab == "srt":
-                        g.set_srt_engine_state(sh["kind"], int(sh["arch"]),
-                                               str(sh["wmodel"]))
+                        g.set_srt_engine_state(selection["kind"],
+                                               int(selection["arch"]),
+                                               str(selection["wmodel"]))
                     elif tab == "note":
-                        g.set_note_engine_state(sh["kind"], int(sh["arch"]),
-                                                str(sh["wmodel"]))
+                        g.set_note_engine_state(selection["kind"],
+                                                int(selection["arch"]),
+                                                str(selection["wmodel"]))
+                    elif tab == "import":
+                        g.set_import_engine_state(selection["kind"],
+                                                  int(selection["arch"]),
+                                                  str(selection["wmodel"]))
             except Exception:
                 pass
         except Exception:
             pass
 
     def _sync_mirrored_menus(self, mirrored):
-        """Paint follower (srt/note) menu states after an apply. The live
-        tab owns its menus via the engine/model flows. Never raises."""
+        """Paint follower (srt/note/import) menu states after an apply. The
+        live tab owns its menus via the engine/model flows. Never raises."""
         try:
             g = self.gui
             if g is None:
@@ -1429,6 +1632,8 @@ class MoonshineSTTApp:
                         g.set_srt_engine_state(k, a, w)
                     elif t == "note":
                         g.set_note_engine_state(k, a, w)
+                    elif t == "import":
+                        g.set_import_engine_state(k, a, w)
                 except Exception:
                     pass
         except Exception:
@@ -1463,9 +1668,11 @@ class MoonshineSTTApp:
 
     def _unload_idle_tab_engines(self):
         """Unload stale tab caches (selection drifted) and never touch an
-        active tab's instances. Called with the regular idle sweep."""
+        active tab's instances - or instances with a load in flight (the
+        load owns them until it settles). Called with the regular idle
+        sweep."""
         try:
-            for tab in ("srt", "note"):
+            for tab in ("srt", "note", "import"):
                 try:
                     if self.tab_active(tab):
                         continue
@@ -1473,10 +1680,12 @@ class MoonshineSTTApp:
                     cache = (self._tab_cache or {}).get(tab)
                     if not isinstance(cache, dict):
                         continue
-                    # Whisper slot stale?
+                    # Whisper slot stale? A load in flight owns its
+                    # instance - skip just this slot until it settles.
                     try:
                         eng = cache.get("whisper")
-                        if eng is not None:
+                        if eng is not None and not bool(
+                                getattr(eng, "_loading", False)):
                             try:
                                 same = (sel["kind"] == "Whisper"
                                         and str(getattr(eng, "model_id", "") or "")
@@ -1495,10 +1704,11 @@ class MoonshineSTTApp:
                                     pass
                     except Exception:
                         pass
-                    # Canary slot stale?
+                    # Canary slot stale? (Same load-in-flight rule.)
                     try:
                         eng = cache.get("canary")
-                        if eng is not None and sel["kind"] != "Canary-1B":
+                        if eng is not None and sel["kind"] != "Canary-1B" \
+                                and not bool(getattr(eng, "_loading", False)):
                             try:
                                 eng.unload()
                             except Exception:
@@ -1515,15 +1725,16 @@ class MoonshineSTTApp:
             pass
 
     def _on_tab_changed(self, name: str):
-        if name not in ("Live", "SRT File", "Note"):
+        if name not in ("Live", "SRT File", "Note", "Import"):
             return
-        if name in ("Live", "SRT File", "Note"):
+        if name in ("Live", "SRT File", "Note", "Import"):
             with _CONFIG_LOCK:
                 self.config["srt_tab"] = name
                 save_local_config(self.config)
         # Adopt-shared-default for never-explicitly-picked tabs.
         try:
-            mapping = {"Live": "live", "SRT File": "srt", "Note": "note"}
+            mapping = {"Live": "live", "SRT File": "srt", "Note": "note",
+                       "Import": "import"}
             if name in mapping:
                 self.tab_shown(mapping[name])
         except Exception:
@@ -1601,7 +1812,21 @@ class MoonshineSTTApp:
                 except Exception:
                     pass
                 if success:
-                    self.gui.set_status(f"Ready \u2022 compute {display}", SUCCESS)
+                    actual = getattr(target, "_device_used", "unknown")
+                    compute = getattr(target, "_compute_used", "")
+                    fallback = code in ("gpu", "cuda") and actual != "cuda"
+
+                    status = f"Ready • {actual.upper()} {compute}".strip()
+                    if fallback:
+                        status += " (GPU request fell back to CPU)"
+                        self._log(
+                            "Compute fallback: "
+                            + str(getattr(target, "_device_reason", ""))
+                        )
+
+                    self.gui.set_status(
+                        status, WARNING if fallback else SUCCESS
+                    )
                 else:
                     self.gui.set_status(f"Compute error: {err}", DANGER)
             if self.gui:
@@ -1784,10 +2009,83 @@ class MoonshineSTTApp:
                       "id": "canary-1b", "label": "Canary-1B (3.9GB)",
                       "size": csize if cdl else None, "downloaded": cdl,
                       "in_use": active == "Canary-1B"})
+        try:
+            for it in items:
+                if not it.get("in_use") and self._model_in_use(
+                        it.get("kind"), it.get("id")):
+                    it["in_use"] = True
+        except Exception:
+            pass
         return {"items": items, "total": total}
+
+    def _model_in_use(self, kind, ident) -> bool:
+        """True when any tab (live config or srt/note/import selection)
+        references this model. Deleting a referenced model file while its
+        engine may load risks corrupt loads, so the manager blocks it."""
+        try:
+            if kind == "moonshine":
+                try:
+                    want = int(ident)
+                except Exception:
+                    return False
+                try:
+                    if (self.config.get("engine") == "Moonshine v2"
+                            and int(self.config.get("model_arch", 5)) == want):
+                        return True
+                except Exception:
+                    pass
+                for t in ("srt", "note", "import"):
+                    try:
+                        sel = self.tab_selection(t)
+                        if sel.get("kind") == "Moonshine v2" \
+                                and int(sel.get("arch", -1)) == want:
+                            return True
+                    except Exception:
+                        pass
+                return False
+            if kind == "whisper":
+                try:
+                    if (self.config.get("engine") == "Whisper"
+                            and str(self.config.get("whisper_model",
+                                                     "large-v3")) == str(ident)):
+                        return True
+                except Exception:
+                    pass
+                for t in ("srt", "note", "import"):
+                    try:
+                        sel = self.tab_selection(t)
+                        if sel.get("kind") == "Whisper" \
+                                and str(sel.get("wmodel", "")) == str(ident):
+                            return True
+                    except Exception:
+                        pass
+                return False
+            if kind == "canary":
+                try:
+                    if self.config.get("engine") == "Canary-1B":
+                        return True
+                except Exception:
+                    pass
+                for t in ("srt", "note", "import"):
+                    try:
+                        if (self.tab_selection(t).get("kind")
+                                == "Canary-1B"):
+                            return True
+                    except Exception:
+                        pass
+                return False
+        except Exception:
+            pass
+        return False
     def _model_manager_delete(self, engine, kind, ident, refresh=True):
         if self._srt_busy:
             return False, "Stop the running SRT/burn job first."
+        try:
+            if self._model_in_use(kind, ident):
+                return False, ("In use by Live or a tab selection - switch "
+                                "every tab off it first.")
+        except Exception:
+            pass
         try:
             if kind == "moonshine":
                 arch = int(ident)
@@ -1889,12 +2187,14 @@ class MoonshineSTTApp:
             except Exception:
                 pass
         def _model_switched(success, err):
+            # The guard flag is state, not UI: always clear it here so a
+            # headless run or a dead GUI can never wedge recording.
+            self._model_switching = False
             def _ui():
                 try:
                     self.gui.record_btn.configure(state="normal")
                 except Exception:
                     pass
-                self._model_switching = False
                 if success:
                     self.gui.set_status(f"Ready \u2022 {display_label}", SUCCESS)
                 else:
@@ -1905,7 +2205,16 @@ class MoonshineSTTApp:
                 except Exception:
                     pass
         self._model_switching = True
-        self.engine.switch_model(new_arch, on_ready=_model_switched)
+        try:
+            self.engine.switch_model(new_arch, on_ready=_model_switched)
+        except Exception as e:
+            self._model_switching = False
+            try:
+                if self.gui:
+                    self.gui.record_btn.configure(state="normal")
+                    self.gui.set_status(f"Model error: {e}", DANGER)
+            except Exception:
+                pass
     def _on_whisper_model_changed(self, display_label: str):
         try:
             from gui import WHISPER_MODEL_CHOICES, WHISPER_MODEL_CHOICES_REV
@@ -1939,12 +2248,13 @@ class MoonshineSTTApp:
             except Exception:
                 pass
         def _whisper_switched(success, err):
+            # See _model_switched: clear the guard synchronously, paint async.
+            self._model_switching = False
             def _ui():
                 try:
                     self.gui.record_btn.configure(state="normal")
                 except Exception:
                     pass
-                self._model_switching = False
                 if success:
                     self.gui.set_status(f"Ready \u2022 Whisper {new_id}", SUCCESS)
                 else:
@@ -1961,69 +2271,85 @@ class MoonshineSTTApp:
         except AttributeError:
             self._model_switching = False
             _whisper_switched(False, "engine unavailable")
+        except Exception as e:
+            self._model_switching = False
+            try:
+                if self.gui:
+                    self.gui.record_btn.configure(state="normal")
+                    self.gui.set_status(f"Model error: {e}", DANGER)
+            except Exception:
+                pass
     def _ask_dual(self, message):
         """GUI-thread Yes/No dialog for dual-engine loads. False on any
         failure or headless run (safe direction: don't load)."""
+        if self.gui is None:
+            return False
         try:
-            from tkinter import messagebox as _mb
-            try:
-                parent = self.gui if self.gui is not None else None
-            except Exception:
-                parent = None
-            return bool(_mb.askyesno("Load second engine?",
-                                     str(message or "Another session is active."),
-                                     parent=parent))
+            from tkinter import messagebox
+            return bool(messagebox.askyesno(
+                "Load second engine?",
+                str(message or "Another session is active."),
+                parent=self.gui,
+            ))
         except Exception:
+            import traceback
+            traceback.print_exc()
             return False
 
     def _live_engine_pick(self, kind, arch=None, wmid=None):
-        """Shared dual-guard for the three live menu flows (engine, model,
-        whisper size). Runs plan -> optional dialog -> apply -> follower
-        menu sync. Returns True when the caller should proceed with its
+        """Validate and confirm before changing live selections. Shared
+        dual-guard for the three live menu flows (engine, model, whisper
+        size). Runs plan -> optional dialog -> apply -> follower menu
+        sync. Returns True when the caller should proceed with its
         existing load flow; False means reverted (menus restored).
-        GUI thread. Never raises (fail-open: existing flow validates)."""
+        GUI thread only. Fail closed if validation or application fails."""
+        def revert():
+            try:
+                self._sync_live_menus()
+            except Exception:
+                pass
+            return False
+
         try:
-            _pv = self.plan_tab_change("live", kind=kind, arch=arch,
-                                       wmid=wmid)
-        except Exception:
-            return True
-        try:
-            act = (_pv or {}).get("action")
-            if act == "confirm":
-                _yes = self._ask_dual((_pv or {}).get("message"))
-                _ap = self.apply_tab_change(
-                    "live", (_pv or {}).get("kind"), (_pv or {}).get("arch"),
-                    (_pv or {}).get("wmodel"), dual_ok=bool(_yes))
-                if not _yes or (_ap or {}).get("action") != "ok":
-                    try:
-                        self._sync_live_menus()
-                    except Exception:
-                        pass
-                    return False
-            elif act == "revert":
+            plan = self.plan_tab_change("live", kind=kind, arch=arch,
+                                        wmid=wmid)
+            action = (plan or {}).get("action")
+            if action == "revert":
+                return revert()
+            if action not in ("ok", "confirm"):
                 try:
-                    self._sync_live_menus()
+                    self._log(f"Unexpected engine-change verdict: {plan!r}")
                 except Exception:
                     pass
-                return False
-            else:
-                _ap = self.apply_tab_change(
-                    "live", (_pv or {}).get("kind", kind),
-                    (_pv or {}).get("arch", arch),
-                    (_pv or {}).get("wmodel", wmid), dual_ok=True)
-                if (_ap or {}).get("action") != "ok":
-                    try:
-                        self._sync_live_menus()
-                    except Exception:
-                        pass
-                    return False
+                return revert()
+            if plan.get("noop"):
+                return True
+            dual_ok = False
+            if action == "confirm":
+                if not self._ask_dual(plan.get("message")):
+                    # Do not apply anything after the user cancels.
+                    return revert()
+                dual_ok = True
+            result = self.apply_tab_change("live", plan["kind"],
+                                           plan["arch"], plan["wmodel"],
+                                           dual_ok=dual_ok)
+            if (result or {}).get("action") != "ok":
+                try:
+                    self._log("Engine change rejected: "
+                              + str((result or {}).get("reason",
+                                                       "unknown reason")))
+                except Exception:
+                    pass
+                return revert()
             try:
-                self._sync_mirrored_menus((_ap or {}).get("mirrored"))
+                self._sync_mirrored_menus((result or {}).get("mirrored"))
             except Exception:
                 pass
             return True
         except Exception:
-            return True
+            import traceback
+            traceback.print_exc()
+            return revert()
 
     def _on_engine_changed(self, display_label: str):
         old = self.config.get("engine", "Moonshine v2")
@@ -2119,21 +2445,23 @@ class MoonshineSTTApp:
                     self.gui.set_status(f"Ready \u2022 Moonshine {self.moonshine_engine.current_arch_name}", SUCCESS)
         self._unload_idle_engines()
     def _unload_idle_engines(self):
-        """Release whichever heavy engine is NOT active (multi-GB RAM back)."""
+        """Release whichever heavy engine is NOT active (multi-GB RAM back).
+        Backs off while any tab session runs - including Import/Note file
+        jobs that may be mid-transcribe on the shared Moonshine object -
+        and never unloads an engine with a load in flight."""
         try:
             self._unload_idle_tab_engines()
         except Exception:
             pass
         try:
-            if self._srt_busy:
-                return
             try:
-                if self.audio_queue.qsize() > 0 or self.currently_processing:
+                if self.tab_active("live") or self.tab_active("srt") \
+                        or self.tab_active("note") or self.tab_active("import"):
                     return
             except Exception:
                 pass
             try:
-                if self.gui is not None and getattr(self.gui, "_note_recording", False):
+                if bool(getattr(self, "_model_switching", False)):
                     return
             except Exception:
                 pass
@@ -2149,6 +2477,11 @@ class MoonshineSTTApp:
                         continue
                     if active == "Moonshine v2" and name == "moonshine_engine":
                         continue
+                    try:
+                        if bool(getattr(eng, "_loading", False)):
+                            continue
+                    except Exception:
+                        pass
                     try:
                         if eng.unload():
                             self._log(f"Unloaded idle {name} (RAM reclaimed)")
@@ -2307,7 +2640,10 @@ class MoonshineSTTApp:
     def _poll_queue(self):
         if not self.gui:
             return
-        while True:
+        # Bounded drain per tick: sustained producer bursts must never
+        # monopolize Tk's event loop. Leftovers run on the next tick
+        # (the re-schedule below is unconditional).
+        for _ in range(200):
             try:
                 msg_type, payload = self._gui_queue.get_nowait()
             except queue.Empty:
@@ -2326,7 +2662,11 @@ class MoonshineSTTApp:
                 elif msg_type == "srt_done":
                     self.gui.srt_done(payload[0], payload[1])
                     try:
-                        self._on_job_finished(payload[0], payload[1])
+                        try:
+                            full = bool(payload[2]) if len(payload) > 2 else False
+                        except Exception:
+                            full = False
+                        self._on_job_finished(payload[0], payload[1], full)
                     except Exception:
                         pass
                 elif msg_type == "srt_file_status":
@@ -2403,20 +2743,35 @@ class MoonshineSTTApp:
             except Exception as e:
                 print(f"recorder stop error: {e}")
                 audio = None
+            # Snapshot the paste target + engine atomically with the stop:
+            # an engine/menu switch landing between stop and processing
+            # must not retarget a clip that is already recorded.
+            try:
+                saved_top = self._target_top_hwnd
+                saved_child = self._target_child_hwnd
+                snap_engine = self.engine
+                snap_engine_name = self.config.get("engine", "Moonshine v2")
+                snap_suffix = self.config.get("suffix", "none")
+                snap_method = self.config.get("typing_method", "clipboard")
+                snap_delay = int(self.config.get("typing_delay_ms", 0))
+                snap_root = self._our_root_hwnd
+            except Exception:
+                saved_top = saved_child = None
+                snap_engine, snap_engine_name = None, "Moonshine v2"
+                snap_suffix, snap_method, snap_delay = "none", "clipboard", 0
+                snap_root = 0
         if self.gui:
             self.gui.after(0, lambda: self.gui.set_recording_state(False))
             self.gui.after(0, lambda: self._update_indicator())
-        saved_top = self._target_top_hwnd
-        saved_child = self._target_child_hwnd
         settings_snapshot = {
             "target_top": saved_top,
             "target_child": saved_child,
-            "suffix": self.config.get("suffix", "none"),
-            "typing_method": self.config.get("typing_method", "clipboard"),
-            "typing_delay_ms": int(self.config.get("typing_delay_ms", 0)),
-            "our_root_hwnd": self._our_root_hwnd,
-            "engine": self.engine,
-            "engine_name": self.config.get("engine", "Moonshine v2"),
+            "suffix": snap_suffix,
+            "typing_method": snap_method,
+            "typing_delay_ms": snap_delay,
+            "our_root_hwnd": snap_root,
+            "engine": snap_engine,
+            "engine_name": snap_engine_name,
         }
         if audio is None or len(audio) == 0:
             self._gui_queue.put(("status", ("No audio", WARNING)))
@@ -2742,16 +3097,24 @@ class MoonshineSTTApp:
                 total = len(results)
                 burn_msg = ""
                 burn_cancelled = False
+                burn_ok = True
                 if (not cancelled) and job.get("burn_after"):
-                    _bmsg, burn_cancelled = self._auto_burn_after_srt(job)
+                    _bmsg, burn_cancelled, burn_ok = \
+                        self._auto_burn_after_srt(job)
                     if _bmsg:
                         burn_msg = " | " + str(_bmsg)
+                # Explicit full-success flag: every SRT ok AND (no burn
+                # requested OR the burn fully ok). Never infer this from
+                # the message text ("all N saved | Burn failed" must not
+                # count as complete).
+                full_ok = (not cancelled and not burn_cancelled
+                           and not bad and total > 0 and bool(burn_ok))
                 if cancelled or burn_cancelled:
                     self._gui_queue.put(
-                        ("srt_done", (False, f"Cancelled after {len(ok_paths)}/{total} files{burn_msg}")))
+                        ("srt_done", (False, f"Cancelled after {len(ok_paths)}/{total} files{burn_msg}", False)))
                 elif not bad:
                     self._gui_queue.put(
-                        ("srt_done", (True, f"Batch done: all {total} saved{burn_msg}")))
+                        ("srt_done", (True, f"Batch done: all {total} saved{burn_msg}", full_ok)))
                 elif ok_paths:
                     try:
                         first_bad = _os.path.basename(bad[0][0])
@@ -2779,11 +3142,11 @@ class MoonshineSTTApp:
             self._srt_thread = _t
         _t.start()
     @staticmethod
-    def _shutdown_pc():
+    def _shutdown_pc(self):
         try:
             import subprocess as _sp
             _sp.Popen(["shutdown", "/s", "/f", "/t", "60"],
-                      stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                      stdout=_sp.DEVNULL, stderr=_sp.DEVNULL)
         except Exception:
             pass
     @staticmethod
@@ -2791,28 +3154,35 @@ class MoonshineSTTApp:
         try:
             import subprocess as _sp
             _r = _sp.run(["shutdown", "/a"],
-                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                         stdout=_sp.DEVNULL, stderr=_sp.DEVNULL,
                          timeout=10)
             return bool(getattr(_r, "returncode", 1) == 0)
         except Exception:
             return False
-    def _on_job_finished(self, ok, msg):
+    def _on_job_finished(self, ok, msg, full_ok=False):
+        """Completion gate for auto-shutdown + pop-up. full_ok must be
+        passed explicitly by the producer (True only when every requested
+        stage - transcription AND any requested burn - fully succeeded).
+        Never infer success from message text: e.g. "Batch done: all 3
+        saved | Burn failed: ..." contains "all " but must NOT shut down."""
         try:
             text = str(msg or "")
         except Exception:
             text = ""
         if not ok:
             return
-        full = "all " in text
         try:
             want_sd = bool(self.config.get("auto_shutdown", False))
         except Exception:
             want_sd = False
-        if full and want_sd:
+        if bool(full_ok) and want_sd:
             self._gui_queue.put(
                 ("srt_log", "Auto-shutdown ON: PC powers off in 60s "
                  "(run `shutdown /a` in cmd to abort)"))
-            self._shutdown_pc()
+            try:
+                self._shutdown_pc()
+            except Exception:
+                pass
             return
         try:
             want_alert = bool(self.config.get("completion_alert", True))
@@ -3008,7 +3378,9 @@ class MoonshineSTTApp:
                      f"Auto-burn: {kept_existing} existing MP4(s) kept "
                      f"(Convert to MP4 to overwrite)"))
             if not keep_pos:
-                return "", False
+                # Nothing to burn (audio-only / already burned): the burn
+                # stage is vacuously complete.
+                return "", False, True
             self._gui_queue.put(
                 ("srt_log",
                  f"Auto-burn: {len(keep_pos)} file(s) with SRT -> MP4..."))
@@ -3025,11 +3397,17 @@ class MoonshineSTTApp:
                     "vbr_kbps": job.get("burn_vbr_kbps", 2000),
                     "burn_codec": job.get("burn_codec", "h264")}
             _results, _cancelled, _ok, _msg = self._execute_burn(bjob)
-            return _msg, bool(_cancelled)
+            try:
+                _burn_ok = (not bool(_cancelled) and bool(_results)
+                            and all(bool(ok_) for (_, ok_, _)
+                                    in (_results or [])))
+            except Exception:
+                _burn_ok = False
+            return _msg, bool(_cancelled), bool(_burn_ok)
         except Exception as e:
             import traceback
             traceback.print_exc()
-            return f"auto-burn skipped: {e}", False
+            return f"auto-burn skipped: {e}", False, False
     def _burn_start(self, input_paths, order=None, out_dir: str = "",
                     cpu_workers: int = 1, font_size: int = 0,
                     speed: str = "match", vbr_auto: bool = True,
@@ -3139,7 +3517,13 @@ class MoonshineSTTApp:
         def _job():
             try:
                 _results, _cancelled, _ok, _msg = self._execute_burn(job)
-                self._gui_queue.put(("srt_done", (_ok, _msg)))
+                try:
+                    _full = (not bool(_cancelled) and bool(_results)
+                             and all(bool(ok_) for (_, ok_, _)
+                                     in (_results or [])))
+                except Exception:
+                    _full = False
+                self._gui_queue.put(("srt_done", (_ok, _msg, bool(_full))))
             except InterruptedError:
                 self._gui_queue.put(("srt_done", (False, "Cancelled by user")))
             except Exception as e:
@@ -3345,11 +3729,13 @@ class MoonshineSTTApp:
         except Exception as e:
             return f"[Error: {e}]"
 
-    # ── Note file import (drag & drop audio/video -> sentences) ──
-    def note_file_request(self):
-        """GUI-thread pre-flight for Note file Transcribe. Returns
+    # ── Import tab file pipeline (drag & drop audio/video -> sentences) ──
+    # v1.4.0: the UI moved from Note to its own Import tab with its own
+    # engine selection. note_file_* names stay as aliases.
+    def import_file_request(self):
+        """GUI-thread pre-flight for Import Transcribe. Returns
         {"go": True} | {"confirm": msg} | {"wait": msg} | {"abort": True}.
-        Refuses while mic recording or another file job runs."""
+        Refuses while Note mic records or another file job runs."""
         try:
             try:
                 if self.gui is not None and bool(
@@ -3357,17 +3743,20 @@ class MoonshineSTTApp:
                     return {"abort": True}
             except Exception:
                 pass
-            if bool(getattr(self, "_note_file_busy", False)):
+            if bool(getattr(self, "_import_file_busy", False)
+                    or getattr(self, "_note_file_busy", False)):
                 return {"abort": True}
             try:
                 if self.gui is not None and bool(
-                        getattr(self.gui, "_note_file_running", False)) \
-                        and not bool(getattr(self, "_note_file_busy", False)):
+                        getattr(self.gui, "_import_file_running", False)
+                        or getattr(self.gui, "_note_file_running", False)) \
+                        and not bool(getattr(self, "_import_file_busy", False)
+                                     or getattr(self, "_note_file_busy", False)):
                     # GUI flag set but no worker yet (starting) - treat busy.
                     pass
             except Exception:
                 pass
-            sel = self.tab_selection("note")
+            sel = self.tab_selection("import")
             kind = sel["kind"]
             # Ready now? -> go (snapshot like mic path).
             try:
@@ -3376,7 +3765,7 @@ class MoonshineSTTApp:
                     if eng is not None and eng.is_ready:
                         return {"go": True}
                 else:
-                    cache = (self._tab_cache or {}).get("note") or {}
+                    cache = (self._tab_cache or {}).get("import") or {}
                     slot = "canary" if kind == "Canary-1B" else "whisper"
                     eng = cache.get(slot)
                     ok = False
@@ -3428,71 +3817,106 @@ class MoonshineSTTApp:
                     except Exception:
                         pass
                 else:
-                    fresh = self._tab_heavy("note", kind, sel["wmodel"])
+                    fresh = self._tab_heavy("import", kind, sel["wmodel"])
                     if fresh is not None and not fresh.is_ready:
                         fresh.load()
             except Exception:
                 pass
-            return {"wait": "Loading note engine - press Transcribe File again when ready."}
+            return {"wait": "Loading import engine - press Transcribe File again when ready."}
         except Exception:
             return {"abort": True}
 
-    def _note_file_cancel(self):
-        """Cancel the running Note file job (thread-safe, never raises)."""
+    def note_file_request(self):
+        """Legacy alias (Note file UI moved to the Import tab)."""
         try:
-            self._note_file_cancel.set()
+            return self.import_file_request()
+        except Exception:
+            return {"abort": True}
+
+    def _import_file_cancel(self):
+        """Cancel the running Import file job (thread-safe, never raises)."""
+        try:
+            self._import_cancel_event.set()
+        except Exception:
+            pass
+        try:
+            self._note_cancel_event.set()
         except Exception:
             pass
         try:
             if self.gui is not None:
                 try:
                     self.gui.after(
-                        0, lambda: self.gui.set_note_file_progress(
+                        0, lambda: self.gui.set_import_file_progress(
                             0, "Cancelling..."))
                 except Exception:
                     pass
         except Exception:
             pass
 
-    def _note_file_start(self, path: str):
-        """Background entry for Note file transcription (GUI spawns a thread
-        around this; this method blocks until done). Never raises."""
+    def _note_file_cancel(self):
+        """Legacy alias."""
         try:
-            with self._note_file_lock:
-                if self._note_file_busy:
+            return self._import_file_cancel()
+        except Exception:
+            pass
+
+    def _import_file_start(self, path: str):
+        """Background entry for Import file transcription (GUI spawns a thread
+        around this; this method blocks until done). Never raises."""
+        acquired = False
+        try:
+            with self._import_file_lock:
+                if self._import_file_busy or self._note_file_busy:
                     return
+                self._import_file_busy = True
                 self._note_file_busy = True
-            self._note_file_cancel.clear()
-            self._note_file_work(str(path or ""))
+                acquired = True
+                self._import_cancel_event.clear()
+                self._note_cancel_event.clear()
+            self._import_file_work(str(path or ""))
         except Exception as e:
             try:
                 if self.gui is not None:
                     self.gui.after(
-                        0, lambda m=str(e): self.gui.note_file_done(
+                        0, lambda m=str(e): self.gui.import_file_done(
                             False, f"File error: {m}"))
             except Exception:
                 pass
         finally:
-            try:
-                with self._note_file_lock:
+            if acquired:
+                with self._import_file_lock:
+                    self._import_file_busy = False
                     self._note_file_busy = False
-            except Exception:
-                pass
 
-    def _note_file_prog(self, frac: float, msg: str = ""):
+    def _note_file_start(self, path: str):
+        """Legacy alias."""
+        try:
+            return self._import_file_start(path)
+        except Exception:
+            pass
+
+    def _import_file_prog(self, frac: float, msg: str = ""):
         try:
             g = self.gui
             if g is None:
                 return
             try:
-                g.after(0, lambda f=frac, m=msg: g.set_note_file_progress(f, m))
+                g.after(0, lambda f=frac, m=msg: g.set_import_file_progress(f, m))
             except Exception:
                 pass
         except Exception:
             pass
 
-    def _note_file_resolve_engine(self, sel, cancel_event, prog):
-        """Return (engine, kind) for the Note tab selection, waiting for the
+    def _note_file_prog(self, frac: float, msg: str = ""):
+        """Legacy alias."""
+        try:
+            return self._import_file_prog(frac, msg)
+        except Exception:
+            pass
+
+    def _import_file_resolve_engine(self, sel, cancel_event, prog):
+        """Return (engine, kind) for the Import tab selection, waiting for the
         load (with progress + cancel). Raises RuntimeError on failure."""
         import time as _t
         kind = sel["kind"]
@@ -3521,7 +3945,7 @@ class MoonshineSTTApp:
                         raise RuntimeError("Moonshine load timed out")
             return eng, kind
         # Heavy tab instance (never the live singleton).
-        eng = self._tab_heavy("note", kind, sel.get("wmodel"))
+        eng = self._tab_heavy("import", kind, sel.get("wmodel"))
         if eng is None:
             raise RuntimeError(f"{kind} engine unavailable")
         if not eng.is_ready:
@@ -3555,19 +3979,19 @@ class MoonshineSTTApp:
                 pass
         return eng, kind
 
-    def _note_file_work(self, path: str):
+    def _import_file_work(self, path: str):
         """Extract -> transcribe (chunked) -> sentences -> append. Runs off
         the GUI thread; all Tk touches go via after()."""
         import os as _os
         from pathlib import Path as _P
-        cancel_event = self._note_file_cancel
-        prog = self._note_file_prog
+        cancel_event = self._import_cancel_event
+        prog = self._import_file_prog
         gui = self.gui
 
         def _done(ok, msg):
             try:
                 if gui is not None:
-                    gui.after(0, lambda: gui.note_file_done(ok, msg))
+                    gui.after(0, lambda: gui.import_file_done(ok, msg))
             except Exception:
                 pass
 
@@ -3587,11 +4011,11 @@ class MoonshineSTTApp:
             if cancel_event.is_set():
                 _done(False, "Cancelled")
                 return
-            sel = self.tab_selection("note")
-            prog(0.03, "Resolving note engine...")
+            sel = self.tab_selection("import")
+            prog(0.03, "Resolving import engine...")
             try:
-                eng, kind = self._note_file_resolve_engine(sel, cancel_event,
-                                                           prog)
+                eng, kind = self._import_file_resolve_engine(sel, cancel_event,
+                                                             prog)
             except InterruptedError:
                 _done(False, "Cancelled")
                 return
@@ -3609,10 +4033,23 @@ class MoonshineSTTApp:
                 _done(False, "ffmpeg not found - run setup.bat once")
                 return
             src = _P(path)
-            tmp_wav = src.parent / (src.stem + ".note_tmp16k.wav")
+            # Unique temp beside the source (same drive, no fixed-name
+            # collisions across reruns/crashes; always cleaned up below).
+            try:
+                import tempfile as _tf2
+                _fd, _tmp = _tf2.mkstemp(prefix=src.stem + ".import_",
+                                         suffix="_16k.wav",
+                                         dir=str(src.parent))
+                try:
+                    _os.close(_fd)
+                except Exception:
+                    pass
+                tmp_wav = _P(_tmp)
+            except Exception:
+                tmp_wav = src.parent / (src.stem + ".import_tmp16k.wav")
             try:
                 if tmp_wav.resolve() == src.resolve():
-                    tmp_wav = tmp_wav.with_name(src.stem + "_note16k.wav")
+                    tmp_wav = tmp_wav.with_name(src.stem + "_import16k.wav")
             except Exception:
                 pass
             try:
@@ -3637,7 +4074,7 @@ class MoonshineSTTApp:
                 if cancel_event.is_set():
                     _done(False, "Cancelled")
                     return
-                texts = self._note_file_transcribe(
+                texts = self._import_file_transcribe(
                     eng, kind, sel, tmp_wav, cancel_event, prog)
             finally:
                 try:
@@ -3652,13 +4089,17 @@ class MoonshineSTTApp:
                 _done(False, "No speech detected in file")
                 return
             try:
-                from note_engine import (format_note_sentences as _fmt,
-                                         format_note_file_text as _head)
+                from services.note_format import (format_note_sentences as _fmt,
+                                                 format_note_file_text as _head)
             except Exception:
-                _fmt = lambda t: (t or "").strip()  # noqa: E731
-                _head = lambda n, e, b: (b or "").strip()  # noqa: E731
+                try:
+                    from note_engine import (format_note_sentences as _fmt,
+                                             format_note_file_text as _head)
+                except Exception:
+                    _fmt = lambda t: (t or "").strip()  # noqa: E731
+                    _head = lambda n, e, b: (b or "").strip()  # noqa: E731
             try:
-                engine_label = self._describe_tab_engine("note")
+                engine_label = self._describe_tab_engine("import")
             except Exception:
                 engine_label = str(kind)
             sentences = _fmt(raw)
@@ -3671,7 +4112,7 @@ class MoonshineSTTApp:
             try:
                 if gui is not None:
                     gui.after(
-                        0, lambda f=formatted: gui.append_note_file_text(f))
+                        0, lambda f=formatted: gui.append_import_file_text(f))
             except Exception:
                 pass
             # Sentence count for an honest completion line.
@@ -3689,8 +4130,22 @@ class MoonshineSTTApp:
             traceback.print_exc()
             _done(False, f"File error: {e}")
 
-    def _note_file_transcribe(self, eng, kind, sel, tmp_wav, cancel_event,
-                              prog):
+    def _note_file_resolve_engine(self, sel, cancel_event, prog):
+        """Legacy alias."""
+        try:
+            return self._import_file_resolve_engine(sel, cancel_event, prog)
+        except Exception as e:
+            raise e
+
+    def _note_file_work(self, path: str):
+        """Legacy alias."""
+        try:
+            return self._import_file_work(path)
+        except Exception:
+            pass
+
+    def _import_file_transcribe(self, eng, kind, sel, tmp_wav, cancel_event,
+                                prog):
         """Chunked file transcription -> list of plain texts. Raises on
         cancel; engine failure strings become RuntimeError (never sentences)."""
         import os as _os
@@ -3711,7 +4166,7 @@ class MoonshineSTTApp:
             try:
                 eff_src = "auto"
                 try:
-                    # Note tab has no per-file language picker: follow the
+                    # Import tab has no per-file language picker: follow the
                     # shared live whisper src lang (translate outputs en).
                     eff_src = str(self.config.get("whisper_src_lang",
                                                   "auto") or "auto")
@@ -3804,6 +4259,15 @@ class MoonshineSTTApp:
             traceback.print_exc()
             raise RuntimeError(f"transcription failed: {e}")
 
+    def _note_file_transcribe(self, eng, kind, sel, tmp_wav, cancel_event,
+                              prog):
+        """Legacy alias."""
+        try:
+            return self._import_file_transcribe(eng, kind, sel, tmp_wav,
+                                               cancel_event, prog)
+        except Exception as e:
+            raise e
+
     def _on_close(self):
         try:
             if self.gui and not self.gui.confirm_note_processing():
@@ -3816,7 +4280,16 @@ class MoonshineSTTApp:
         except Exception:
             pass
         try:
-            self._note_file_cancel.set()
+            if self.gui and not self.gui.confirm_import_close():
+                return
+        except Exception:
+            pass
+        try:
+            self._import_cancel_event.set()
+        except Exception:
+            pass
+        try:
+            self._note_cancel_event.set()
         except Exception:
             pass
         try:

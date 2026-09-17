@@ -68,19 +68,22 @@ Moonshine stay on CPU.
   cancel, and a remaining-time countdown. *Boost quiet audio* applies a
   loudnorm pass before transcription for soft/uneven recordings (burns
   always re-encode from the original, so they are unaffected).
-- **Per-tab engines** — Live, SRT File, and Note each pick their own
-  engine + model. A tab you never explicitly set follows your last pick
+- **Per-tab engines** — Live, SRT File, Note, and Import each pick their
+  own engine + model. A tab you never explicitly set follows your last pick
   elsewhere; changing a tab while another session runs asks first
   (dual engines = dual RAM, stated upfront), otherwise idle engines are
-  unloaded to make room. Mic dictation, an SRT batch, and Note can all run
-  at once on different engines.
-- **Note tab** — mic dictation in 40–80s chunks plus **file import**:
-  drag & drop (or Browse) any audio/video (`wav/mp3/m4a/mp4/mkv/avi/mov/…`),
-  *Transcribe File* runs it through this tab's engine (Whisper single-pass,
-  Canary/Moonshine VAD-chunked) with progress + cancel, then appends the
-  result **one sentence per line** (Latin + CJK aware, abbreviations kept).
-  *Save as TXT* writes UTF-8, *Copy All* copies to clipboard; mic and file
-  notes share the same editable box (quit warns while a file still runs).
+  unloaded to make room. Mic dictation, an SRT batch, Note, and an Import
+  job can all run at once on different engines.
+- **Note tab** — mic dictation in 40–80s chunks with timer, *Save as TXT*
+  (UTF-8), *Copy All*, and session-audio export. File import moved out —
+  see the Import tab (mic and import no longer share a box).
+- **Import tab** — drag & drop (or Browse) any audio/video
+  (`wav/mp3/m4a/mp4/mkv/avi/mov/…`), *Transcribe File* runs it through
+  this tab's own engine (Whisper single-pass, Canary/Moonshine VAD-chunked)
+  with progress + cancel, then appends the result **one sentence per line**
+  (Latin + CJK aware, abbreviations kept) into its own editable box.
+  *Save as TXT* writes UTF-8, *Copy All* copies to clipboard; quit warns
+  while a file still runs or sentences are unsaved.
 - **One primary button** — the action slot morphs with the queue: files
   still need SRTs → *Generate SRT*; every queued file already has one →
   *Convert to MP4*. Tick *Burn MP4 automatically after SRT* and one click
@@ -236,10 +239,20 @@ overwriting (all / per-file / abort); the app remembers your last tab.
 ## Project structure
 
 ```text
-moonshine_stt.py   main app: F2 hook, live queue, SRT jobs, config
-gui.py             customtkinter dark UI (Live + SRT File + Note tabs)
+moonshine_stt.py   main app: F2 hook, live queue, SRT/Note/Import jobs (imports core.*)
+gui.py             app window shell (~850 lines: build, theme toggle, tab glue)
+ui/tabs/live.py    Live-tab controls (record/output/history, engine menus)
+ui/tabs/srt.py     SRT File tab (queue, burn controls, languages, preview)
+ui/tabs/note.py    Note-tab mic dictation + engine row
+ui/tabs/import_tab.py  Import-tab file UI + legacy note_file_* aliases
+ui/dialogs.py      model manager + burn-speed compare dialogs
+ui/choices.py      static menus/labels (engines, models, languages, burn)
+core/              app config + version (config.py) - single source of truth
+ui/                shared theme palette (theme.py) + widgets (widgets.py)
+services/          file-import sentence formatting (note_format.py)
+engines/           uniform re-export of every STT backend wrapper
 engine.py          Moonshine v2 wrapper
-note_engine.py     Note-mode chunked recorder + async transcriber + sentence formatter (file import)
+note_engine.py     Note-mode chunked recorder + async transcriber
 recorder.py        microphone capture (16 kHz)
 input_sim.py       clipboard + Ctrl+V insertion
 srt.py             SRT backend: ffmpeg extract, VAD, word-anchored cue packing,
@@ -293,7 +306,50 @@ requirements*.txt  dependency pins (base / Canary / Whisper)
 
 ## Changelog
 
-### v1.3.0 (latest)
+### v1.4.0 (latest)
+
+- Import tab: the Note tab's *Import Audio / Video File* card is now a
+  standalone 4th tab with its own engine + model row, progress, and
+  sentence box (Save TXT / Copy All / Clear); Note keeps mic recording
+  only. Old `note_file_*` GUI/app method names still work as aliases
+- Modular packages: `core/` (config + version), `ui/` (theme + widgets),
+  `services/` (sentence formatting), `engines/` (uniform re-exports) —
+  top-level modules re-export the same names, so existing imports work
+- GUI split: `gui.py` (5,100 lines) is now a thin shell (~850 lines:
+  window build, theme toggle, tab glue) plus `ui/tabs/` mixins
+  (`live`/`srt`/`note`/`import_tab`), `ui/dialogs.py`, and
+  `ui/choices.py` — every method moved verbatim (152/152 pre-existing
+  bodies byte-identical), old `from gui import …` names still resolve
+- Fixed along the way: `SEG_SELECTED`/`SEG_SELECTED_HOVER` had no module
+  definition, so the initial tab-strip theming always `NameError`d into a
+  silent `except: pass` (only repairs on toggle worked) — now defined up
+  front from the dark theme
+- Engine-switch safety: answering No no longer applies the change anyway;
+  a tab's own engine can't be retargeted while it records/processes/loads;
+  apply revalidates the plan (no TOCTOU); Import no longer skipped in the
+  conflict scan; matching-but-loading Whisper instances are kept, not
+  unloaded and recreated; Live cost checks read the live singletons
+- Completion honesty: shutdown/pop-up gating uses an explicit per-stage
+  success flag instead of `"all " in text` (a failed auto-burn after good
+  SRTs no longer triggers shutdown); `_shutdown_pc`/`_abort_shutdown`
+  actually reference the imported subprocess module; model-switch flags
+  clear on every path (headless included); model manager blocks models
+  referenced by any tab, not just Live
+- Import Cancel actually cancels: the cancel Events no longer shadow the cancel
+  methods (registrations received an Event, so Cancel was dead); duplicate
+  starts can't clear a running job's busy flags anymore
+- Canary lifecycle: unload cancels in-flight loads, stale loaders can't corrupt
+  newer state, loads serialize, inference holds the model under lock, option
+  callbacks fire outside the lock, success-callback exceptions aren't mistaken
+  for load failures, stereo downmixes (empty audio is silence, not an error),
+  and the no-args transcribe retry only triggers on real signature mismatches
+- Pipeline fixes: Import jobs use unique temp WAVs (no fixed-name
+  collisions), run on the Import tab's own engine cache slot, and report
+  to the Import tab (status no longer lands on Note); tab-switch
+  adopt-default fixed (it compared display names to ids, so it never
+  fired); close path cancels Import jobs and warns on unsaved sentences
+
+### v1.3.0
 
 - Note file import: drag & drop (or Browse) audio/video (wav, mp3, mp4, mkv, …) into the Note tab — transcribes with the Note tab's engine (Whisper single-pass, Canary/Moonshine VAD-chunked) with progress + cancel, then appends one sentence per line (Latin + CJK, abbreviations kept)
 - Note export stays UTF-8 TXT + clipboard: imported sentences land in the same editable box, so Save as TXT (UTF-8) and Copy All work for mic and file notes alike; quit warns while a file import still runs and the tab is remembered across restarts

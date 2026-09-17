@@ -119,6 +119,9 @@ class TranscriptionEngine:
             self._ready = False
             wanted_arch = self._wanted_arch
         def _load():
+            success_base = None
+            success_one_shot = None
+            success_done = False
             try:
                 from moonshine_voice import get_model_for_language, Transcriber
                 from moonshine_voice.moonshine_api import ModelArch
@@ -133,9 +136,11 @@ class TranscriptionEngine:
                     cache_root.mkdir(parents=True, exist_ok=True)
                 except Exception:
                     cache_root = None
+                model_path = None
+                model_arch = None
                 try:
                     if cache_root is not None:
-                        self._model_path, self._model_arch = get_model_for_language(
+                        model_path, model_arch = get_model_for_language(
                             self.language, wanted, cache_root=cache_root
                         )
                     else:
@@ -143,18 +148,18 @@ class TranscriptionEngine:
                 except Exception as e:
                     try:
                         from moonshine_voice.download import get_model_for_language as _g
-                        self._model_path, self._model_arch = get_model_for_language(
+                        model_path, model_arch = get_model_for_language(
                             self.language, wanted
                         )
                         try:
-                            threading.Thread(target=_migrate_cache_to_portable, args=(self._model_path, cache_root), daemon=True).start()
+                            threading.Thread(target=_migrate_cache_to_portable, args=(model_path, cache_root), daemon=True).start()
                         except Exception:
                             pass
                     except Exception:
                         raise e
                 new_transcriber = Transcriber(
-                    model_path=self._model_path,
-                    model_arch=self._model_arch,
+                    model_path=model_path,
+                    model_arch=model_arch,
                 )
                 with self._tx_lock:
                     with self._lock:
@@ -166,6 +171,8 @@ class TranscriptionEngine:
                             return
                         old = self._transcriber
                         self._transcriber = new_transcriber
+                        self._model_path = model_path
+                        self._model_arch = model_arch
                         self._ready = True
                     if old is not None:
                         try:
@@ -174,23 +181,23 @@ class TranscriptionEngine:
                             pass
                 with self._lock:
                     if generation != self._load_generation:
-                        self._loading = False
                         return
                     self._last_error = None
                     one_shot = self._switch_cb
                     self._switch_cb = None
                     try:
-                        loaded_val = self._model_arch.value
+                        loaded_val = model_arch.value
                     except Exception:
                         try:
-                            loaded_val = int(self._model_arch)
+                            loaded_val = int(model_arch)
                         except Exception:
                             loaded_val = None
                     wanted_now = self._wanted_arch
                     self._loading = False
+                    base_cb = self._base_ready
                 try:
                     stale = (wanted_now is not None and loaded_val is not None
-                             and int(wanted_now) != int(loaded_val))
+                              and int(wanted_now) != int(loaded_val))
                 except Exception:
                     stale = False
                 if stale:
@@ -201,26 +208,36 @@ class TranscriptionEngine:
                             one_shot = None
                     self.load()
                     return
-                if self._base_ready:
-                    self._base_ready(True, None)
-                if one_shot:
-                    one_shot(True, None)
+                success_base = base_cb
+                success_one_shot = one_shot
+                success_done = True
             except Exception as e:
                 import traceback
                 traceback.print_exc()
-                self._loading = False
                 with self._lock:
                     if generation != self._load_generation:
-                        self._loading = False
                         return
                     self._ready = False
                     self._last_error = str(e)
                     one_shot = self._switch_cb
                     self._switch_cb = None
+                    self._loading = False
                 if self._base_ready:
                     self._base_ready(False, str(e))
                 if one_shot:
                     one_shot(False, str(e))
+                return
+            if success_done:
+                if success_base:
+                    try:
+                        success_base(True, None)
+                    except Exception:
+                        pass
+                if success_one_shot:
+                    try:
+                        success_one_shot(True, None)
+                    except Exception:
+                        pass
         threading.Thread(target=_load, daemon=True).start()
     def switch_model(self, new_arch: Optional[int], on_ready: Optional[Callable] = None):
         with self._lock:
@@ -229,11 +246,11 @@ class TranscriptionEngine:
         self.load()
     def unload(self) -> bool:
         with self._lock:
-            if self._transcriber is None:
-                return False
             self._load_generation += 1
             self._ready = False
+            self._loading = False
             self._last_error = None
+            had = self._transcriber is not None
         with self._tx_lock:
             with self._lock:
                 tr = self._transcriber
@@ -243,17 +260,20 @@ class TranscriptionEngine:
                     tr.close()
                 except Exception:
                     pass
-        return True
+        return had
     def transcribe(self, audio_data: np.ndarray, sample_rate: int = 16000) -> str:
-        with self._lock:
-            if not self._ready or self._transcriber is None:
-                return ""
-            tr = self._transcriber
         try:
-            arr = np.asarray(audio_data).flatten()
-            if arr.dtype == np.int16:
+            raw = np.asarray(audio_data)
+            if raw.size == 0:
+                return ""
+            orig_dtype = raw.dtype
+            if raw.ndim == 2:
+                arr = raw.mean(axis=1)
+            else:
+                arr = raw.flatten()
+            if orig_dtype == np.int16:
                 audio_float = arr.astype(np.float32) / 32768.0
-            elif arr.dtype == np.int32:
+            elif orig_dtype == np.int32:
                 audio_float = arr.astype(np.float32) / 2147483648.0
             else:
                 audio_float = arr.astype(np.float32)
@@ -262,6 +282,10 @@ class TranscriptionEngine:
             audio_float = np.clip(audio_float, -1.0, 1.0)
             audio_list = audio_float.tolist()
             with self._tx_lock:
+                with self._lock:
+                    if not self._ready or self._transcriber is None:
+                        return ""
+                    tr = self._transcriber
                 transcript = tr.transcribe_without_streaming(
                     audio_list, sample_rate=sample_rate
                 )
