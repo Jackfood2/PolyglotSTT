@@ -177,6 +177,20 @@ class LiveTabMixin:
             except Exception:
                 pass
 
+    def set_unload_callback(self, cb: Callable):
+        self._unload_cb = cb if callable(cb) else None
+
+    def _on_live_unload(self):
+        try:
+            cb = getattr(self, "_unload_cb", None)
+            msg = cb() if callable(cb) else "Unavailable"
+        except Exception as e:
+            msg = f"Error: {e}"
+        try:
+            self.set_model_status(str(msg))
+        except Exception:
+            pass
+
     def set_engine(self, engine: str, task: str, src_lang: str, engine_cb: Callable, task_cb: Callable, lang_cb: Callable):
         self._engine_callback = engine_cb if callable(engine_cb) else None
         self._canary_task_callback = task_cb if callable(task_cb) else None

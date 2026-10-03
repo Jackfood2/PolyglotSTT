@@ -1,3 +1,4 @@
+import gc
 import io
 import logging
 import os
@@ -65,6 +66,286 @@ _MODEL_REPOS = {
 }
 
 _LOG = logging.getLogger(__name__)
+
+
+def _resident_model_mb(model_id: str) -> int:
+    """Estimated int8 resident RAM for a model, via gpu.py when available."""
+    try:
+        import gpu
+
+        return gpu.whisper_resident_mb(model_id)
+    except Exception:
+        return {
+            "tiny": 900, "base": 950, "small": 1250,
+            "medium": 1900, "large": 3400, "large-v1": 3400,
+            "large-v2": 3400, "large-v3": 3400,
+        }.get((model_id or "").strip(), 3400)
+
+
+# ── RAM safeguards ─────────────────────────────────────────────────────────
+# Whisper keeps the whole model resident in RAM and CTranslate2/MKL reserve
+# per-thread scratch buffers on every call. A 16GB box running two engines (or
+# a second copy of the app) can hit the allocator mid-chunk and raise
+# "mkl_malloc failed to allocate memory". These helpers keep the process inside
+# its RAM budget instead of letting the allocation fail mid-session.
+
+# Never let a resident model eat into the RAM Windows needs for itself plus
+# the desktop: a 16GB box commits hard at ~14GB, and the failure mode is an
+# allocator failure mid-session rather than a clean refusal.
+_RESIDENT_HEADROOM_MB = 2048
+# Free RAM below this counts as "under pressure": trim inference threads.
+_PRESSURE_MB = 2048
+# Threads are halved repeatedly while pressure persists, down to this floor.
+_MIN_CPU_THREADS = 2
+
+_OOM_SIGNATURES = (
+    "mkl_malloc",
+    "std::bad_alloc",
+    "bad_alloc",
+    "cannot allocate memory",
+    "failed to allocate",
+    "unable to allocate",
+    "out of memory",
+    "not enough memory",
+    "insufficient memory",
+    "cannot allocate",
+)
+
+_MALLOC_TRIM = None
+_MALLOC_TRIM_PROBED = False
+
+
+def _available_ram_mb() -> Optional[int]:
+    """Physical RAM still available to this machine, in MB (None if unknown)."""
+    try:
+        if os.name == "nt":
+            import ctypes
+
+            class _MemStatusEx(ctypes.Structure):
+                _fields_ = [
+                    ("dwLength", ctypes.c_ulong),
+                    ("dwMemoryLoad", ctypes.c_ulong),
+                    ("ullTotalPhys", ctypes.c_ulonglong),
+                    ("ullAvailPhys", ctypes.c_ulonglong),
+                    ("ullTotalPageFile", ctypes.c_ulonglong),
+                    ("ullAvailPageFile", ctypes.c_ulonglong),
+                    ("ullTotalVirtual", ctypes.c_ulonglong),
+                    ("ullAvailVirtual", ctypes.c_ulonglong),
+                    ("ullAvailExtendedVirtual", ctypes.c_ulonglong),
+                ]
+
+            status = _MemStatusEx()
+            status.dwLength = ctypes.sizeof(_MemStatusEx)
+
+            if not ctypes.windll.kernel32.GlobalMemoryStatusEx(
+                ctypes.byref(status)
+            ):
+                return None
+
+            return int(status.ullAvailPhys // (1024 * 1024))
+
+        page_size = os.sysconf("SC_PAGE_SIZE")
+        pages = os.sysconf("SC_AVPHYS_PAGES")
+
+        if page_size > 0 and pages > 0:
+            return int(page_size * pages // (1024 * 1024))
+    except Exception:
+        _LOG.debug("Could not probe free RAM", exc_info=True)
+
+    return None
+
+
+def _total_ram_mb() -> Optional[int]:
+    """Physical RAM installed, in MB (None if unknown)."""
+    try:
+        if os.name == "nt":
+            import ctypes
+
+            class _MemStatusEx(ctypes.Structure):
+                _fields_ = [
+                    ("dwLength", ctypes.c_ulong),
+                    ("dwMemoryLoad", ctypes.c_ulong),
+                    ("ullTotalPhys", ctypes.c_ulonglong),
+                    ("ullAvailPhys", ctypes.c_ulonglong),
+                    ("ullTotalPageFile", ctypes.c_ulonglong),
+                    ("ullAvailPageFile", ctypes.c_ulonglong),
+                    ("ullTotalVirtual", ctypes.c_ulonglong),
+                    ("ullAvailVirtual", ctypes.c_ulonglong),
+                    ("ullAvailExtendedVirtual", ctypes.c_ulonglong),
+                ]
+
+            status = _MemStatusEx()
+            status.dwLength = ctypes.sizeof(_MemStatusEx)
+
+            if not ctypes.windll.kernel32.GlobalMemoryStatusEx(
+                ctypes.byref(status)
+            ):
+                return None
+
+            return int(status.ullTotalPhys // (1024 * 1024))
+
+        page_size = os.sysconf("SC_PAGE_SIZE")
+        pages = os.sysconf("SC_PHYS_PAGES")
+
+        if page_size > 0 and pages > 0:
+            return int(page_size * pages // (1024 * 1024))
+    except Exception:
+        _LOG.debug("Could not probe total RAM", exc_info=True)
+
+    return None
+
+
+def _commit_free_mb() -> Optional[int]:
+    """Commit charge still available, in MB (None if unknown).
+
+    On Windows malloc needs commit, not just physical RAM: with the pagefile
+    disabled the commit limit equals physical RAM, and a large contiguous
+    reservation can fail while "free RAM" still looks healthy. The budget
+    guard must use the tighter of the two."""
+    try:
+        if os.name == "nt":
+            import ctypes
+
+            class _MemStatusEx(ctypes.Structure):
+                _fields_ = [
+                    ("dwLength", ctypes.c_ulong),
+                    ("dwMemoryLoad", ctypes.c_ulong),
+                    ("ullTotalPhys", ctypes.c_ulonglong),
+                    ("ullAvailPhys", ctypes.c_ulonglong),
+                    ("ullTotalPageFile", ctypes.c_ulonglong),
+                    ("ullAvailPageFile", ctypes.c_ulonglong),
+                    ("ullTotalVirtual", ctypes.c_ulonglong),
+                    ("ullAvailVirtual", ctypes.c_ulonglong),
+                    ("ullAvailExtendedVirtual", ctypes.c_ulonglong),
+                ]
+
+            status = _MemStatusEx()
+            status.dwLength = ctypes.sizeof(_MemStatusEx)
+
+            if not ctypes.windll.kernel32.GlobalMemoryStatusEx(
+                ctypes.byref(status)
+            ):
+                return None
+
+            return int(status.ullAvailPageFile // (1024 * 1024))
+    except Exception:
+        _LOG.debug("Could not probe commit limit", exc_info=True)
+
+    return None
+
+
+def _effective_free_mb() -> Optional[int]:
+    """Usable headroom for a new model: the tighter of free RAM and free
+    commit (None only when neither can be probed)."""
+    phys = _available_ram_mb()
+
+    if os.name != "nt":
+        return phys
+
+    commit = _commit_free_mb()
+
+    if phys is None:
+        return commit
+
+    if commit is None:
+        return phys
+
+    return min(phys, commit)
+
+
+def _is_oom_error(error: BaseException) -> bool:
+    """True for allocator failures (mkl_malloc / bad_alloc / MemoryError)."""
+    if isinstance(error, MemoryError):
+        return True
+
+    try:
+        text = str(error).strip().lower()
+    except Exception:
+        return False
+
+    return any(signature in text for signature in _OOM_SIGNATURES)
+
+
+def _trim_allocator() -> None:
+    """Return freed arenas to the OS so the next large allocation can fit.
+
+    CPython keeps freed blocks in its own arenas and glibc holds large freed
+    blocks on the heap; neither shrinks RSS without help, so a run of
+    transcriptions can exhaust RAM while the allocator has plenty free."""
+    global _MALLOC_TRIM, _MALLOC_TRIM_PROBED
+
+    try:
+        gc.collect()
+    except Exception:
+        pass
+
+    if os.name == "nt":
+        # Windows has no malloc_trim; the working set trim is the equivalent.
+        try:
+            import ctypes
+            import ctypes.wintypes as wintypes
+
+            kernel32 = ctypes.windll.kernel32
+
+            def _enum_heap() -> bool:
+                proc = ctypes.windll.kernel32.GetCurrentProcess()
+                handle = wintypes.HANDLE()
+
+                def _callback(_h, _lparam):
+                    try:
+                        kernel32.SetProcessWorkingSetSize(proc, -1, -1)
+                    except Exception:
+                        pass
+
+                    return True
+
+                kernel32.HeapWalk(
+                    handle,
+                    ctypes.WINFUNCTYPE(
+                        ctypes.c_int,
+                        wintypes.HANDLE,
+                        wintypes.WORD,
+                        ctypes.c_void_p,
+                    )(_callback),
+                    0,
+                )
+                return True
+
+            _enum_heap()
+        except Exception:
+            _LOG.debug("Windows working-set trim failed", exc_info=True)
+
+        return
+
+    if not _MALLOC_TRIM_PROBED:
+        _MALLOC_TRIM_PROBED = True
+
+        try:
+            import ctypes
+            import ctypes.util
+
+            for name in (ctypes.util.find_library("c"), "libc.so.6"):
+                if not name:
+                    continue
+
+                try:
+                    lib = ctypes.CDLL(name)
+                    trim = getattr(lib, "malloc_trim", None)
+
+                    if trim is not None:
+                        _MALLOC_TRIM = trim
+                        break
+                except OSError:
+                    continue
+        except Exception:
+            _LOG.debug("malloc_trim probe failed", exc_info=True)
+
+    if _MALLOC_TRIM is not None:
+        try:
+            _MALLOC_TRIM(0)
+        except Exception:
+            _LOG.debug("malloc_trim failed", exc_info=True)
+
 
 ReadyCallback = Callable[[bool, Optional[str]], None]
 ProgressCallback = Callable[[str], None]
@@ -277,6 +558,15 @@ def delete_whisper_model(
 
 
 class WhisperEngine:
+    # Process-wide registry of resident engines, so N tabs asking for N heavy
+    # models cannot collectively outgrow physical RAM.
+    _resident_lock = threading.Lock()
+    _resident_engines: List["WhisperEngine"] = []
+    # Serializes model construction across instances. Two tabs loading at once
+    # both pass the budget check, then both allocate: the second dies with
+    # "mkl_malloc: failed to allocate memory". One at a time instead.
+    _load_gate = threading.Lock()
+
     def __init__(
         self,
         task: str = "translate",
@@ -307,6 +597,12 @@ class WhisperEngine:
         # Requested model/device for the current load and installed model.
         self._load_request = None
         self._loaded_request = None
+        # Adaptive inference-thread ceiling (None = use the CPU default).
+        self._thread_limit: Optional[int] = None
+        # Set after an allocator failure: keep decoding greedily from now on.
+        self._lean_decode = False
+        # Resident models in this process, for the RAM budget guard.
+        self._resident_mb = 0
         self._on_ready = on_ready
 
         self._lock = threading.Lock()
@@ -439,6 +735,140 @@ class WhisperEngine:
         except (AttributeError, OSError):
             return max(1, os.cpu_count() or 4)
 
+    def _thread_ceiling(self) -> int:
+        """MKL reserves per-thread scratch buffers, so thread count is also a
+        memory knob. Under RAM pressure, halve it (never below the floor)."""
+        threads = self._cpu_threads()
+
+        try:
+            threads = int(threads)
+        except (TypeError, ValueError):
+            threads = 4
+
+        if threads <= 0:
+            threads = 1
+
+        with self._lock:
+            threads = min(threads, self._thread_limit or threads)
+
+        free = _available_ram_mb()
+
+        while threads > _MIN_CPU_THREADS and free is not None and free < _PRESSURE_MB:
+            threads = max(_MIN_CPU_THREADS, threads // 2)
+            free = _available_ram_mb()
+
+        return max(1, threads)
+
+    def _lower_thread_limit(self) -> int:
+        """Halve the thread budget after an allocator failure and hand the freed
+        arenas back, so the next attempt starts from a smaller footprint."""
+        with self._lock:
+            base = self._thread_limit or self._cpu_threads()
+            self._thread_limit = max(
+                _MIN_CPU_THREADS,
+                int(base) // 2,
+            )
+            limit = self._thread_limit
+
+        _trim_allocator()
+        return limit
+
+    @staticmethod
+    def _model_ram_mb(model_id: str, compute: str) -> int:
+        """Rough resident size for the loaded model, used for budget checks."""
+        base = _resident_model_mb(model_id)
+
+        if str(compute or "").lower() in {"float16", "float32"}:
+            return base * 2
+
+        return base
+
+    def _check_ram_budget(self, model_id: str, compute: str) -> Optional[str]:
+        """Refuse a load that cannot fit. Returns a reason string, or None.
+
+        The app keeps one heavy engine per tab, so a user can ask for two or
+        three models at once. On a 16GB box that walks straight into
+        "mkl_malloc failed to allocate memory" a few chunks into a session."""
+        need = self._model_ram_mb(model_id, compute)
+        free = _effective_free_mb()
+
+        if free is None:
+            return None
+
+        others = self._resident_total_mb(exclude=self)
+
+        # NOTE: others are deliberately NOT added back. Their RAM is still
+        # occupied — the app swaps idle tabs' engines out before loading
+        # (see note_record_request), so by the time this check runs, `free`
+        # is what the allocation will actually find.
+        #
+        # One correction: weights are memory-mapped and faulted in lazily,
+        # so the OS free counter can still look healthy right after another
+        # engine installed. Cap `free` at total-minus-claims so a second
+        # back-to-back load cannot sail through on stale numbers.
+        total = _total_ram_mb()
+
+        if total is not None and others > 0:
+            free = min(free, total - others)
+
+        if free - need < _RESIDENT_HEADROOM_MB:
+            active = max(0, others // 1024)
+            loaded = (
+                f" (another engine is holding ~{active}GB)"
+                if active
+                else ""
+            )
+
+            return (
+                f"Not enough free RAM for Whisper {model_id} on {compute}: "
+                f"{free}MB free{loaded}, needs ~{need}MB. "
+                f"Unload another engine or use a smaller model."
+            )
+
+        return None
+
+    @staticmethod
+    def _resident_total_mb(exclude: Optional["WhisperEngine"] = None) -> int:
+        """Sum of RAM our own engines are holding right now."""
+        total = 0
+
+        with WhisperEngine._resident_lock:
+            for engine in list(WhisperEngine._resident_engines):
+                if engine is exclude:
+                    continue
+
+                try:
+                    if engine.is_ready:
+                        total += int(getattr(engine, "_resident_mb", 0) or 0)
+                except Exception:
+                    continue
+
+        return total
+
+    def _register_resident(self, resident_mb: int) -> None:
+        with self._lock:
+            self._resident_mb = int(resident_mb or 0)
+
+        with WhisperEngine._resident_lock:
+            if self not in WhisperEngine._resident_engines:
+                WhisperEngine._resident_engines.append(self)
+
+    def _unregister_resident(self) -> None:
+        with WhisperEngine._resident_lock:
+            try:
+                WhisperEngine._resident_engines.remove(self)
+            except ValueError:
+                pass
+
+    def _release_ram(self) -> None:
+        """Drop this engine's RAM accounting and hand arenas back to the OS."""
+        self._unregister_resident()
+
+        with self._lock:
+            self._resident_mb = 0
+
+        _trim_allocator()
+
     @staticmethod
     def _dispose_model(model) -> None:
         if model is None:
@@ -520,6 +950,70 @@ class WhisperEngine:
             local_files_only=False,
         )
 
+    def _construct_model(
+        self,
+        model_cls,
+        path: str,
+        device: str,
+        compute: str,
+        generation: int,
+        on_progress: Optional[ProgressCallback],
+    ):
+        """Build the CTranslate2 model, stepping threads down on OOM.
+
+        MKL sizes per-thread scratch buffers from the thread count, so the
+        same model that fails at 14 threads can load fine at 4: each halving
+        roughly halves the upfront reservation. Non-allocator errors raise
+        immediately; a superseded generation aborts with None."""
+        attempt = max(1, self._thread_ceiling())
+
+        while True:
+            if not self._is_current(generation):
+                return None
+
+            try:
+                return model_cls(
+                    path,
+                    device=device,
+                    compute_type=compute,
+                    cpu_threads=attempt,
+                    local_files_only=True,
+                )
+            except Exception as error:
+                if not _is_oom_error(error):
+                    raise
+
+                next_attempt = attempt // 2
+
+                if next_attempt < 1:
+                    raise
+
+                # One line per retry: the full traceback is logged once, on
+                # final failure, by the caller's handler.
+                _LOG.warning(
+                    "Whisper load OOM at %d threads (free=%sMB, "
+                    "commit=%sMB); retrying with %d: %s",
+                    attempt,
+                    _available_ram_mb(),
+                    _commit_free_mb(),
+                    next_attempt,
+                    error,
+                )
+
+                # Persist the reduction so inference starts from the thread
+                # count that is known to fit, instead of rediscovering it.
+                with self._lock:
+                    self._thread_limit = max(1, next_attempt)
+
+                self._report_progress(
+                    generation,
+                    on_progress,
+                    f"Low memory: retrying load with {next_attempt} threads",
+                )
+
+                _trim_allocator()
+                attempt = next_attempt
+
     def _load_worker(
         self,
         generation: int,
@@ -529,11 +1023,17 @@ class WhisperEngine:
         switch_callback: Optional[ReadyCallback],
     ) -> None:
         model = None
+        installed = False
 
         try:
             with self._load_lock:
                 if not self._is_current(generation):
                     return
+
+                # A new model starts from a full-quality budget: the lean
+                # settings were a response to pressure that no longer applies.
+                with self._lock:
+                    self._lean_decode = False
 
                 with self._infer_lock:
                     with self._lock:
@@ -546,6 +1046,10 @@ class WhisperEngine:
 
                     self._dispose_model(old_model)
                     del old_model
+
+                # Releasing the old model frees RAM the new one needs: a
+                # same-size switch on a 16GB box must not look like two models.
+                self._release_ram()
 
                 self._ensure_dirs()
 
@@ -571,46 +1075,63 @@ class WhisperEngine:
                     f"Loading model on {device} with {compute}",
                 )
 
-                kwargs = {
-                    "cpu_threads": self._cpu_threads(),
-                    "local_files_only": True,
-                }
-
-                try:
-                    model = WhisperModel(
-                        path,
-                        device=device,
-                        compute_type=compute,
-                        **kwargs,
-                    )
-                except Exception as cuda_error:
-                    if device != "cuda":
-                        raise
-
+                # Serialized across instances, with the budget re-checked
+                # under the gate: a concurrent load may have installed (and
+                # claimed RAM) while this one waited. The waiter then refuses
+                # honestly instead of dying in mkl_malloc.
+                with WhisperEngine._load_gate:
                     if not self._is_current(generation):
                         return
 
-                    _LOG.warning(
-                        "CUDA model loading failed; trying CPU: %s",
-                        cuda_error,
-                    )
+                    budget_error = self._check_ram_budget(model_id, compute)
 
-                    self._report_progress(
-                        generation,
-                        on_progress,
-                        "CUDA loading failed; retrying on CPU",
-                    )
+                    if budget_error:
+                        raise RuntimeError(budget_error)
 
-                    device = "cpu"
-                    compute = "int8"
-                    reason = f"CUDA loading failed: {cuda_error}"
+                    try:
+                        model = self._construct_model(
+                            WhisperModel,
+                            path,
+                            device,
+                            compute,
+                            generation,
+                            on_progress,
+                        )
+                    except Exception as cuda_error:
+                        if device != "cuda":
+                            raise
 
-                    model = WhisperModel(
-                        path,
-                        device=device,
-                        compute_type=compute,
-                        **kwargs,
-                    )
+                        if not self._is_current(generation):
+                            return
+
+                        _LOG.warning(
+                            "CUDA model loading failed; trying CPU: %s",
+                            cuda_error,
+                        )
+
+                        self._report_progress(
+                            generation,
+                            on_progress,
+                            "CUDA loading failed; retrying on CPU",
+                        )
+
+                        device = "cpu"
+                        compute = "int8"
+                        reason = f"CUDA loading failed: {cuda_error}"
+
+                        model = self._construct_model(
+                            WhisperModel,
+                            path,
+                            device,
+                            compute,
+                            generation,
+                            on_progress,
+                        )
+
+                if model is None:
+                    # Superseded mid-construction: a newer generation owns the
+                    # engine now. Never install None over it.
+                    return
 
                 with self._infer_lock:
                     with self._lock:
@@ -627,26 +1148,67 @@ class WhisperEngine:
                         self._device_reason = reason
                         self._loaded_request = self._request_key(model_id, requested_device)
 
+                # Claim the RAM only once the model is actually installed and
+                # the generation still owns it: registering earlier would let a
+                # superseded load hold the budget hostage.
+                if self._is_current(generation):
+                    self._register_resident(
+                        self._model_ram_mb(model_id, compute)
+                    )
+                    installed = True
+
         except Exception as error:
+            message = str(error)
+
+            if _is_oom_error(error):
+                # The raw "mkl_malloc: failed to allocate memory" tells the
+                # user nothing actionable. Report the machine state instead:
+                # how much was free, what our other engines hold, and what to
+                # do about it.
+                others = WhisperEngine._resident_total_mb(exclude=self)
+                held = (
+                    f" Other Whisper engines are holding "
+                    f"~{others}MB."
+                    if others
+                    else ""
+                )
+                message = (
+                    f"Whisper {model_id} could not allocate memory "
+                    f"({_effective_free_mb()}MB free.{held} "
+                    f"Press 'Free memory' on this tab (or 'Unload' on the "
+                    f"other tab) to release idle engines, then try again. "
+                    f"Underlying error: {error})"
+                )
+
             with self._lock:
                 if generation != self._load_generation:
                     return
 
                 self._ready = False
                 self._loading = False
-                self._last_error = str(error)
+                self._last_error = message
 
             _LOG.exception("Whisper model loading failed")
 
             if self._is_current(generation):
-                _invoke_callback(self._on_ready, False, str(error))
+                _invoke_callback(self._on_ready, False, message)
 
             if self._is_current(generation):
-                _invoke_callback(switch_callback, False, str(error))
+                _invoke_callback(switch_callback, False, message)
 
             return
 
         finally:
+            # Only when the model was NOT installed: the half-built model is
+            # being thrown away, so stop claiming its RAM. On success the
+            # registration above must survive (it tracks the live model until
+            # unload()).
+            if not installed and self._is_current(generation):
+                self._unregister_resident()
+
+                with self._lock:
+                    self._resident_mb = 0
+
             self._dispose_model(model)
 
         self._report_progress(generation, on_progress, "Model ready")
@@ -808,8 +1370,14 @@ class WhisperEngine:
                 self._load_request = None
                 self._loaded_request = None
                 self._device_reason = "Unloaded"
+                self._thread_limit = None
+                self._lean_decode = False
 
             self._dispose_model(model)
+
+        # Hand the freed arenas back so the next engine (or the next tab's
+        # confirm-to-load) finds the RAM this one was holding.
+        self._release_ram()
 
         return had_work
 
@@ -831,12 +1399,17 @@ class WhisperEngine:
             source_lang if source_lang is not None else current_source
         )
 
+        with self._lock:
+            lean = self._lean_decode
+
         return {
             "task": effective_task,
             "language": (
                 None if effective_source == "auto" else effective_source
             ),
-            "beam_size": 5,
+            # Greedy once an allocator failure has proven beam search does not
+            # fit; cleared on reload so a fresh model can retry full quality.
+            "beam_size": 1 if lean else 5,
             "condition_on_previous_text": False,
             "word_timestamps": False,
         }
@@ -862,7 +1435,43 @@ class WhisperEngine:
             )
             options["word_timestamps"] = bool(word_timestamps)
 
-            segments, info = model.transcribe(wav_path, **options)
+            try:
+                segments, info = model.transcribe(wav_path, **options)
+            except Exception as error:
+                # "mkl_malloc failed to allocate memory" is raised from deep
+                # inside CTranslate2/MKL, so there is nothing useful to unwind
+                # at this level. The only way out is a smaller request: reclaim
+                # freed arenas, cut the MKL thread budget (scratch buffers are
+                # per-thread) and drop beam search (the other large per-call
+                # allocation), then retry. A second failure still raises, so a
+                # genuinely too-small box reports the error instead of hanging.
+                if not _is_oom_error(error):
+                    raise
+
+                _LOG.warning(
+                    "Whisper out of memory (free=%sMB); retrying lean",
+                    _available_ram_mb(),
+                    exc_info=True,
+                )
+
+                self._lower_thread_limit()
+
+                # Greedy decoding sticks for the rest of the session: later
+                # chunks go straight to the settings that are known to fit.
+                with self._lock:
+                    self._lean_decode = True
+
+                retry_options = dict(options)
+                retry_options["beam_size"] = 1
+
+                try:
+                    segments, info = model.transcribe(wav_path, **retry_options)
+                except Exception:
+                    _trim_allocator()
+                    raise
+
+                return list(segments), info
+
             return list(segments), info
 
     @staticmethod
@@ -949,7 +1558,12 @@ class WhisperEngine:
         self,
         audio_data: np.ndarray,
         sample_rate: int = 16000,
+        task: Optional[str] = None,
+        source_lang: Optional[str] = None,
     ) -> str:
+        """Transcribe PCM audio. task/source_lang override the engine
+        defaults for this call only, so one shared instance can serve tabs
+        with different options without switch_options churn."""
         if not self.is_ready:
             return ""
 
@@ -967,7 +1581,8 @@ class WhisperEngine:
                 return ""
 
             if sample_rate == 16000:
-                segments, _ = self._run(audio)
+                segments, _ = self._run(
+                    audio, task=task, source_lang=source_lang)
             else:
                 import soundfile as sf
 
@@ -980,7 +1595,8 @@ class WhisperEngine:
                         subtype="FLOAT",
                     )
                     buffer.seek(0)
-                    segments, _ = self._run(buffer)
+                    segments, _ = self._run(
+                        buffer, task=task, source_lang=source_lang)
 
             return self._join_text(segments)
 

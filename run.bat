@@ -1,7 +1,12 @@
 @echo off
 setlocal DisableDelayedExpansion
 cd /d "%~dp0"
-set "PATH=%~dp0python;%PATH%"
+rem C:-only: D: is BitLocker-locked (Graphviz) and breaks pip. Drop non-C: entries.
+for /f "delims=" %%P in ('powershell -NoProfile -Command "$a=$env:PATH -split ';' | Where-Object { $_ -ne '' -and $_ -match '^[Cc]:' -and $_ -notlike '*Graphviz*' } | Select-Object -Unique; [string]::Join(';',$a)"') do set "PATH=%%P"
+set "PATH=%~dp0venv\Scripts;%~dp0python;%PATH%"
+set "PYTHONPATH="
+set "PYTHONHOME="
+set "PIP_FIND_LINKS="
 rem Portable Python preferred; fall back to system Python 3.11 (source checkouts)
 set "PYTHON_EXE="%~dp0python\python.exe""
 if exist "%~dp0python\python.exe" goto PY_OK

@@ -306,7 +306,14 @@ requirements*.txt  dependency pins (base / Canary / Whisper)
 
 ## Changelog
 
-### v1.4.1 (latest)
+### v1.4.2 (latest)
+
+- RAM safeguards: Whisper checks free RAM before loading (`whisper_engine._check_ram_budget`, `gpu.whisper_resident_mb`), refuses with a message instead of `mkl_malloc` mid-session crash; threads trim under pressure; dual-engine confirm dialog agrees on cost
+- Free memory: Live `Unload` + Note `Free memory` buttons (`gui.live_unload_btn`, `unload_tab_engines` / `unload_other_tab_engines`); idle tab engines auto-swap out before heavy loads; one universal Whisper model picker for all tabs
+- Note typing fix: transcribed chunks insert at a dedicated `transcript_end` mark, never interleaved into typed words
+- Launch fix: `run.bat` / `setup.bat` / `run_windowless.bat` use C:-only PATH (BitLocker-locked D:/Graphviz broke pip) and clear `PYTHONPATH/HOME`
+
+### v1.4.1
 
 - Subtitle timing: a batch no longer fails when only a minority of segments
   lack matching word timestamps (common in Whisper translate mode) — the

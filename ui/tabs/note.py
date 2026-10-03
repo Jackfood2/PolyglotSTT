@@ -27,6 +27,7 @@ class NoteTabMixin:
         self._note_submitted = 0  # chunks cut by the recorder
         self._note_done = 0  # chunks fully transcribed (ok or not)
         self._note_dirty = False  # unsaved note content present
+        self._note_user_touched = False  # user typed since session start
         self._note_mic_warned = False  # mic-dead popup latch (per episode)
         self._note_last_level_t = 0.0  # level-post throttle stamp
         self._note_pending = False  # auto-start armed while engine loads
@@ -184,9 +185,18 @@ class NoteTabMixin:
             fg_color=BG_INPUT, button_color=ACCENT,
             command=self._on_note_model_changed)
         self.note_model_menu.grid(row=1, column=2, sticky="ew",
-                                   padx=(4, 16), pady=(2, 10))
+                                   padx=(4, 4), pady=(2, 10))
+        self.note_free_mem_btn = ctk.CTkButton(
+            info_card, text="Free memory", width=100, height=28,
+            font=("Segoe UI", 11),
+            fg_color=BTN_DIM, hover_color=BTN_DIM_HOVER,
+            text_color=FG_SECONDARY, corner_radius=8,
+            command=self._on_note_free_memory)
+        self.note_free_mem_btn.grid(row=1, column=3, sticky="e",
+                                    padx=(4, 16), pady=(2, 10))
         self._note_engine_cb = None
         self._note_model_cb = None
+        self._note_unload_cb = None
         try:
             self._refresh_note_model_menu()
         except Exception:
@@ -230,6 +240,41 @@ class NoteTabMixin:
     def _note_mark_dirty(self, event=None):
         try:
             self._note_dirty = True
+            self._note_user_touched = True
+        except Exception:
+            pass
+
+    def _note_transcript_insert(self, s):
+        """Insert at the transcription mark, then advance it past the new
+        text. Left gravity means words the user types at the same spot stay
+        after the mark, so chunks never interleave with typed words no
+        matter where the user types. Never raises."""
+        try:
+            self._note_transcript_mark()
+            self.note_text.insert("transcript_end", s)
+            try:
+                pos = self.note_text.index("transcript_end")
+                self.note_text.mark_set(
+                    "transcript_end", "%s + %d chars" % (pos, len(s)))
+            except Exception:
+                pass
+        except Exception:
+            pass
+
+    def _note_transcript_mark(self):
+        """Dedicated insertion point for transcribed chunks, independent of
+        the user's cursor: every chunk lands right after the previous one,
+        never inside what the user is typing. Right gravity keeps sequential
+        appends ordered however the user edits elsewhere. Recreated if a
+        select-all-delete removed it. Never raises."""
+        try:
+            try:
+                marks = self.note_text.mark_names()
+            except Exception:
+                marks = ()
+            if "transcript_end" not in marks:
+                self.note_text.mark_set("transcript_end", "end-1c")
+            self.note_text.mark_gravity("transcript_end", "left")
         except Exception:
             pass
 
@@ -245,8 +290,10 @@ class NoteTabMixin:
             if not current or current == "Transcription will appear here as you speak...":
                 self.note_text.delete("1.0", "end")
                 self._note_dirty = False
+                self._note_user_touched = False
             else:
-                self.note_text.insert("end", f"\n─── {time.strftime('%H:%M')} ───\n\n")
+                self._note_transcript_insert(
+                    f"\n─── {time.strftime('%H:%M')} ───\n\n")
                 try:
                     self.note_text.see("end")
                 except Exception:
@@ -268,6 +315,26 @@ class NoteTabMixin:
             self._note_record_confirm = None
             self._note_ready_cb = None
 
+    def set_note_unload_callback(self, cb):
+        """App 'Free memory' action: unloads other tabs' idle engines,
+        returns a one-line status message. None-safe."""
+        try:
+            self._note_unload_cb = cb if callable(cb) else None
+        except Exception:
+            self._note_unload_cb = None
+
+    def _on_note_free_memory(self):
+        try:
+            cb = getattr(self, "_note_unload_cb", None)
+            msg = cb() if callable(cb) else "Unavailable"
+        except Exception as e:
+            msg = f"Error: {e}"
+        try:
+            self.note_status_label.configure(text=str(msg),
+                                             text_color=WARNING)
+        except Exception:
+            pass
+
     def _note_start(self):
         if self._note_recorder is None:
             return
@@ -283,7 +350,7 @@ class NoteTabMixin:
                     try:
                         from tkinter import messagebox as _mb
                         _yes = bool(_mb.askyesno(
-                            "Load second engine?",
+                            "Switch engine?",
                             str(verdict.get("confirm") or
                                 "Another session is active."),
                             parent=self))
@@ -335,6 +402,15 @@ class NoteTabMixin:
                         pass
                     return
                 elif isinstance(verdict, dict) and "abort" in verdict:
+                    # Surface the reason when the app supplied one (e.g. not
+                    # enough free RAM); stay silent for a bare abort.
+                    reason = str(verdict.get("reason") or "").strip()
+                    if reason:
+                        try:
+                            self.note_status_label.configure(
+                                text=reason, text_color=DANGER)
+                        except Exception:
+                            pass
                     return
             self._note_begin_capture()
         except Exception as e:
@@ -638,15 +714,25 @@ class NoteTabMixin:
             pass
 
     def _note_on_text(self, text, index):
-        """Called when a chunk is transcribed. The box stays editable, so
-        appends go to the end without disturbing text being edited."""
+        """Called when a chunk is transcribed. The box stays editable:
+        chunks land at the transcription mark (right after the previous
+        chunk), never inside what the user is typing, and the viewport is
+        only pulled to the bottom when the user is already reading there."""
         def _append():
             try:
                 current = self.note_text.get("1.0", "end").strip()
                 if current == "Transcription will appear here as you speak...":
                     self.note_text.delete("1.0", "end")
-                self.note_text.insert("end", text + "\n\n")
-                self.note_text.see("end")
+                self._note_transcript_insert(text + "\n\n")
+                try:
+                    touched = bool(
+                        getattr(self, "_note_user_touched", False))
+                    at_bottom = bool(self.note_text.compare(
+                        "insert", ">=", "end-1c"))
+                    if at_bottom or not touched:
+                        self.note_text.see("transcript_end")
+                except Exception:
+                    pass
                 self._note_dirty = True
             except Exception:
                 pass
@@ -716,6 +802,10 @@ class NoteTabMixin:
             return
         self.note_text.delete("1.0", "end")
         self.note_text.insert("1.0", "Transcription will appear here as you speak...")
+        try:
+            self._note_user_touched = False
+        except Exception:
+            pass
         self.note_chunk_label.configure(text="")
         self._note_dirty = False
         self.note_status_label.configure(text="Ready to record", text_color=FG_DIM)

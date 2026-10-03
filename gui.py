@@ -261,9 +261,16 @@ class MoonshineGUI(LiveTabMixin, NoteTabMixin, ImportTabMixin, SrtTabMixin, Dial
             corner_radius=8, text_color=FG_SECONDARY,
             command=self._on_model_manage)
         self.model_manage_btn.pack(side="left", padx=4, pady=8)
+        self.live_unload_btn = ctk.CTkButton(
+            model_frame, text="Unload", width=80, font=("Segoe UI", 12),
+            fg_color=BTN_DIM, hover_color=BTN_DIM_HOVER, height=32,
+            corner_radius=8, text_color=FG_SECONDARY,
+            command=self._on_live_unload)
+        self.live_unload_btn.pack(side="left", padx=4, pady=8)
         ctk.CTkLabel(model_frame, text="Restart not needed", font=("Segoe UI", 9), text_color=FG_DIM).pack(side="left", padx=(8, 12), pady=8)
         self._model_callback = None
         self._model_manage_cb = None
+        self._unload_cb = None
         self._model_value_map = {}
         self.model_frame = model_frame
         self.engine_frame = engine_frame

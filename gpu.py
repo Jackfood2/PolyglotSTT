@@ -93,6 +93,19 @@ _WHISPER_INT8_MB = {"tiny": 700, "base": 700, "small": 900,
                     "medium": 1400, "large": 2800, "large-v1": 2800,
                     "large-v2": 2800, "large-v3": 2800}
 _CANARY_CUDA_MIN_MB = 10240
+# int8 resident RAM per model, with headroom for MKL scratch buffers. Kept in
+# sync with whisper_engine._MODEL_RAM_MB so the load-time budget guard and the
+# GUI's "run both engines?" estimate agree.
+_WHISPER_RESIDENT_MB = {
+    "tiny": 900, "base": 950, "small": 1250,
+    "medium": 1900, "large": 3400, "large-v1": 3400,
+    "large-v2": 3400, "large-v3": 3400,
+}
+
+
+def whisper_resident_mb(model_id: str) -> int:
+    """Estimated RAM a model holds while resident (int8 on CPU)."""
+    return int(_WHISPER_RESIDENT_MB.get((model_id or "").strip(), 3400))
 def recommend_whisper(model_id: str):
     mid = (model_id or "large-v3").strip() or "large-v3"
     need_fp16 = _WHISPER_FP16_MB.get(mid, 5200)
