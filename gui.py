@@ -216,6 +216,16 @@ class MoonshineGUI(LiveTabMixin, NoteTabMixin, ImportTabMixin, SrtTabMixin, Dial
         ctk.CTkLabel(history_label_frame, text="Transcription History",
                      font=("Segoe UI", 11, "bold"), text_color=FG_DIM
                      ).pack(side="left")
+        ctk.CTkLabel(history_label_frame, text="click an entry to copy",
+                     font=("Segoe UI", 10), text_color=FG_DIM
+                     ).pack(side="left", padx=(8, 0))
+        self.history_copy_all_btn = ctk.CTkButton(
+            history_label_frame, text="Copy All", width=72, height=24,
+            font=("Segoe UI", 11),
+            fg_color=BTN_DIM, hover_color=BTN_DIM_HOVER,
+            corner_radius=8, text_color=FG_SECONDARY,
+            command=self._copy_history_all)
+        self.history_copy_all_btn.pack(side="right")
         self.history = HistoryPanel(live, height=140)
         self.history.grid(row=5, column=0, sticky="nsew", padx=8, pady=(0, 6))
         engine_frame = ctk.CTkFrame(live, fg_color=BG_CARD, corner_radius=10)

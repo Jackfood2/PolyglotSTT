@@ -37,6 +37,35 @@ class LiveTabMixin:
         if text and text not in ("Waiting for voice input...", "Cleared."):
             copy_to_clipboard(text)
 
+    def _copy_history_all(self):
+        """Copy the whole transcription history to the clipboard."""
+        try:
+            n = self.history.copy_all() if hasattr(self.history, "copy_all") else 0
+        except Exception:
+            n = 0
+        # Brief button feedback; never raises.
+        try:
+            btn = getattr(self, "history_copy_all_btn", None)
+            if btn is not None:
+                if n > 0:
+                    btn.configure(text="Copied ✓")
+                else:
+                    btn.configure(text="Empty")
+                try:
+                    self.after(1200, lambda: self._restore_copy_all_btn())
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+    def _restore_copy_all_btn(self):
+        try:
+            btn = getattr(self, "history_copy_all_btn", None)
+            if btn is not None:
+                btn.configure(text="Copy All")
+        except Exception:
+            pass
+
     def set_recording_state(self, recording: bool):
         self._is_recording = recording
         if recording:

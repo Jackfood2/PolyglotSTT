@@ -122,9 +122,75 @@ class HistoryPanel(ctk.CTkScrollableFrame):
         super().__init__(master, fg_color=_t.BG_INPUT, corner_radius=12,
                          scrollbar_button_color=_t.ACCENT, **kwargs)
         self._entries = []
+        self._texts: list[str] = []
+
+    def _copy_text(self, text: str) -> bool:
+        """Copy to OS clipboard. Never raises."""
+        try:
+            if not text:
+                return False
+            try:
+                from input_sim import copy_to_clipboard
+                if copy_to_clipboard(text):
+                    return True
+            except Exception:
+                pass
+            # Fallback: tkinter clipboard.
+            try:
+                self.clipboard_clear()
+                self.clipboard_append(text)
+                return True
+            except Exception:
+                return False
+        except Exception:
+            return False
+
+    def _copy_one(self, text: str, ts_label=None, timestamp: str = ""):
+        ok = self._copy_text(text)
+        # Brief "Copied" feedback on the timestamp label.
+        try:
+            if ts_label is not None and timestamp:
+                if ok:
+                    ts_label.configure(
+                        text=f"{timestamp}   •   Copied ✓",
+                        text_color=_t.theme_color(_t.SUCCESS))
+                    try:
+                        self.after(1200, lambda: self._restore_ts(
+                            ts_label, timestamp))
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+
+    def _restore_ts(self, ts_label, timestamp: str):
+        try:
+            ts_label.configure(text=timestamp,
+                               text_color=_t.theme_color(_t.FG_DIM))
+        except Exception:
+            pass
+
+    def get_all_text(self, sep: str = "\n") -> str:
+        """All history entries, oldest first, plain text for clipboard."""
+        try:
+            return sep.join(t for t in list(self._texts) if t)
+        except Exception:
+            return ""
+
+    def copy_all(self) -> int:
+        """Copy whole history to clipboard. Returns entries copied."""
+        try:
+            text = self.get_all_text()
+            if not text.strip():
+                return 0
+            if self._copy_text(text):
+                return len(self._texts)
+            return 0
+        except Exception:
+            return 0
 
     def add_entry(self, text: str, timestamp: str):
-        entry_frame = ctk.CTkFrame(self, fg_color=_t.BG_CARD, corner_radius=8)
+        entry_frame = ctk.CTkFrame(self, fg_color=_t.BG_CARD, corner_radius=8,
+                                   cursor="hand2")
         entry_frame.pack(fill="x", padx=4, pady=3)
         ts_label = ctk.CTkLabel(entry_frame, text=timestamp,
                                 font=("Segoe UI", 10), text_color=_t.FG_DIM)
@@ -134,10 +200,21 @@ class HistoryPanel(ctk.CTkScrollableFrame):
                                   text_color=_t.FG_PRIMARY,
                                   wraplength=360, justify="left")
         text_label.pack(anchor="w", padx=8, pady=(2, 6))
+        # Click anywhere on the entry copies that entry's text.
+        try:
+            _cb = lambda _e=None, _t=text, _l=ts_label, _ts=timestamp: \
+                self._copy_one(_t, _l, _ts)
+            entry_frame.bind("<Button-1>", _cb)
+            ts_label.bind("<Button-1>", _cb)
+            text_label.bind("<Button-1>", _cb)
+        except Exception:
+            pass
         self._entries.append(entry_frame)
+        self._texts.append(text)
         while len(self._entries) > self.MAX_ENTRIES:
             try:
                 self._entries.pop(0).destroy()
+                self._texts.pop(0)
             except Exception:
                 break
         try:
@@ -152,3 +229,7 @@ class HistoryPanel(ctk.CTkScrollableFrame):
         for entry in self._entries:
             entry.destroy()
         self._entries.clear()
+        try:
+            self._texts.clear()
+        except Exception:
+            pass
