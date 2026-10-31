@@ -5,10 +5,11 @@ import json
 import os
 import threading
 
-APP_VERSION = "1.4.2"
+APP_VERSION = "1.4.3"
 
-CONFIG_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)),
-                           "moonshine_config.json")
+PROJECT_ROOT = os.path.dirname(os.path.dirname(__file__))
+CONFIG_PATH = os.path.join(PROJECT_ROOT, "moonshine_config.json")
+NOTES_AUDIO_DIR = os.path.join(PROJECT_ROOT, "notes_audio")
 _CONFIG_LOCK = threading.RLock()
 
 DEFAULT_CONFIG = {
@@ -53,11 +54,9 @@ def load_local_config():
             out = dict(DEFAULT_CONFIG)
             out.update(cfg)
             if any(k not in cfg for k in DEFAULT_CONFIG):
-                try:
-                    with open(CONFIG_PATH, "w", encoding="utf-8") as wf:
-                        json.dump(out, wf, indent=2)
-                except Exception:
-                    pass
+                # Use the atomic writer (tmp + os.replace) for migration
+                # too: a crash mid-write must not truncate the config.
+                save_local_config(out)
             return out
     except Exception:
         pass

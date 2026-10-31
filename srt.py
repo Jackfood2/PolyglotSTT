@@ -7,6 +7,7 @@ import pathlib
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -453,6 +454,146 @@ class EtaTracker:
         return "" if remaining is None else f" · ETA {format_eta(remaining)}"
 
 
+def _console_line(text):
+    """Mirror a line to the console when one is attached (no-op in pythonw)."""
+    try:
+        stream = sys.stdout
+    except Exception:
+        return
+    if stream is None or getattr(stream, "closed", False):
+        return
+    line = str(text).rstrip()
+    try:
+        stream.write(line + "\n")
+        stream.flush()
+    except UnicodeEncodeError:
+        try:
+            encoding = getattr(stream, "encoding", None) or "utf-8"
+            safe = line.encode(encoding, "replace").decode(encoding, "replace")
+            stream.write(safe + "\n")
+            stream.flush()
+        except Exception:
+            pass
+    except Exception:
+        pass
+
+
+class SrtHeartbeat:
+    """Background liveness reporter for SRT jobs.
+
+    Publishes a ticking status line combining the current stage, elapsed
+    time and this process's CPU busy percentage (sum over all threads, so
+    values above 100% just mean several cores are busy). The line goes to
+    a GUI callback when given, and is also mirrored to the console (on
+    stage changes and periodically) so a cmd window shows the job working
+    even when nothing else updates.
+    """
+
+    def __init__(
+        self,
+        live_cb=None,
+        interval: float = 2.0,
+        console_interval: float = 20.0,
+    ):
+        self._lock = threading.Lock()
+        self._stage = "Preparing job"
+        self._detail = ""
+        self._live_cb = live_cb
+        self._interval = max(0.25, _number(interval, 2.0))
+        self._console_interval = max(0.0, _number(console_interval, 20.0))
+        self._stop = threading.Event()
+        self._thread = None
+        self._started = None
+        self._last_change = None
+        self._last_cpu = None
+        self._last_wall = None
+        self._last_console = 0.0
+        self._last_console_stage = None
+        self._beats = 0
+
+    def set_stage(self, stage, detail=""):
+        stage = str(stage or "")
+        detail = str(detail or "")
+        with self._lock:
+            if stage != self._stage or detail != self._detail:
+                self._stage = stage
+                self._detail = detail
+                self._last_change = time.monotonic()
+
+    def start(self):
+        with self._lock:
+            if self._thread is not None:
+                return self
+            self._stop.clear()
+            now = time.monotonic()
+            self._started = now
+            self._last_change = now
+            self._last_cpu = time.process_time()
+            self._last_wall = now
+            self._thread = threading.Thread(
+                target=self._run,
+                name="SrtHeartbeat",
+                daemon=True,
+            )
+            self._thread.start()
+        return self
+
+    def stop(self):
+        with self._lock:
+            self._stop.set()
+            worker = self._thread
+        if worker is not None and worker is not threading.current_thread():
+            worker.join(timeout=2.0)
+
+    def _line(self):
+        now_wall = time.monotonic()
+        now_cpu = time.process_time()
+        with self._lock:
+            stage = self._stage
+            detail = self._detail
+            since_change = now_wall - (self._last_change or now_wall)
+            wall0 = self._last_wall
+            cpu0 = self._last_cpu
+            self._last_wall = now_wall
+            self._last_cpu = now_cpu
+            self._beats += 1
+            beat = self._beats
+            started = self._started or now_wall
+        busy = 0.0
+        if wall0 is not None and cpu0 is not None:
+            busy = max(
+                0.0,
+                (now_cpu - cpu0) / max(0.05, now_wall - wall0) * 100.0,
+            )
+        dot = "●" if beat % 2 else "○"
+        text = stage if not detail else f"{stage} — {detail}"
+        text = (
+            f"{dot} {text} · {format_eta(now_wall - started)} elapsed"
+            f" · CPU {busy:.0f}%"
+        )
+        if since_change >= 180.0 and busy < 5.0:
+            text += f" · no step change for {format_eta(since_change)}"
+        return text
+
+    def _run(self):
+        while not self._stop.wait(self._interval):
+            try:
+                text = self._line()
+                _safe_call(self._live_cb, text)
+                with self._lock:
+                    stage = self._stage
+                now = time.monotonic()
+                if (
+                    stage != self._last_console_stage
+                    or now - self._last_console >= self._console_interval
+                ):
+                    self._last_console = now
+                    self._last_console_stage = stage
+                    _console_line(f"[srt] {text}")
+            except Exception:
+                pass
+
+
 def _display_units(text):
     units = []
     for char in unicodedata.normalize("NFC", str(text)):
@@ -510,11 +651,14 @@ def cpu_count() -> int:
 
 
 def default_workers() -> int:
-    return max(1, round(cpu_count() * 0.8))
+    return max(1, cpu_count())
 
 
 def configure_cpu(n: int):
-    n = min(cpu_count(), max(1, int(_number(n, default_workers()))))
+    requested = _number(n, default_workers())
+    if requested is None or requested <= 0:
+        requested = default_workers()
+    n = min(cpu_count(), max(1, int(round(requested))))
     for key in ("OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS"):
         os.environ[key] = str(n)
     try:
@@ -1720,8 +1864,73 @@ def run_srt_job(
     word_aligner: Optional[Callable] = None,
     overwrite: bool = True,
     close_moonshine: bool = True,
+    live_cb: Optional[Callable[[str], None]] = None,
+) -> str:
+    """Run one subtitle job with a live heartbeat (stage, elapsed, CPU%)."""
+    heartbeat = SrtHeartbeat(live_cb)
+    heartbeat.start()
+    try:
+        return _run_srt_job_inner(
+            src_path,
+            out_dir,
+            engine_kind,
+            moonshine_arch,
+            canary_task,
+            canary_src,
+            cpu_workers,
+            get_moonshine_transcriber,
+            get_canary_engine,
+            progress_cb=progress_cb,
+            log_cb=log_cb,
+            cancel_event=cancel_event,
+            whisper_task=whisper_task,
+            whisper_src=whisper_src,
+            get_whisper_engine=get_whisper_engine,
+            srt_input_lang=srt_input_lang,
+            srt_output_lang=srt_output_lang,
+            out_path=out_path,
+            normalize_audio=normalize_audio,
+            strict_timing=strict_timing,
+            word_aligner=word_aligner,
+            overwrite=overwrite,
+            close_moonshine=close_moonshine,
+            status=heartbeat,
+        )
+    finally:
+        heartbeat.stop()
+
+
+def _run_srt_job_inner(
+    src_path: str,
+    out_dir: str,
+    engine_kind: str,
+    moonshine_arch: int,
+    canary_task: str,
+    canary_src: str,
+    cpu_workers: int,
+    get_moonshine_transcriber: Callable,
+    get_canary_engine: Callable,
+    progress_cb: Optional[Callable[[float, str], None]] = None,
+    log_cb: Optional[Callable[[str], None]] = None,
+    cancel_event: Optional[threading.Event] = None,
+    whisper_task: str = "translate",
+    whisper_src: str = "ja",
+    get_whisper_engine: Optional[Callable] = None,
+    srt_input_lang: str = "auto",
+    srt_output_lang: str = "en",
+    out_path: Optional[str] = None,
+    normalize_audio: bool = False,
+    *,
+    strict_timing: bool = True,
+    word_aligner: Optional[Callable] = None,
+    overwrite: bool = True,
+    close_moonshine: bool = True,
+    status: Optional["SrtHeartbeat"] = None,
 ) -> str:
     import soundfile as sf
+
+    if status is None:
+        status = SrtHeartbeat()
 
     source = Path(src_path).expanduser()
     if not source.is_file():
@@ -1776,7 +1985,9 @@ def run_srt_job(
             )
 
     def log(message):
-        _safe_call(log_cb, str(message))
+        text = str(message)
+        _safe_call(log_cb, text)
+        _console_line(f"[srt] {text}")
 
     def wait_for_model(engine, name):
         if engine is None:
@@ -1787,6 +1998,7 @@ def run_srt_job(
         _check_cancel(cancel_event)
         prog(0.12, f"Loading {name}...")
         log(f"Loading {name}...")
+        status.set_stage(f"Loading {name} model")
         load = getattr(engine, "load", None)
         if not callable(load):
             raise RuntimeError(f"{name} does not expose a model loader")
@@ -1822,11 +2034,13 @@ def run_srt_job(
 
         _check_cancel(cancel_event)
 
+    status.set_stage("Configuring CPU threads")
     workers = configure_cpu(cpu_workers)
     log(f"Audio preparation CPU threads: {workers}")
     log(f"Language: input={input_language}, output={output_language}")
     log(f"Output: {destination}")
 
+    status.set_stage("Locating ffmpeg")
     ffmpeg = get_ffmpeg_exe()
     if not ffmpeg:
         raise RuntimeError(
@@ -1841,6 +2055,7 @@ def run_srt_job(
         work_dir = Path(directory)
         wav_path = work_dir / "audio_16k.wav"
 
+        status.set_stage("Extracting audio", "ffmpeg, separate process")
         prog(0.02, "Extracting 16 kHz mono audio...")
         extract_audio(
             source,
@@ -1869,7 +2084,9 @@ def run_srt_job(
                 return
 
             _check_cancel(cancel_event)
+            status.set_stage("Loading audio into memory")
             audio, sample_rate = load_wav_16k(wav_path)
+            status.set_stage("Detecting speech chunks (VAD)")
             spans = vad_segments(audio, sample_rate)
 
             if not spans:
@@ -1920,7 +2137,21 @@ def run_srt_job(
             segment_method = getattr(engine, "transcribe_file_segments", None)
             text_method = getattr(engine, "transcribe_file", None)
             native_error = None
+            word_pref = callable(word_method) and task != "translate"
 
+            if callable(word_method) and not word_pref:
+                log(
+                    "Translate mode: word-level timestamps skipped "
+                    "(alignment is unreliable on translated text)"
+                )
+
+            primary = (
+                "words" if word_pref
+                else "segments" if callable(segment_method)
+                else "text"
+            )
+
+            status.set_stage("Whisper transcribing (full file)")
             with ProgressPump(
                 prog,
                 0.20,
@@ -1930,7 +2161,7 @@ def run_srt_job(
             ):
                 try:
                     _check_cancel(cancel_event)
-                    if callable(word_method):
+                    if word_pref:
                         native, words = word_method(
                             str(wav_path),
                             task=task,
@@ -1961,6 +2192,30 @@ def run_srt_job(
                     all_words = []
                     log(f"Full-file transcription failed: {exc}")
 
+                    if primary == "words" and callable(segment_method):
+                        status.set_stage(
+                            "Whisper transcribing (segment timing)")
+                        try:
+                            native = segment_method(
+                                str(wav_path),
+                                task=task,
+                                source_lang=input_language,
+                            )
+                            segments = _clean_segments(native, duration)
+                            if segments:
+                                log(
+                                    "Word timestamps unavailable; "
+                                    "using segment timing instead"
+                                )
+                        except InterruptedError:
+                            raise
+                        except Exception as retry_exc:
+                            native_error = retry_exc
+                            segments = []
+                            log(
+                                f"Segment-only retry failed: {retry_exc}"
+                            )
+
             _check_cancel(cancel_event)
 
             if not segments:
@@ -1977,6 +2232,7 @@ def run_srt_job(
 
                 for index, (start, end) in enumerate(spans):
                     _check_cancel(cancel_event)
+                    status.set_stage(f"Whisper chunk {index + 1}/{len(spans)}")
                     chunk_path = work_dir / f"whisper_{index:06d}.wav"
                     first = round(start * sample_rate)
                     last = min(len(audio), round(end * sample_rate))
@@ -1994,7 +2250,7 @@ def run_srt_job(
                     local_words = []
 
                     try:
-                        if callable(word_method):
+                        if word_pref:
                             native, words = word_method(
                                 str(chunk_path),
                                 task=task,
@@ -2115,6 +2371,7 @@ def run_srt_job(
 
             for index, (start, end) in enumerate(spans):
                 _check_cancel(cancel_event)
+                status.set_stage(f"Canary chunk {index + 1}/{len(spans)}")
                 first = round(start * sample_rate)
                 last = min(len(audio), round(end * sample_rate))
                 chunk_path = work_dir / f"canary_{index:06d}.wav"
@@ -2181,20 +2438,31 @@ def run_srt_job(
             try:
                 for index, (start, end) in enumerate(spans):
                     _check_cancel(cancel_event)
+                    status.set_stage(f"Moonshine chunk {index + 1}/{len(spans)}")
                     first = round(start * sample_rate)
                     last = min(len(audio), round(end * sample_rate))
 
-                    segments.extend(
-                        transcribe_chunk_moonshine(
-                            transcriber,
-                            audio[first:last],
-                            sample_rate,
-                            first / sample_rate,
+                    base = 0.20 + 0.64 * index / len(spans)
+                    span = 0.64 / len(spans)
+
+                    with ProgressPump(
+                        prog,
+                        base,
+                        span,
+                        max(2.0, (end - start) * eta.factor),
+                        f"Moonshine chunk {index + 1}/{len(spans)}",
+                    ):
+                        segments.extend(
+                            transcribe_chunk_moonshine(
+                                transcriber,
+                                audio[first:last],
+                                sample_rate,
+                                first / sample_rate,
+                            )
                         )
-                    )
 
                     prog(
-                        0.20 + 0.64 * (index + 1) / len(spans),
+                        base + span,
                         f"Moonshine chunk {index + 1}/{len(spans)} complete",
                     )
             finally:
@@ -2221,6 +2489,7 @@ def run_srt_job(
             if not callable(word_aligner):
                 raise TypeError("word_aligner must be callable")
 
+            status.set_stage("Aligning words to audio")
             prog(0.86, "Aligning transcription to speech...")
             log(f"Aligning {len(segments)} segments to the audio")
 
@@ -2271,6 +2540,7 @@ def run_srt_job(
             )
 
         audio = None
+        status.set_stage("Building timed subtitle cues")
         prog(0.94, "Building timed subtitle cues...")
 
         # Engines without any word timestamps (Canary/Moonshine, Whisper
@@ -2294,6 +2564,7 @@ def run_srt_job(
                 )
 
         _check_cancel(cancel_event)
+        status.set_stage("Writing SRT file")
 
         if overwrite:
             write_srt(cues, destination)

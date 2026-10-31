@@ -44,12 +44,14 @@ except Exception as e:
     FG_SECONDARY = "#B2BEC3"
 RECORD_KEY = keyboard.Key.f2
 SAMPLE_RATE = 16000
+_SINGLE_INSTANCE_MUTEX = None
 # v1.4.0: config lives in core/config.py. Same names are re-exported here
 # so `from moonshine_stt import DEFAULT_CONFIG` keeps working.
 try:
     from core.config import (
         APP_VERSION,
         CONFIG_PATH,
+        NOTES_AUDIO_DIR,
         _CONFIG_LOCK,
         DEFAULT_CONFIG,
         load_local_config,
@@ -58,8 +60,9 @@ try:
     )
 except Exception:  # pragma: no cover - fallback if core/ is missing
     import json as _json
-    APP_VERSION = "1.4.2"
+    APP_VERSION = "1.4.3"
     CONFIG_PATH = os.path.join(os.path.dirname(__file__), "moonshine_config.json")
+    NOTES_AUDIO_DIR = os.path.join(os.path.dirname(__file__), "notes_audio")
     _CONFIG_LOCK = threading.RLock()
     DEFAULT_CONFIG = {
         "typing_method": "clipboard",
@@ -548,13 +551,14 @@ class MoonshineSTTApp:
                 self.gui = None
         self.recorder.set_level_callback(self._level_callback)
         try:
-            # Orphan session WAVs from crashed/hung runs (close-cleanup never
-            # ran). Cheap directory scan; previous runs' MP3s are untouched.
-            from pathlib import Path as _P
-            from note_engine import cleanup_stale_session_wavs as _sweep
-            _n = _sweep(_P(__file__).parent / "notes_audio")
+            # Unfinished session WAVs from crashed/hung runs (close-cleanup
+            # never ran). Recover, never delete: the WAV can be the only
+            # copy of a meeting. Previous runs' MP3s are untouched.
+            from note_engine import recover_stale_session_wavs as _recover
+            _n = _recover(NOTES_AUDIO_DIR)
             if _n:
-                self._log(f"Cleared {_n} orphan note audio file(s) from a previous run")
+                self._log(f"Recovered {_n} unfinished note recording(s) "
+                          f"to notes_audio/recovered")
         except Exception:
             pass
         try:
@@ -1154,10 +1158,12 @@ class MoonshineSTTApp:
         except Exception:
             return False
 
-    def _drop_tab_cache(self, tab):
+    def _drop_tab_cache(self, tab, except_engines=()):
         """Unload + forget a tab's dedicated heavy instances. Returns how
-        many live objects were dropped. Never raises."""
+        many live objects were dropped. Engines in except_engines are left
+        untouched (e.g. Note's shared Whisper mid-load). Never raises."""
         dropped = 0
+        skip_ids = {id(e) for e in (except_engines or ()) if e is not None}
         try:
             cache = (self._tab_cache or {}).get(tab)
             if not isinstance(cache, dict):
@@ -1165,6 +1171,8 @@ class MoonshineSTTApp:
             for slot in ("canary", "whisper"):
                 try:
                     eng = cache.get(slot)
+                    if eng is not None and id(eng) in skip_ids:
+                        continue
                     if eng is not None:
                         dropped += 1
                         try:
@@ -1178,7 +1186,9 @@ class MoonshineSTTApp:
                 except Exception:
                     pass
             try:
-                cache["wmodel"] = None
+                if not any(cache.get(s) is not None
+                           for s in ("canary", "whisper")):
+                    cache["wmodel"] = None
             except Exception:
                 pass
         except Exception:
@@ -1198,13 +1208,15 @@ class MoonshineSTTApp:
         except Exception:
             return False
 
-    def _resident_heavy_holders(self, except_tab=None):
+    def _resident_heavy_holders(self, except_tab=None, except_engines=()):
         """Tabs holding (or loading) a heavy (Whisper/Canary) engine:
         [(tab, slot, desc, ram_mb)]. A mid-load engine counts: it will own
         the RAM within seconds, which is exactly the race that OOMs the
         second loader. Moonshine is light and shared, so it never counts.
-        Never raises."""
+        Engines in except_engines (by identity) are not reported, and are
+        also skipped when their holder is later swapped out. Never raises."""
         holders = []
+        skip_ids = {id(e) for e in (except_engines or ()) if e is not None}
         try:
             for tab in self.TAB_IDS:
                 if tab == except_tab:
@@ -1223,6 +1235,8 @@ class MoonshineSTTApp:
                         )
                     for slot, eng in candidates:
                         try:
+                            if id(eng) in skip_ids:
+                                continue
                             if not self._heavy_occupied(eng):
                                 continue
                             if slot == "whisper":
@@ -1249,13 +1263,15 @@ class MoonshineSTTApp:
             pass
         return holders
 
-    def _swap_out_tab_heavies(self, tab):
+    def _swap_out_tab_heavies(self, tab, except_engines=()):
         """Unload a tab's heavy engines but keep the objects, so the tab can
         reload them on next use. Covers ready engines and mid-load ones
         (unload bumps the generation, so the in-flight load discards itself
-        instead of claiming RAM). Returns ~MB freed. Moonshine (light,
-        shared) is never touched. Never raises."""
+        instead of claiming RAM). Engines in except_engines are preserved.
+        Returns ~MB freed. Moonshine (light, shared) is never touched.
+        Never raises."""
         freed = 0
+        skip_ids = {id(e) for e in (except_engines or ()) if e is not None}
         try:
             if tab == "live":
                 targets = (
@@ -1265,6 +1281,8 @@ class MoonshineSTTApp:
                 for attr, kind in targets:
                     try:
                         eng = getattr(self, attr, None)
+                        if id(eng) in skip_ids:
+                            continue
                         if not self._heavy_occupied(eng):
                             continue
                         if kind == "Whisper":
@@ -1285,6 +1303,8 @@ class MoonshineSTTApp:
                     for slot in ("whisper", "canary"):
                         try:
                             eng = cache.get(slot)
+                            if id(eng) in skip_ids:
+                                continue
                             if not self._heavy_occupied(eng):
                                 continue
                             if slot == "whisper":
@@ -1299,23 +1319,24 @@ class MoonshineSTTApp:
                             continue
                 except Exception:
                     pass
-                self._drop_tab_cache(tab)
+                self._drop_tab_cache(tab, except_engines=except_engines)
         except Exception:
             pass
         return freed
 
-    def _prepare_heavy_load(self, except_tabs=()):
+    def _prepare_heavy_load(self, except_tabs=(), except_engines=()):
         """Unload every idle heavy holder (ready or mid-load) except the
-        listed tabs, so a model switch/load starts from free RAM. Tabs with
-        a running session keep theirs. A foreground switch/record intent wins
-        over a background load: the orphaned load discards itself by
-        generation. Returns {"freed": mb, "swapped": [(tab, desc)],
+        listed tabs/engines, so a model switch/load starts from free RAM.
+        Tabs with a running session keep theirs. A foreground switch/record
+        intent wins over a background load: the orphaned load discards itself
+        by generation. Returns {"freed": mb, "swapped": [(tab, desc)],
         "kept": [(tab, desc)]}. GUI-thread only. Never raises."""
         result = {"freed": 0, "swapped": [], "kept": []}
         try:
             skip = set(except_tabs or ())
             try:
-                holders = self._resident_heavy_holders()
+                holders = self._resident_heavy_holders(
+                    except_engines=except_engines)
             except Exception:
                 holders = []
             for (holder_tab, _slot, desc, _mb) in holders:
@@ -1330,7 +1351,8 @@ class MoonshineSTTApp:
                     continue
                 try:
                     result["freed"] += (
-                        self._swap_out_tab_heavies(holder_tab) or 0)
+                        self._swap_out_tab_heavies(
+                            holder_tab, except_engines=except_engines) or 0)
                     result["swapped"].append((holder_tab, desc))
                 except Exception:
                     pass
@@ -1734,12 +1756,14 @@ class MoonshineSTTApp:
                     pass
                 return {"wait": "Note engine (Moonshine) still loading — "
                                 "recording starts automatically."}
-            try:
-                cache = (self._tab_cache or {}).get("note") or {}
-            except Exception:
-                cache = {}
             slot = "canary" if kind == "Canary-1B" else "whisper"
-            eng = cache.get(slot)
+            # Whisper is one universal shared instance and is never stored
+            # in the per-tab cache (see _tab_heavy), so a cache-only lookup
+            # would report "not loaded" forever after the load finished.
+            try:
+                eng = self._tab_heavy("note", kind, sel["wmodel"])
+            except Exception:
+                eng = None
             ok = False
             try:
                 if eng is not None and eng.is_ready:
@@ -1756,7 +1780,12 @@ class MoonshineSTTApp:
             # first: an idle tab's finished session must not hold gigabytes
             # hostage while Note loads. Only a tab with a running session
             # asks for confirmation (swapping it stops its engine).
-            prep = self._prepare_heavy_load(except_tabs=("note",))
+            # Exclude the target engine itself by identity: the shared
+            # Whisper is reported as a Live holder, and a RECORD pressed
+            # during its preload must not unload the very load it waits for.
+            prep = self._prepare_heavy_load(
+                except_tabs=("note",),
+                except_engines=(eng,) if eng is not None else ())
             hard = list(prep.get("kept") or [])
             freed = int(prep.get("freed") or 0)
             if hard:
@@ -1786,9 +1815,7 @@ class MoonshineSTTApp:
                 return {"abort": True, "reason": warn}
 
             try:
-                fresh = self._tab_heavy("note", kind, sel["wmodel"])
-                if fresh is not None and not fresh.is_ready:
-                    fresh.load()
+                self._note_kick_load(kind, sel["wmodel"])
             except Exception:
                 pass
             if freed > 0:
@@ -1798,6 +1825,32 @@ class MoonshineSTTApp:
             return {"wait": "Loading note engine — recording starts automatically."}
         except Exception:
             return {"abort": True}
+
+    def _note_kick_load(self, kind, wmid):
+        """Start (or retarget) the load for the Note tab's selection.
+
+        Whisper is the shared universal instance, so a model pick that does
+        not match the live object switches it instead of loading the stale
+        model. Never raises."""
+        try:
+            eng = self._tab_heavy("note", kind, wmid)
+            if eng is None:
+                return
+            if kind == "Whisper":
+                if self._whisper_cache_ok(eng, wmid):
+                    if (not bool(getattr(eng, "is_ready", False))
+                            and not bool(getattr(eng, "_loading", False))):
+                        eng.load()
+                    return
+                if bool(getattr(eng, "_loading", False)):
+                    return
+                eng.switch_model(wmid)
+                return
+            if (not bool(getattr(eng, "is_ready", False))
+                    and not bool(getattr(eng, "_loading", False))):
+                eng.load()
+        except Exception:
+            pass
 
     def note_engine_ready(self):
         """Return (ready, problem) for the current Note selection.
@@ -1828,33 +1881,35 @@ class MoonshineSTTApp:
                 except Exception:
                     pass
                 return False, ""
-            try:
-                cache = (self._tab_cache or {}).get("note") or {}
-            except Exception:
-                cache = {}
             slot = "canary" if kind == "Canary-1B" else "whisper"
-            eng = cache.get(slot)
+            # Resolve through _tab_heavy: Whisper lives in the shared
+            # instance (never in this tab's cache), Canary is created for
+            # the tab. A raw cache lookup made every poll return "still
+            # loading" even after the shared Whisper model was ready.
+            try:
+                eng = self._tab_heavy("note", kind, sel["wmodel"])
+            except Exception:
+                eng = None
             if eng is None:
-                try:
-                    eng = self._tab_heavy("note", kind, sel["wmodel"])
-                except Exception:
-                    eng = None
-                if eng is None:
-                    return False, "Note engine could not be created."
-                try:
-                    if not bool(getattr(eng, "is_ready", False)):
-                        eng.load()
-                except Exception:
-                    pass
-                return False, ""
+                return False, "Note engine could not be created."
             if slot == "whisper":
                 try:
-                    model_id = (getattr(eng, "model_id", None)
-                                or cache.get("wmodel"))
-                    if str(model_id or "") != str(sel["wmodel"]):
-                        return False, ("Note engine does not match the "
-                                       "selected Whisper model. Reselect "
-                                       "the model.")
+                    if not self._whisper_cache_ok(eng, sel["wmodel"]):
+                        err = getattr(eng, "_last_error", None)
+                        if err:
+                            # Report instead of retrying on every poll; the
+                            # next explicit RECORD press may retry.
+                            return False, f"Note engine failed: {err}"
+                        if bool(getattr(eng, "_loading", False)):
+                            return False, ""
+                        mid = str(getattr(eng, "model_id", "") or "")
+                        if mid and mid != str(sel["wmodel"]):
+                            # Shared engine holds another model: retarget
+                            # it (async) and keep polling until it settles.
+                            self._note_kick_load(kind, sel["wmodel"])
+                            return False, ""
+                        # Same model, just not loaded yet: fall through to
+                        # the generic kick below.
                 except Exception:
                     pass
             try:
@@ -1900,9 +1955,7 @@ class MoonshineSTTApp:
                 pass
             sel = self.tab_selection("note")
             try:
-                fresh = self._tab_heavy("note", sel["kind"], sel["wmodel"])
-                if fresh is not None and not fresh.is_ready:
-                    fresh.load()
+                self._note_kick_load(sel["kind"], sel["wmodel"])
             except Exception:
                 pass
             return {"wait": "Loading note engine — recording starts automatically."}
@@ -2973,6 +3026,11 @@ class MoonshineSTTApp:
 
     def _log(self, msg, color=None):
         print(f"[MoonshineSTT] {msg}")
+        try:
+            from core.applog import log as _filelog
+            _filelog(msg)
+        except Exception:
+            pass
         if self.gui and color:
             pass
     def _capture_target_window(self):
@@ -3069,6 +3127,11 @@ class MoonshineSTTApp:
                     self.gui.set_srt_progress(payload[0], payload[1])
                 elif msg_type == "srt_log":
                     self.gui.srt_log(payload)
+                elif msg_type == "srt_live":
+                    try:
+                        self.gui.set_srt_heartbeat(payload)
+                    except Exception:
+                        pass
                 elif msg_type == "srt_done":
                     self.gui.srt_done(payload[0], payload[1])
                     try:
@@ -3512,6 +3575,7 @@ class MoonshineSTTApp:
                         srt_output_lang=job["srt_output_lang"],
                         out_path=str(_out) if _out is not None else None,
                         normalize_audio=job.get("normalize_audio", False),
+                        live_cb=lambda m: self._gui_queue.put(("srt_live", m)),
                     )
                 def _file_cb(kind, path, info):
                     try:
@@ -3843,6 +3907,8 @@ class MoonshineSTTApp:
                 ("srt_log",
                  f"Auto-burn: {len(keep_pos)} file(s) with SRT -> MP4..."))
             self._gui_queue.put(
+                ("srt_live", "Burn stage (ffmpeg) - see burn progress below"))
+            self._gui_queue.put(
                 ("srt_progress", (0.0, "Starting auto-burn...")))
             bjob = {"paths": [srcs[i] for i in keep_pos],
                     "order": [order[i] if i < len(order) else i
@@ -4092,7 +4158,7 @@ class MoonshineSTTApp:
                         moonshine_arch=snap["moonshine_arch"],
                         canary_task=snap["canary_task"],
                         canary_src=snap["canary_src"],
-                        cpu_workers=snap["cpu_workers"] or 4,
+                        cpu_workers=snap["cpu_workers"] or srtmod.default_workers(),
                         get_moonshine_transcriber=self._get_srt_moonshine_transcriber,
                         get_canary_engine=lambda: self._get_canary_engine(False),
                         progress_cb=lambda f, m: self._gui_queue.put(
@@ -4239,7 +4305,13 @@ class MoonshineSTTApp:
                 else:
                     cache = (self._tab_cache or {}).get("import") or {}
                     slot = "canary" if kind == "Canary-1B" else "whisper"
-                    eng = cache.get(slot)
+                    # Whisper is the universal shared instance (never in the
+                    # tab cache): resolving it from the cache would keep
+                    # saying "not ready" after a finished load.
+                    if slot == "whisper":
+                        eng = self._get_whisper_engine(False)
+                    else:
+                        eng = cache.get(slot)
                     ok = False
                     try:
                         if eng is not None and eng.is_ready:
@@ -4788,11 +4860,34 @@ class MoonshineSTTApp:
         except Exception:
             pass
         try:
+            if bool(getattr(self, "_srt_busy", False)):
+                from tkinter import messagebox as _mb
+                if not _mb.askyesno(
+                        "SRT job running",
+                        "An SRT job is still running.\n\n"
+                        "Quit and cancel it?", parent=self.gui):
+                    return
+        except Exception:
+            pass
+        try:
             self._import_cancel_event.set()
         except Exception:
             pass
         try:
             self._note_cancel_event.set()
+        except Exception:
+            pass
+        try:
+            self._cancel_srt_job()
+        except Exception:
+            pass
+        try:
+            # Let _run_process's 0.2s cancel poll terminate/kill ffmpeg
+            # before os._exit() removes Python from the picture.
+            _deadline = time.monotonic() + 3.0
+            while (time.monotonic() < _deadline
+                   and bool(getattr(self, "_srt_busy", False))):
+                time.sleep(0.05)
         except Exception:
             pass
         try:
@@ -4809,8 +4904,51 @@ class MoonshineSTTApp:
                 pass
         if self.gui:
             self.gui.destroy()
+        try:
+            from core.applog import flush as _logflush
+            _logflush()
+        except Exception:
+            pass
         os._exit(0)
+def _single_instance_guard():
+    """One app per user session. Two copies would both install the F2 hook
+    and fight over the microphone. Best-effort: never blocks startup."""
+    global _SINGLE_INSTANCE_MUTEX
+    try:
+        if os.name != "nt":
+            return
+        import ctypes
+        from ctypes import wintypes
+        k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        k32.CreateMutexW.argtypes = (wintypes.LPVOID, wintypes.BOOL,
+                                     wintypes.LPCWSTR)
+        k32.CreateMutexW.restype = wintypes.HANDLE
+        h = k32.CreateMutexW(None, False,
+                             "Local\\PolyglotSTT_SingleInstance")
+        _err = ctypes.get_last_error()
+        if not h:
+            return
+        _SINGLE_INSTANCE_MUTEX = h
+        if _err == 183:  # ERROR_ALREADY_EXISTS
+            try:
+                ctypes.windll.user32.MessageBoxW(
+                    None, "PolyglotSTT is already running.",
+                    "PolyglotSTT", 0x40)
+            except Exception:
+                pass
+            os._exit(0)
+    except Exception:
+        pass
 def main():
+    try:
+        from core.applog import setup_logging
+        setup_logging()
+    except Exception:
+        pass
+    try:
+        _single_instance_guard()
+    except Exception:
+        pass
     app = MoonshineSTTApp()
     app.start()
 if __name__ == "__main__":

@@ -1,6 +1,7 @@
 import pathlib
 # gui.py
 import customtkinter as ctk
+import queue
 import threading
 import time
 import math
@@ -107,7 +108,52 @@ class MoonshineGUI(LiveTabMixin, NoteTabMixin, ImportTabMixin, SrtTabMixin, Dial
         self._is_recording = False
         self._theme_callback = None
         self._theme_mode = "dark"
+        self._ui_call_queue = queue.Queue()
+        try:
+            self.after(50, self._drain_ui_calls)
+        except Exception:
+            pass
         self._build_ui()
+
+    def post_ui(self, fn):
+        """Run fn on the Tk thread. Safe from audio/transcriber/export
+        threads; direct on the main thread. Never raises."""
+        try:
+            if threading.current_thread() is threading.main_thread():
+                try:
+                    fn()
+                except Exception:
+                    pass
+                return
+        except Exception:
+            pass
+        try:
+            q = getattr(self, "_ui_call_queue", None)
+            if q is not None:
+                q.put_nowait(fn)
+            else:
+                self.after(0, fn)
+        except Exception:
+            pass
+
+    def _drain_ui_calls(self):
+        try:
+            for _ in range(200):
+                try:
+                    fn = self._ui_call_queue.get_nowait()
+                except queue.Empty:
+                    break
+                try:
+                    fn()
+                except Exception:
+                    pass
+        except Exception:
+            pass
+        try:
+            self.after(50, self._drain_ui_calls)
+        except Exception:
+            pass
+
     def _build_ui(self):
         self.grid_columnconfigure(0, weight=1)
         self.grid_rowconfigure(2, weight=1)

@@ -1,6 +1,8 @@
 import queue
 # note_engine.py
 # Chunked recording with adaptive silence detection for Note mode
+import os
+import shutil
 import threading
 import time
 import wave
@@ -53,8 +55,14 @@ class NoteRecorder:
         # Full-session archive (parallel WAV for later MP3 export). Written
         # incrementally so RAM never holds the whole session; transcription
         # reads only the chunk copies and is unaffected by any of this.
+        # The audio callback only queues frames: disk writes happen on a
+        # dedicated writer thread, so a slow disk can never stall the mic.
         self._wav = None
         self._wav_lock = threading.Lock()
+        self._wav_q: Optional[queue.Queue] = None
+        self._wav_thread: Optional[threading.Thread] = None
+        self._wav_dropped = 0
+        self._stream_status = ""
         self.session_wav: Optional[str] = None
 
     @property
@@ -85,6 +93,10 @@ class NoteRecorder:
         # and drop live audio). Snapshot what the callback needs, release,
         # then call out.
         try:
+            if status:
+                # Input overflow etc. - keep the last message for diagnostics
+                # instead of silently discarding it.
+                self._stream_status = str(status)
             should_cut = False
             level = None
             with self._lock:
@@ -133,28 +145,66 @@ class NoteRecorder:
         except Exception:
             pass
 
-    def _append_session_wav(self, frames) -> None:
-        """Best-effort incremental archive write (raw, untrimmed frames).
-        Never raises; transcription must never depend on the archive."""
-        try:
-            w = self._wav
-            if w is None or not frames:
+    def _wav_writer_loop(self, q, w):
+        """Dedicated archive writer: the audio thread only queues frames.
+        The wave handle is per-session (not read from self) so a new
+        recording can never inherit a stalled previous writer's chunks."""
+        while True:
+            try:
+                item = q.get()
+            except Exception:
                 return
-            with self._wav_lock:
-                try:
-                    for blk in frames:
+            if item is None:
+                return
+            if w is None:
+                continue
+            try:
+                with self._wav_lock:
+                    for blk in item:
                         try:
                             w.writeframes(np.ascontiguousarray(blk).tobytes())
                         except Exception:
                             continue
-                except Exception:
-                    pass
+            except Exception:
+                pass
+
+    def _append_session_wav(self, frames) -> None:
+        """Best-effort incremental archive enqueue (raw, untrimmed frames).
+        Called from the audio thread, so it must never block or raise; the
+        actual disk write happens on _wav_writer_loop."""
+        try:
+            q = self._wav_q
+            if q is None or not frames:
+                return
+            try:
+                q.put_nowait(frames)
+            except queue.Full:
+                # Keep recording/transcription instead of stalling the mic.
+                self._wav_dropped += len(frames)
         except Exception:
             pass
+
+    def _stop_wav_writer(self, timeout=10.0):
+        """Flush/drain the archive writer before the WAV is closed."""
+        q, t = self._wav_q, self._wav_thread
+        self._wav_q = None
+        self._wav_thread = None
+        if q is not None:
+            try:
+                q.put(None, timeout=1.0)
+            except Exception:
+                pass
+        if t is not None and t.is_alive():
+            try:
+                t.join(timeout=timeout)
+            except Exception:
+                pass
+        return t
 
     def _close_session_wav(self) -> Optional[str]:
         """Close the archive, return its path (or None). Never raises."""
         try:
+            self._stop_wav_writer()
             with self._wav_lock:
                 w, self._wav = self._wav, None
             if w is not None:
@@ -232,12 +282,15 @@ class NoteRecorder:
         self._last_cb_time = time.monotonic()
         self._last_sound_time = self._last_cb_time
         self.session_wav = None
+        self._stop_wav_writer(timeout=5.0)
+        self._wav_dropped = 0
         try:
             with self._wav_lock:
                 self._wav = None
         except Exception:
             pass
         if session_dir:
+            w = None
             try:
                 d = Path(str(session_dir))
                 d.mkdir(parents=True, exist_ok=True)
@@ -249,13 +302,27 @@ class NoteRecorder:
                 w.setframerate(int(self.sample_rate))
                 with self._wav_lock:
                     self._wav = w
+                q = queue.Queue(maxsize=8)
+                t = threading.Thread(target=self._wav_writer_loop,
+                                     args=(q, w),
+                                     daemon=True, name="note-wav-writer")
+                t.start()
+                self._wav_q = q
+                self._wav_thread = t
                 self.session_wav = str(wp)
             except Exception:
+                try:
+                    if w is not None:
+                        w.close()
+                except Exception:
+                    pass
                 try:
                     with self._wav_lock:
                         self._wav = None
                 except Exception:
                     pass
+                self._wav_q = None
+                self._wav_thread = None
                 self.session_wav = None
         self._recording = True
 
@@ -346,42 +413,69 @@ class NoteRecorder:
             return "ok", ""
 
 
-def cleanup_stale_session_wavs(session_dir=None) -> int:
-    """Delete orphan note_*.wav archives from crashed/hung runs.
+def recover_stale_session_wavs(session_dir=None) -> int:
+    """Recover orphan note_*.wav archives from crashed/hung runs.
 
-    Only the recorder's exact note_YYYYMMDD_HHMMSS.wav pattern - never user
-    files, never MP3s (previous runs' audio is theirs to keep). A file a
-    live writer still holds open fails to delete on Windows and is kept.
-    Returns files removed. Never raises."""
-    removed = 0
+    The WAV is the only copy of a session that crashed before MP3 export,
+    so it is never deleted here: it is moved to <session_dir>/recovered/
+    (unique name if that file already exists). A file a live writer still
+    holds open fails to move on Windows and is kept in place. Previous
+    runs' MP3s are untouched. Returns files moved. Never raises."""
+    moved = 0
     try:
         import re as _re
         d = Path(str(session_dir)) if session_dir else None
         if d is None or not d.is_dir():
             return 0
+        dest = d / "recovered"
         for p in sorted(d.glob("note_*.wav")):
             try:
                 if not p.is_file():
                     continue
                 if not _re.fullmatch(r"note_\d{8}_\d{6}\.wav", p.name):
                     continue
-                p.unlink()
-                removed += 1
+                dest.mkdir(parents=True, exist_ok=True)
+                target = dest / p.name
+                if target.exists():
+                    i = 1
+                    while True:
+                        target = dest / f"{p.stem}_{i}{p.suffix}"
+                        if not target.exists():
+                            break
+                        i += 1
+                shutil.move(str(p), str(target))
+                moved += 1
             except Exception:
                 continue
     except Exception:
         pass
-    return removed
+    return moved
+
+
+def cleanup_stale_session_wavs(session_dir=None) -> int:
+    """Deprecated alias. Kept for callers from older versions; recovery
+    (not deletion) is the safe policy for crash-left recordings."""
+    return recover_stale_session_wavs(session_dir)
 
 
 def wav_to_mp3(ffmpeg_exe, wav_path, mp3_path, bitrate_kbps=128):
     """Convert a session WAV to MP3 (voice archive: mono, 16 kHz).
     Returns (ok_bool, message). Blocking - callers run it off-thread.
-    A failed convert keeps the WAV and says so; never raises."""
+    A failed convert keeps the WAV and says so; never raises. The MP3 is
+    written to a .part file and atomically renamed only on success, so a
+    crash/close mid-convert never leaves a truncated MP3 behind."""
     try:
         import subprocess as _sp
         wav = Path(str(wav_path))
         mp3 = Path(str(mp3_path))
+        tmp = mp3.with_suffix(mp3.suffix + ".part")
+
+        def _drop_part():
+            try:
+                tmp.unlink(missing_ok=True)
+            except Exception:
+                pass
+
         try:
             if not wav.exists() or wav.stat().st_size < 32000:
                 return False, "too short, skipped"
@@ -392,22 +486,38 @@ def wav_to_mp3(ffmpeg_exe, wav_path, mp3_path, bitrate_kbps=128):
         except Exception:
             kbps = 128
         try:
+            mp3.parent.mkdir(parents=True, exist_ok=True)
+        except Exception:
+            pass
+        try:
             p = _sp.run([str(ffmpeg_exe), "-hide_banner", "-y", "-v", "error",
                          "-i", str(wav), "-codec:a", "libmp3lame",
                          "-b:a", f"{kbps}k", "-ar", "16000", "-ac", "1",
-                         str(mp3)],
+                         "-f", "mp3", str(tmp)],
                         stdout=_sp.DEVNULL, stderr=_sp.PIPE, timeout=900,
                         text=True, errors="replace")
         except FileNotFoundError:
+            _drop_part()
             return False, "ffmpeg not found"
         except Exception as e:
+            _drop_part()
             return False, f"convert failed: {e}"
-        if p.returncode != 0 or not mp3.exists() or mp3.stat().st_size <= 0:
+        try:
+            ok_size = tmp.exists() and tmp.stat().st_size > 0
+        except Exception:
+            ok_size = False
+        if p.returncode != 0 or not ok_size:
             try:
                 tail = ((p.stderr or "").strip()[-200:]) if p.stderr else ""
             except Exception:
                 tail = ""
+            _drop_part()
             return False, f"ffmpeg error {tail}"
+        try:
+            os.replace(str(tmp), str(mp3))
+        except Exception as e:
+            _drop_part()
+            return False, f"rename failed: {e}"
         try:
             mins = mp3.stat().st_size * 8 / (kbps * 1000) / 60
         except Exception:

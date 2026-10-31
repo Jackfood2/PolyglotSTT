@@ -306,7 +306,18 @@ requirements*.txt  dependency pins (base / Canary / Whisper)
 
 ## Changelog
 
-### v1.4.2 (latest)
+### v1.4.3 (latest)
+
+- Note + Whisper: RECORD no longer waits forever after the model finishes loading — readiness and pre-flight now resolve the shared Whisper engine instead of a per-tab cache slot (Import had the same stale-cache wait)
+- Note engine safety: pressing RECORD while the Note preload is still running no longer unloads and restarts that same load; the target engine is excluded from cache swaps by identity
+- Recording pipeline: session-WAV archiving moved off the sounddevice audio callback to a bounded writer thread; UI updates from audio/transcriber threads now go through a GUI queue instead of calling Tk directly; input-overflow status is captured
+- Crash safety: unfinished `note_*.wav` files are moved to `notes_audio/recovered/` on startup instead of deleted; MP3 export writes a `.part` file and renames it atomically
+- No lost tail: RECORD is blocked while the previous chunk is still transcoding; close waits briefly for MP3 export and never deletes a WAV under ffmpeg
+- Status/close hardening: 15-minute Note engine load deadline with retry hint; SRT jobs are confirmed and cancelled on close; single-instance mutex; rotating app/crash logs in `%LOCALAPPDATA%\PolyglotSTT\logs`
+- Note tab: new **Open folder** button opens the `notes_audio` archive in Explorer
+- SRT: heartbeat progress output, safer default worker count, improved fallback timing when word timestamps are missing
+
+### v1.4.2
 
 - RAM safeguards: Whisper checks free RAM before loading (`whisper_engine._check_ram_budget`, `gpu.whisper_resident_mb`), refuses with a message instead of `mkl_malloc` mid-session crash; threads trim under pressure; dual-engine confirm dialog agrees on cost
 - Free memory: Live `Unload` + Note `Free memory` buttons (`gui.live_unload_btn`, `unload_tab_engines` / `unload_other_tab_engines`); idle tab engines auto-swap out before heavy loads; one universal Whisper model picker for all tabs

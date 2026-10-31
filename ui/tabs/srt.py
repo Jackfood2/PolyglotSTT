@@ -22,7 +22,7 @@ class SrtTabMixin:
             def_cpu = default_workers()
         except Exception:
             max_cpu = _os.cpu_count() or 4
-            def_cpu = max(1, int(round(max_cpu * 0.8)))
+            def_cpu = max(1, int(max_cpu))
         self._srt_max_cpu = max(1, int(max_cpu))
         self._srt_start_cb = None
         self._srt_cancel_cb = None
@@ -407,6 +407,10 @@ class SrtTabMixin:
                                        font=("Segoe UI", 10), text_color=FG_DIM,
                                        wraplength=400, justify="left")
         self.srt_status.pack(anchor="w", padx=12, pady=(0, 4))
+        self.srt_beat = ctk.CTkLabel(prog_card, text="",
+                                     font=("Consolas", 10), text_color=FG_DIM,
+                                     wraplength=400, justify="left")
+        self.srt_beat.pack(anchor="w", padx=12, pady=(0, 4))
         self.srt_log_box = ctk.CTkTextbox(prog_card, font=("Consolas", 10),
                                           fg_color=BG_INPUT, text_color=FG_SECONDARY,
                                           corner_radius=8, height=88, wrap="word")
@@ -935,6 +939,7 @@ class SrtTabMixin:
             self.srt_bar.set(0)
             self.srt_pct.configure(text="0%")
             self.srt_status.configure(text="Idle - pick a file to begin")
+            self.srt_beat.configure(text="")
         except Exception:
             pass
 
@@ -1782,6 +1787,10 @@ class SrtTabMixin:
     def set_srt_running(self, running: bool):
         self._srt_running = running
         try:
+            self.srt_beat.configure(text="")
+        except Exception:
+            pass
+        try:
             if running:
                 try:
                     self._show_srt_action(
@@ -1843,6 +1852,12 @@ class SrtTabMixin:
             self.srt_pct.configure(text=f"{int(round(frac * 100))}%")
             if msg:
                 self.srt_status.configure(text=msg)
+        except Exception:
+            pass
+
+    def set_srt_heartbeat(self, text: str = ""):
+        try:
+            self.srt_beat.configure(text=str(text or ""))
         except Exception:
             pass
 

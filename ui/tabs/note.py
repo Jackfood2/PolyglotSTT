@@ -9,6 +9,10 @@ from pathlib import Path
 from ui.theme import ACCENT, ACCENT_DARK, SUCCESS, WARNING, DANGER, BG_CARD, BG_INPUT, FG_PRIMARY, FG_SECONDARY, FG_DIM, BTN_DIM, BTN_DIM_HOVER, BTN_GO_HOVER, BTN_DANGER_HOVER, BTN_TEXT
 from ui.widgets import LevelMeter
 from ui.choices import MODEL_CHOICES, MODEL_CHOICES_REV, WHISPER_MODEL_CHOICES, WHISPER_MODEL_CHOICES_REV, CANARY_MODEL_LABEL, ENGINE_CHOICES
+try:
+    from core.config import NOTES_AUDIO_DIR
+except Exception:  # pragma: no cover - keep the tab usable standalone
+    NOTES_AUDIO_DIR = str(Path(__file__).resolve().parents[2] / "notes_audio")
 
 
 class NoteTabMixin:
@@ -31,6 +35,10 @@ class NoteTabMixin:
         self._note_mic_warned = False  # mic-dead popup latch (per episode)
         self._note_last_level_t = 0.0  # level-post throttle stamp
         self._note_pending = False  # auto-start armed while engine loads
+        self._note_wait_started = 0.0  # arming time for the pending poll
+        self._note_wait_err = 0  # consecutive readiness-callback failures
+        self._note_wait_shown = -1  # last elapsed bucket shown in status
+        self._note_export_threads = []  # MP3 archive workers (close race)
         self._note_auto_mp3s = set()  # session MP3s auto-saved this run
         self._note_saved_mp3s = set()  # ...of which the user kept via Save Audio
         # File-import state now lives on the Import tab (import_* attrs).
@@ -109,7 +117,7 @@ class NoteTabMixin:
         out_card = ctk.CTkFrame(scroll, fg_color=BG_CARD, corner_radius=16)
         out_card.grid(row=3, column=0, sticky="nsew", padx=4, pady=(0, 8))
         out_card.grid_columnconfigure(0, weight=1)
-        out_card.grid_rowconfigure(1, weight=1)
+        out_card.grid_rowconfigure(2, weight=1)
 
         out_header = ctk.CTkFrame(out_card, fg_color="transparent")
         out_header.grid(row=0, column=0, sticky="ew", padx=16, pady=(12, 4))
@@ -142,11 +150,24 @@ class NoteTabMixin:
             command=self._on_note_copy)
         self.note_copy_btn.pack(side="right", padx=(0, 6))
 
+        audio_row = ctk.CTkFrame(out_card, fg_color="transparent")
+        audio_row.grid(row=1, column=0, sticky="ew", padx=16, pady=(0, 2))
+        ctk.CTkLabel(
+            audio_row, text="Audio folder: notes_audio",
+            font=("Segoe UI", 10), text_color=FG_DIM).pack(side="left")
+        self.note_open_audio_btn = ctk.CTkButton(
+            audio_row, text="Open folder", width=90, height=24,
+            font=("Segoe UI", 10),
+            fg_color=BTN_DIM, hover_color=BTN_DIM_HOVER,
+            text_color=FG_SECONDARY, corner_radius=8,
+            command=self._on_note_open_audio_dir)
+        self.note_open_audio_btn.pack(side="right")
+
         self.note_text = ctk.CTkTextbox(
             out_card, font=("Segoe UI", 13),
             fg_color=BG_INPUT, text_color=FG_PRIMARY,
             corner_radius=10, wrap="word", height=280)
-        self.note_text.grid(row=1, column=0, sticky="nsew", padx=12, pady=(4, 12))
+        self.note_text.grid(row=2, column=0, sticky="nsew", padx=12, pady=(4, 12))
         self.note_text.insert("1.0", "Transcription will appear here as you speak...")
         try:
             self.note_text.bind("<Key>", self._note_mark_dirty)
@@ -220,6 +241,38 @@ class NoteTabMixin:
             self._note_recorder = None
             self._note_transcriber = None
 
+    def _note_post(self, fn):
+        """Marshal a callback from an audio/transcriber/export thread to the
+        GUI thread. MoonshineGUI owns a thread-safe queue (post_ui); the
+        after() fallback keeps this mixin usable standalone."""
+        try:
+            post = getattr(self, "post_ui", None)
+            if post is not None:
+                post(fn)
+                return
+        except Exception:
+            pass
+        try:
+            self.after(0, fn)
+        except Exception:
+            pass
+
+    def _note_pending_chunks(self) -> int:
+        """Chunks still being transcribed. 0 when the worker is gone, so a
+        dead worker can never block RECORD forever."""
+        try:
+            pend = int(getattr(self, "_note_submitted", 0) or 0) - \
+                int(getattr(self, "_note_done", 0) or 0)
+            if pend <= 0:
+                return 0
+            tx = getattr(self, "_note_transcriber", None)
+            t = getattr(tx, "_worker_thread", None) if tx is not None else None
+            if t is not None and not t.is_alive():
+                return 0
+            return pend
+        except Exception:
+            return 0
+
     def _on_note_toggle(self):
         if self._note_recording:
             self._note_stop()
@@ -227,11 +280,23 @@ class NoteTabMixin:
             # Second press while waiting for the engine: cancel the wait.
             try:
                 self._note_pending = False
+                self._note_wait_started = 0.0
+                self._note_wait_err = 0
+                self._note_wait_shown = -1
             except Exception:
                 pass
             try:
                 self.note_status_label.configure(text="Ready to record",
                                                  text_color=FG_DIM)
+            except Exception:
+                pass
+        elif self._note_pending_chunks() > 0:
+            # Starting now would bump the transcriber generation and drop
+            # the previous session's still-draining tail chunk.
+            try:
+                self.note_status_label.configure(
+                    text="Finishing the last chunk — wait a moment…",
+                    text_color=WARNING)
             except Exception:
                 pass
         else:
@@ -418,13 +483,38 @@ class NoteTabMixin:
 
     def _note_wait_engine(self):
         """Pending auto-start poll (GUI-thread after() chain, no threads).
-        Ends by beginning capture, surfacing a load failure, or on cancel."""
+        Ends by beginning capture, surfacing a load failure, or on cancel.
+        Bounded: 15 minutes, and 5 consecutive readiness-check failures."""
         try:
             if not getattr(self, "_note_pending", False):
                 return
             if getattr(self, "_note_recording", False):
                 try:
                     self._note_pending = False
+                    self._note_wait_started = 0.0
+                except Exception:
+                    pass
+                return
+            try:
+                started = float(getattr(self, "_note_wait_started", 0.0) or 0.0)
+                if started <= 0:
+                    started = time.monotonic()
+                    self._note_wait_started = started
+                elapsed = time.monotonic() - started
+            except Exception:
+                elapsed = 0.0
+            if elapsed > 900.0:
+                try:
+                    self._note_pending = False
+                    self._note_wait_started = 0.0
+                    self._note_wait_err = 0
+                    self._note_wait_shown = -1
+                except Exception:
+                    pass
+                try:
+                    self.note_status_label.configure(
+                        text="Note engine did not finish loading (15 min). "
+                             "Press RECORD to retry.", text_color=DANGER)
                 except Exception:
                     pass
                 return
@@ -437,9 +527,33 @@ class NoteTabMixin:
                     ready, problem = True, ""
             except Exception:
                 ready, problem = False, ""
+                try:
+                    self._note_wait_err = \
+                        int(getattr(self, "_note_wait_err", 0) or 0) + 1
+                except Exception:
+                    self._note_wait_err = 5
+                if self._note_wait_err >= 5:
+                    try:
+                        self._note_pending = False
+                        self._note_wait_started = 0.0
+                        self._note_wait_shown = -1
+                    except Exception:
+                        pass
+                    try:
+                        self.note_status_label.configure(
+                            text="Note engine status check failed — "
+                                 "press RECORD to retry.", text_color=DANGER)
+                    except Exception:
+                        pass
+                    return
+            else:
+                self._note_wait_err = 0
             if ready:
                 try:
                     self._note_pending = False
+                    self._note_wait_started = 0.0
+                    self._note_wait_err = 0
+                    self._note_wait_shown = -1
                 except Exception:
                     pass
                 try:
@@ -454,6 +568,9 @@ class NoteTabMixin:
             if problem:
                 try:
                     self._note_pending = False
+                    self._note_wait_started = 0.0
+                    self._note_wait_err = 0
+                    self._note_wait_shown = -1
                 except Exception:
                     pass
                 try:
@@ -462,6 +579,17 @@ class NoteTabMixin:
                 except Exception:
                     pass
                 return
+            try:
+                bucket = int(elapsed // 5)
+                if bucket > 0 and bucket != int(
+                        getattr(self, "_note_wait_shown", -1)):
+                    self._note_wait_shown = bucket
+                    self.note_status_label.configure(
+                        text=f"Loading note engine… {int(elapsed)}s "
+                             f"(recording starts automatically)",
+                        text_color=WARNING)
+            except Exception:
+                pass
             try:
                 self.after(1000, self._note_wait_engine)
             except Exception:
@@ -489,17 +617,26 @@ class NoteTabMixin:
                     return
             # Set transcription function based on current engine
             self._note_setup_transcribe_fn()
+            _notes_dir = Path(NOTES_AUDIO_DIR)
             try:
-                from pathlib import Path as _P
-                _notes_dir = _P(__file__).parent / "notes_audio"
+                self._note_recorder.start(session_dir=_notes_dir)
+                self._note_transcriber.start()
             except Exception:
-                _notes_dir = None
-            self._note_recorder.start(session_dir=_notes_dir)
-            self._note_transcriber.start()
+                # Never leave the microphone open if the transcriber failed
+                # to start after the recorder did.
+                try:
+                    self._note_recorder.stop()
+                except Exception:
+                    pass
+                raise
             self._note_recording = True
             self._note_start_time = time.time()
             self._note_submitted = 0
             self._note_done = 0
+            self._note_pending = False
+            self._note_wait_started = 0.0
+            self._note_wait_err = 0
+            self._note_wait_shown = -1
             self._note_update_counter()
 
             self.note_record_btn.configure(
@@ -556,16 +693,27 @@ class NoteTabMixin:
         if _wav:
             try:
                 import threading as _th
-                _th.Thread(target=self._note_export_mp3, args=(str(_wav),),
-                           daemon=True).start()
+                _t = _th.Thread(target=self._note_export_mp3,
+                                args=(str(_wav),), daemon=True,
+                                name="note-mp3-export")
+                _t.start()
+                try:
+                    _lst = getattr(self, "_note_export_threads", None)
+                    if not isinstance(_lst, list):
+                        _lst = []
+                        self._note_export_threads = _lst
+                    _lst[:] = [x for x in _lst
+                               if x is not None and x.is_alive()]
+                    _lst.append(_t)
+                except Exception:
+                    pass
             except Exception:
                 pass
 
         self.note_record_btn.configure(
             text="●  RECORD", fg_color=ACCENT, hover_color=ACCENT_DARK)
         try:
-            _pend = (int(getattr(self, "_note_submitted", 0) or 0)
-                     - int(getattr(self, "_note_done", 0) or 0))
+            _pend = self._note_pending_chunks()
         except Exception:
             _pend = 0
         if _pend > 0:
@@ -578,10 +726,10 @@ class NoteTabMixin:
 
     def _note_export_mp3(self, wav_path):
         """Background worker: session WAV -> notes_audio/note_*.mp3, then a
-        one-line status. Never touches Tk except via after()."""
+        one-line status. Never touches Tk except via the GUI queue."""
         def _say(text, color):
             try:
-                self.after(0, lambda: self.note_status_label.configure(
+                self._note_post(lambda: self.note_status_label.configure(
                     text=text, text_color=color))
             except Exception:
                 pass
@@ -639,7 +787,7 @@ class NoteTabMixin:
     def _note_on_done(self, index, ok):
         """Worker-thread completion signal: marshal count to GUI thread."""
         try:
-            self.after(0, self._note_count_done)
+            self._note_post(self._note_count_done)
         except Exception:
             pass
 
@@ -676,14 +824,14 @@ class NoteTabMixin:
         except Exception:
             pass
         try:
-            self.after(0, self._note_update_counter)
+            self._note_post(self._note_update_counter)
         except Exception:
             pass
 
     def _note_on_level(self, level):
-        # Audio-thread callback (~64/s): throttle, hop to the GUI thread,
-        # and never touch Tk off-thread (a canvas call from here would
-        # eventually crash the interpreter).
+        # Audio-thread callback (~64/s): throttle and hand off through the
+        # GUI queue - never touch Tk off-thread (a canvas call from here
+        # would eventually crash the interpreter).
         try:
             now = time.monotonic()
             if now - float(getattr(self, "_note_last_level_t", 0.0)) < 0.066:
@@ -694,7 +842,7 @@ class NoteTabMixin:
                 value = max(0.0, min(1.0, float(level or 0.0)))
             except Exception:
                 return
-            self.after(0, lambda: self._note_safe_level(meter, value))
+            self._note_post(lambda: self._note_safe_level(meter, value))
         except Exception:
             pass
 
@@ -708,7 +856,7 @@ class NoteTabMixin:
 
     def _note_on_rec_status(self, msg):
         try:
-            self.after(0, lambda m=msg: self.note_status_label.configure(
+            self._note_post(lambda m=msg: self.note_status_label.configure(
                 text=m, text_color=FG_SECONDARY))
         except Exception:
             pass
@@ -737,13 +885,13 @@ class NoteTabMixin:
             except Exception:
                 pass
         try:
-            self.after(0, _append)
+            self._note_post(_append)
         except Exception:
             pass
 
     def _note_on_tx_status(self, msg):
         try:
-            self.after(0, lambda m=msg: self.note_status_label.configure(
+            self._note_post(lambda m=msg: self.note_status_label.configure(
                 text=m, text_color=FG_SECONDARY))
         except Exception:
             pass
@@ -892,8 +1040,7 @@ class NoteTabMixin:
         except Exception:
             recording = False
         try:
-            pending = (int(getattr(self, "_note_submitted", 0) or 0)
-                       - int(getattr(self, "_note_done", 0) or 0))
+            pending = self._note_pending_chunks()
         except Exception:
             pending = 0
         return recording, max(0, pending)
@@ -928,6 +1075,33 @@ class NoteTabMixin:
                 parent=self))
         except Exception:
             return True
+
+    def _on_note_open_audio_dir(self):
+        """Open the session-audio archive folder in the OS file manager."""
+        try:
+            import os as _os
+            import sys as _sys
+            from pathlib import Path as _P
+            folder = _P(str(NOTES_AUDIO_DIR))
+            try:
+                folder.mkdir(parents=True, exist_ok=True)
+            except Exception:
+                pass
+            if not folder.is_dir():
+                raise RuntimeError("audio folder is missing")
+            if _os.name == "nt":
+                _os.startfile(str(folder))
+            else:
+                import subprocess as _sp
+                opener = "open" if _sys.platform == "darwin" else "xdg-open"
+                _sp.Popen([opener, str(folder)])
+        except Exception as e:
+            try:
+                self.note_status_label.configure(
+                    text=f"Could not open audio folder: {e}",
+                    text_color=DANGER)
+            except Exception:
+                pass
 
     def _on_note_save_audio(self):
         """Save Audio button: copy the last auto-saved session MP3 to a
@@ -997,7 +1171,10 @@ class NoteTabMixin:
         """Close-time sweep: stop any live Note capture, then delete this
         run's auto session files (WAV leftovers + MP3s) UNLESS explicitly
         kept via Save Audio. Previous runs' files are never touched.
-        Never raises (close must never brick)."""
+        A still-running MP3 export is given a short grace period; if it is
+        still converting, its source WAV is kept for next-launch recovery
+        instead of being deleted under ffmpeg. Never raises (close must
+        never brick)."""
         try:
             try:
                 if bool(getattr(self, "_note_recording", False)):
@@ -1014,6 +1191,23 @@ class NoteTabMixin:
             except Exception:
                 pass
             try:
+                _threads = list(getattr(self, "_note_export_threads", None)
+                                or [])
+                _alive = [t for t in _threads
+                          if t is not None and t.is_alive()]
+                _deadline = time.monotonic() + 3.0
+                for t in _alive:
+                    _left = _deadline - time.monotonic()
+                    if _left <= 0:
+                        break
+                    try:
+                        t.join(timeout=_left)
+                    except Exception:
+                        pass
+                export_busy = any(t.is_alive() for t in _alive)
+            except Exception:
+                export_busy = False
+            try:
                 auto = set(getattr(self, "_note_auto_mp3s", set()) or set())
                 saved = set(getattr(self, "_note_saved_mp3s", set()) or set())
             except Exception:
@@ -1021,7 +1215,7 @@ class NoteTabMixin:
             try:
                 rec = getattr(self, "_note_recorder", None)
                 sw = getattr(rec, "session_wav", None) if rec else None
-                if sw:
+                if sw and not export_busy:
                     auto.add(str(sw))
             except Exception:
                 pass
