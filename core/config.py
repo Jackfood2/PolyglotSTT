@@ -5,7 +5,7 @@ import json
 import os
 import threading
 
-APP_VERSION = "1.4.5"
+APP_VERSION = "1.4.6"
 
 PROJECT_ROOT = os.path.dirname(os.path.dirname(__file__))
 CONFIG_PATH = os.path.join(PROJECT_ROOT, "moonshine_config.json")

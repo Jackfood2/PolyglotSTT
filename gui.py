@@ -253,6 +253,13 @@ class MoonshineGUI(LiveTabMixin, NoteTabMixin, ImportTabMixin, SrtTabMixin, Dial
                           unselected_color=BG_CARD,
                           unselected_hover_color=BG_INPUT,
                           text_color=FG_PRIMARY)
+            # Segment CTkButtons snapshot border_width at creation, so the
+            # strip keeps a 3px halo unless each one is cleared too.
+            for _seg in getattr(_sb, "_buttons_dict", {}).values():
+                try:
+                    _seg.configure(border_width=0)
+                except Exception:
+                    pass
         except Exception:
             pass
         record_card = ctk.CTkFrame(live, fg_color=BG_CARD, corner_radius=16)
@@ -443,6 +450,11 @@ class MoonshineGUI(LiveTabMixin, NoteTabMixin, ImportTabMixin, SrtTabMixin, Dial
                 self._tab_callback(name)
             except Exception:
                 pass
+        if name == "Note":
+            try:
+                self._refresh_note_sources()
+            except Exception:
+                pass
         try:
             self.after(0, self._run_fit)
         except Exception:
@@ -463,6 +475,7 @@ class MoonshineGUI(LiveTabMixin, NoteTabMixin, ImportTabMixin, SrtTabMixin, Dial
                     "burn_speed_menu", "burn_codec_menu",
                     "srt_engine_menu", "srt_model_menu",
                     "note_engine_menu", "note_model_menu", "note_lang_menu",
+                    "note_src_menu",
                     "import_engine_menu", "import_model_menu"):
             try:
                 _w = getattr(self, _mn, None)
@@ -585,14 +598,13 @@ class MoonshineGUI(LiveTabMixin, NoteTabMixin, ImportTabMixin, SrtTabMixin, Dial
                         # CTk only honours dynamic_resizing at construction,
                         # so pin it and re-apply the designed width.
                         try:
-                            if getattr(w, "_dynamic_resizing", False):
-                                w._dynamic_resizing = False
-                                w.configure(width=int(getattr(
-                                    w, "_desired_width", 140)))
-                                # CTk only stops propagating the label's
-                                # width at construction; without this the
-                                # long value still inflates the menu.
-                                w.grid_propagate(0)
+                            w._dynamic_resizing = False
+                            w.configure(width=int(getattr(
+                                w, "_desired_width", 140)))
+                            # CTk only stops propagating the label's width
+                            # at construction; without this a long value
+                            # (mic name, model id) still inflates the menu.
+                            w.grid_propagate(0)
                         except Exception:
                             pass
                 except Exception:
@@ -667,6 +679,11 @@ class MoonshineGUI(LiveTabMixin, NoteTabMixin, ImportTabMixin, SrtTabMixin, Dial
                                unselected_color=BG_CARD,
                                unselected_hover_color=BG_INPUT,
                                text_color=FG_PRIMARY)
+                for _seg in getattr(_sb2, "_buttons_dict", {}).values():
+                    try:
+                        _seg.configure(border_width=0)
+                    except Exception:
+                        pass
                 # Inner segment buttons own CTkCanvases invisible to the
                 # walker - paint them the strip color directly.
                 try:

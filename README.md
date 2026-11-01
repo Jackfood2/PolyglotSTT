@@ -148,7 +148,8 @@ Moonshine stay on CPU.
 
 ## Requirements
 
-- Windows 10/11, microphone (default input device).
+- Windows 10/11, microphone (default input device) — or no microphone at all:
+  Note mode can record desktop/system audio through WASAPI loopback.
 - **Python 3.11** ([python.org](https://www.python.org/downloads/);
   `setup.bat`/`run.bat` prefer a local portable `python\` folder if present,
   otherwise fall back to system Python 3.11).
@@ -321,6 +322,22 @@ requirements*.txt  dependency pins (base / Canary / Whisper)
   and reburn to relearn.
 
 ## Changelog
+
+### v1.4.6
+
+- Note tab: new **Audio** source picker. Choose the default microphone, any
+  connected input (laptop array, USB mic, headset...) by name, or
+  **No microphone**; tick **Desktop audio** to capture system sound through
+  WASAPI loopback. Mic + desktop are mixed into one track, so meetings,
+  videos and calls can be transcribed with or without a microphone.
+- The source list refreshes when the Note tab opens and again just before
+  recording, so a hot-plugged USB microphone appears without a restart.
+  Both choices persist as `note_mic_id` / `note_desktop_audio`.
+- New dependency: `soundcard` (WASAPI loopback). Recording falls back to the
+  normal sounddevice path for the default microphone.
+- The mic watchdog now reports "No audio input" for desktop-only sessions and
+  "Audio silent" when the selected source produces only digital silence.
+- Tab strip: segment borders removed so the strip no longer shows a halo.
 
 ### v1.4.5
 

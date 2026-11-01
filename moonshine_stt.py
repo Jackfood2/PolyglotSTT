@@ -75,6 +75,8 @@ except Exception:  # pragma: no cover - fallback if core/ is missing
         "whisper_task": "transcribe",
         "whisper_src_lang": "auto",
         "note_whisper_lang": "auto",
+        "note_mic_id": "",
+        "note_desktop_audio": False,
         "whisper_model": "large-v3-turbo",
         "whisper_device": "auto",
         "compute": "auto",
@@ -525,6 +527,14 @@ class MoonshineSTTApp:
                         self._on_note_lang_changed)
                     self.gui.set_note_language(
                         self.config.get("note_whisper_lang", "auto"))
+                except Exception:
+                    pass
+                try:
+                    self.gui.set_note_source_callback(
+                        self._on_note_source_changed)
+                    self.gui.set_note_source(
+                        self.config.get("note_mic_id", ""),
+                        bool(self.config.get("note_desktop_audio", False)))
                 except Exception:
                     pass
                 try:
@@ -3086,6 +3096,25 @@ class MoonshineSTTApp:
             self._log(f"Note language -> {code}")
         except Exception:
             pass
+
+    def _on_note_source_changed(self, mic_id, desktop):
+        """Note tab audio source: a soundcard mic endpoint id ("" = system
+        default, "__none__" = no mic) plus the desktop-loopback flag."""
+        try:
+            self.config["note_mic_id"] = str(mic_id or "")
+            self.config["note_desktop_audio"] = bool(desktop)
+            save_local_config(self.config)
+        except Exception:
+            pass
+        try:
+            _who = "default mic" if not mic_id else str(mic_id)
+            if mic_id == "__none__":
+                _who = "no mic"
+            _tail = " + desktop audio" if desktop else ""
+            self._log(f"Note audio source -> {_who}{_tail}")
+        except Exception:
+            pass
+
     def _on_srt_input_lang_changed(self, value):
         from gui import SRT_LANG_CODE_FROM_DISPLAY, SRT_LANGS
         code = SRT_LANG_CODE_FROM_DISPLAY.get(value, "auto")

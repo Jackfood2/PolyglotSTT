@@ -41,6 +41,13 @@ class NoteTabMixin:
         self._note_export_threads = []  # MP3 archive workers (close race)
         self._note_auto_mp3s = set()  # session MP3s auto-saved this run
         self._note_saved_mp3s = set()  # ...of which the user kept via Save Audio
+        # Audio source (Note only): mic endpoint id, "" = system default,
+        # "__none__" = no mic; desktop = mix in WASAPI loopback.
+        self._note_mic_id = ""
+        self._note_desktop_audio = False
+        self._note_src_cb = None
+        self._note_src_list = []
+        self._note_src_map = {"Default mic": ""}
         # File-import state now lives on the Import tab (import_* attrs).
         # note_file_* names below are kept as aliases (see _build_import_tab).
 
@@ -237,10 +244,34 @@ class NoteTabMixin:
             text_color=FG_SECONDARY, corner_radius=8,
             command=self._on_note_unload_model)
         self.note_unload_btn.pack(side="left")
+        ctk.CTkLabel(info_card, text="Audio:",
+                     font=("Segoe UI", 10, "bold"),
+                     text_color=FG_DIM).grid(row=3, column=0, sticky="w",
+                                             padx=(16, 4), pady=(0, 4))
+        self.note_src_var = ctk.StringVar(value="Default mic")
+        self.note_src_menu = ctk.CTkOptionMenu(
+            info_card, variable=self.note_src_var,
+            values=["Default mic"], width=100,
+            fg_color=BG_INPUT, button_color=ACCENT,
+            command=self._on_note_src_changed)
+        self.note_src_menu.grid(row=3, column=1, sticky="ew",
+                                padx=(4, 4), pady=(0, 4))
+        self.note_desktop_var = ctk.BooleanVar(value=False)
+        self.note_desktop_check = ctk.CTkCheckBox(
+            info_card, text="Desktop audio", variable=self.note_desktop_var,
+            font=("Segoe UI", 10), text_color=FG_DIM,
+            fg_color=ACCENT, hover_color=ACCENT_DARK,
+            checkbox_width=18, checkbox_height=18,
+            command=self._on_note_desktop_toggle)
+        self.note_desktop_check.grid(row=3, column=2, columnspan=2,
+                                     sticky="w", padx=(4, 16), pady=(0, 4))
         ctk.CTkLabel(
-            info_card, text="Language applies to Whisper (Auto = detect).",
-            font=("Segoe UI", 9), text_color=FG_DIM
-            ).grid(row=3, column=0, columnspan=4, sticky="w",
+            info_card,
+            text="Language applies to Whisper (Auto = detect). Desktop "
+                 "audio records system sound.",
+            font=("Segoe UI", 9), text_color=FG_DIM,
+            wraplength=330, justify="left"
+            ).grid(row=4, column=0, columnspan=4, sticky="w",
                    padx=16, pady=(0, 8))
         self._note_engine_cb = None
         self._note_model_cb = None
@@ -269,6 +300,10 @@ class NoteTabMixin:
             print(f"[Note] init failed: {e}")
             self._note_recorder = None
             self._note_transcriber = None
+        try:
+            self._refresh_note_sources()
+        except Exception:
+            pass
 
     def _note_post(self, fn):
         """Marshal a callback from an audio/transcriber/export thread to the
@@ -474,8 +509,125 @@ class NoteTabMixin:
         except Exception:
             pass
 
+    # ── Audio source (mic / desktop / both) ──────────────────────────
+    def set_note_source_callback(self, cb):
+        """App callback: (mic_id, desktop_bool) on every source change."""
+        try:
+            self._note_src_cb = cb if callable(cb) else None
+        except Exception:
+            self._note_src_cb = None
+
+    def _note_notify_source(self):
+        cb = getattr(self, "_note_src_cb", None)
+        if not callable(cb):
+            return
+        try:
+            cb(str(getattr(self, "_note_mic_id", "") or ""),
+               bool(getattr(self, "_note_desktop_audio", False)))
+        except Exception:
+            pass
+
+    def _refresh_note_sources(self, select_id=None):
+        """Rebuild the mic list so hot-plugged USB mics appear. Keeps the
+        current selection when the endpoint is still present; falls back to
+        the default mic when it vanished."""
+        try:
+            from note_engine import list_input_sources
+            sources = list_input_sources()
+        except Exception:
+            sources = []
+        self._note_src_list = sources
+        vals = ["Default mic"]
+        mapping = {"Default mic": ""}
+        seen = set()
+        for s in sources:
+            base = str(s.get("name") or "Microphone")
+            name = base
+            i = 2
+            while name in seen:
+                name = f"{base} ({i})"
+                i += 1
+            seen.add(name)
+            vals.append(name)
+            mapping[name] = str(s.get("id") or "")
+        vals.append("No microphone")
+        mapping["No microphone"] = "__none__"
+        self._note_src_map = mapping
+        try:
+            self.note_src_menu.configure(values=vals)
+        except Exception:
+            pass
+        want = (self._note_mic_id if select_id is None
+                else str(select_id or ""))
+        label = None
+        for name, mid in mapping.items():
+            if mid == want:
+                label = name
+                break
+        if label is None:
+            label = "Default mic"
+            # Only forget a missing endpoint when the list really loaded:
+            # a transient soundcard failure must not wipe the saved choice.
+            if sources and want not in ("", "__none__"):
+                self._note_mic_id = ""
+                self._note_notify_source()
+        try:
+            self.note_src_var.set(label)
+        except Exception:
+            pass
+
+    def _on_note_src_changed(self, value=None):
+        try:
+            mid = getattr(self, "_note_src_map", {}).get(
+                str(value or ""), "")
+        except Exception:
+            mid = ""
+        self._note_mic_id = mid
+        self._note_notify_source()
+
+    def _on_note_desktop_toggle(self):
+        try:
+            self._note_desktop_audio = bool(self.note_desktop_var.get())
+        except Exception:
+            self._note_desktop_audio = False
+        self._note_notify_source()
+
+    def set_note_source(self, mic_id="", desktop=False):
+        """Reflect the saved source without firing the save callback."""
+        self._note_mic_id = str(mic_id or "")
+        self._note_desktop_audio = bool(desktop)
+        try:
+            self._refresh_note_sources()
+        except Exception:
+            pass
+        try:
+            self.note_desktop_var.set(self._note_desktop_audio)
+        except Exception:
+            pass
+
+    def _note_has_source(self):
+        return (bool(getattr(self, "_note_desktop_audio", False)) or
+                str(getattr(self, "_note_mic_id", "")) != "__none__")
+
+    def _note_apply_source(self):
+        """Push the current selection into the recorder (called just before
+        RECORD so a USB mic plugged since launch is picked up)."""
+        self._refresh_note_sources()
+        rec = getattr(self, "_note_recorder", None)
+        if rec is not None:
+            rec.set_source(getattr(self, "_note_mic_id", ""),
+                           bool(getattr(self, "_note_desktop_audio", False)))
+
     def _note_start(self):
         if self._note_recorder is None:
+            return
+        if not self._note_has_source():
+            try:
+                self.note_status_label.configure(
+                    text="Pick a microphone or enable desktop audio",
+                    text_color=WARNING)
+            except Exception:
+                pass
             return
         try:
             # App pre-flight: snapshots the Note tab engine, confirms dual
@@ -691,6 +843,10 @@ class NoteTabMixin:
                     return
             # Set transcription function based on current engine
             self._note_setup_transcribe_fn()
+            try:
+                self._note_apply_source()
+            except Exception:
+                pass
             _notes_dir = Path(NOTES_AUDIO_DIR)
             try:
                 self._note_recorder.start(session_dir=_notes_dir)
@@ -985,8 +1141,14 @@ class NoteTabMixin:
             if rec is not None:
                 state, _detail = rec.mic_health()
                 if state == "dead":
+                    _only_desktop = (
+                        bool(getattr(self, "_note_desktop_audio", False)) and
+                        str(getattr(self, "_note_mic_id", "")) == "__none__")
                     self.note_status_label.configure(
-                        text="No microphone input — check mic", text_color=DANGER)
+                        text=("No audio input — check source"
+                              if _only_desktop
+                              else "No microphone input — check mic"),
+                        text_color=DANGER)
                     # Popup-focus once per dead episode, recording only.
                     # Latch clears when input resumes; no modal (a modal
                     # would block the STOP button mid-record).
@@ -1003,7 +1165,7 @@ class NoteTabMixin:
                             pass
                 elif state == "silent":
                     self.note_status_label.configure(
-                        text="Microphone silent — check input level",
+                        text="Audio silent — check input level",
                         text_color=WARNING)
                 elif getattr(self, "_note_mic_warned", False):
                     self._note_mic_warned = False

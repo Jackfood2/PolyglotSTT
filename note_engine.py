@@ -1,6 +1,7 @@
 import queue
 # note_engine.py
 # Chunked recording with adaptive silence detection for Note mode
+import contextlib
 import os
 import shutil
 import threading
@@ -10,6 +11,33 @@ import numpy as np
 import sounddevice as sd
 from typing import Optional, Callable, List
 from pathlib import Path
+
+
+def list_input_sources():
+    """Physical capture endpoints for the Note source picker (no loopback
+    duplicates). Returns [{"id": str, "name": str}]; [] when soundcard is
+    missing, so the tab degrades to the system default microphone."""
+    try:
+        import soundcard as sc
+        mics = sc.all_microphones(include_loopback=False)
+    except Exception:
+        return []
+    out = []
+    seen = {}
+    for m in mics:
+        try:
+            mid = str(m.id)
+            name = str(m.name)
+        except Exception:
+            continue
+        if not mid:
+            continue
+        n = seen.get(name, 0) + 1
+        seen[name] = n
+        if n > 1:
+            name = f"{name} ({n})"
+        out.append({"id": mid, "name": name})
+    return out
 
 
 class NoteRecorder:
@@ -32,6 +60,17 @@ class NoteRecorder:
         self._stream: Optional[sd.InputStream] = None
         self._lock = threading.Lock()
         self._chunk_lock = threading.Lock()
+
+        # Audio source selection (Note tab). Empty mic id = system default
+        # microphone, "__none__" = no microphone (desktop audio only).
+        self._src_mic_id = ""
+        self._src_desktop = False
+        # soundcard capture thread (used when a specific mic or desktop
+        # loopback is selected; the plain default-mic path stays on
+        # sounddevice, which needs no COM init and is battle-tested).
+        self._sc_thread: Optional[threading.Thread] = None
+        self._sc_stop = threading.Event()
+        self._sc_error: Optional[str] = None
 
         # Audio buffer for current chunk
         self._frames: List[np.ndarray] = []
@@ -78,6 +117,21 @@ class NoteRecorder:
         self._on_level = on_level
         self._on_status = on_status
 
+    def set_source(self, mic_id: str = "", desktop: bool = False):
+        """Choose what to capture. mic_id "" = system default microphone,
+        "__none__" = no microphone, anything else = a soundcard endpoint
+        id (USB mic, array mic, ...). desktop=True mixes in the default
+        speaker's WASAPI loopback (system sound)."""
+        self._src_mic_id = str(mic_id or "")
+        self._src_desktop = bool(desktop)
+
+    def _uses_soundcard(self) -> bool:
+        """The sounddevice path handles only the plain default mic."""
+        return bool(self._src_desktop) or self._src_mic_id not in ("", "__none__")
+
+    def _has_any_source(self) -> bool:
+        return self._src_desktop or self._src_mic_id != "__none__"
+
     def _required_silence(self, elapsed_sec: float) -> float:
         """Adaptive silence threshold: longer silence needed early, shorter later."""
         if elapsed_sec <= self.MIN_CHUNK_SEC:
@@ -97,53 +151,173 @@ class NoteRecorder:
                 # Input overflow etc. - keep the last message for diagnostics
                 # instead of silently discarding it.
                 self._stream_status = str(status)
-            should_cut = False
-            level = None
-            with self._lock:
-                if not self._recording:
-                    return
-                self._frames.append(indata.copy())
-
-                f = indata.astype(np.float32) / 32768.0
-                rms = float(np.sqrt(np.mean(f ** 2)))
-                level = min(1.0, rms * 5.0)
-
-                now = time.monotonic()
-                elapsed = now - self._chunk_start_time
-                self._last_cb_time = now
-                if rms > self.HEALTH_RMS_FLOOR:
-                    self._last_sound_time = now
-
-                if rms < self.RMS_THRESHOLD:
-                    if self._silence_start is None:
-                        self._silence_start = now
-                    else:
-                        silence_dur = now - self._silence_start
-                        required = self._required_silence(elapsed)
-                        if elapsed >= self.MIN_CHUNK_SEC and silence_dur >= required:
-                            should_cut = True
-                        elif elapsed >= self.MAX_CHUNK_SEC:
-                            should_cut = True
-                else:
-                    self._silence_start = None
-
-                if elapsed >= self.MAX_CHUNK_SEC + 2.0:
-                    should_cut = True
-
-            if level is not None:
-                try:
-                    cb = self._on_level
-                except Exception:
-                    cb = None
-                if cb:
-                    try:
-                        cb(level)
-                    except Exception:
-                        pass
-            if should_cut:
-                self._cut_chunk()
+            self._process_block(indata)
         except Exception:
             pass
+
+    def _process_block(self, indata):
+        """Shared chunking/silence/level logic for both capture paths
+        (sounddevice callback and the soundcard worker thread)."""
+        should_cut = False
+        level = None
+        with self._lock:
+            if not self._recording:
+                return
+            self._frames.append(indata.copy())
+
+            f = indata.astype(np.float32) / 32768.0
+            rms = float(np.sqrt(np.mean(f ** 2)))
+            level = min(1.0, rms * 5.0)
+
+            now = time.monotonic()
+            elapsed = now - self._chunk_start_time
+            self._last_cb_time = now
+            if rms > self.HEALTH_RMS_FLOOR:
+                self._last_sound_time = now
+
+            if rms < self.RMS_THRESHOLD:
+                if self._silence_start is None:
+                    self._silence_start = now
+                else:
+                    silence_dur = now - self._silence_start
+                    required = self._required_silence(elapsed)
+                    if elapsed >= self.MIN_CHUNK_SEC and silence_dur >= required:
+                        should_cut = True
+                    elif elapsed >= self.MAX_CHUNK_SEC:
+                        should_cut = True
+            else:
+                self._silence_start = None
+
+            if elapsed >= self.MAX_CHUNK_SEC + 2.0:
+                should_cut = True
+
+        if level is not None:
+            try:
+                cb = self._on_level
+            except Exception:
+                cb = None
+            if cb:
+                try:
+                    cb(level)
+                except Exception:
+                    pass
+        if should_cut:
+            self._cut_chunk()
+
+    def _start_soundcard(self):
+        """Open the selected source(s) via soundcard and wait until the
+        worker thread has them running, so failures surface on RECORD."""
+        if not self._has_any_source():
+            raise RuntimeError("select a microphone or enable desktop audio")
+        self._sc_error = None
+        self._sc_stop = threading.Event()
+        ready = threading.Event()
+        t = threading.Thread(target=self._sc_capture_loop,
+                             args=(ready,),
+                             daemon=True, name="note-sc-capture")
+        self._sc_thread = t
+        t.start()
+        try:
+            started = ready.wait(6.0)
+        except Exception:
+            started = False
+        if not started:
+            self._sc_stop.set()
+            self._sc_thread = None
+            raise RuntimeError("audio source did not start (timed out)")
+        if self._sc_error:
+            self._sc_stop.set()
+            self._sc_thread = None
+            raise RuntimeError(self._sc_error)
+
+    def _sc_capture_loop(self, ready):
+        """Worker: soundcard capture for a specific mic and/or WASAPI
+        loopback. soundcard needs COM on this thread (0x800401f0)."""
+        ctypes = None
+        com = False
+        try:
+            try:
+                import ctypes as _ctypes
+                ctypes = _ctypes
+                ctypes.windll.ole32.CoInitializeEx(None, 0x2)
+                com = True
+            except Exception:
+                pass
+            try:
+                import soundcard as sc
+                mic = None
+                spk = None
+                if self._src_mic_id != "__none__":
+                    if self._src_mic_id:
+                        mic = sc.get_microphone(self._src_mic_id)
+                    else:
+                        mic = sc.default_microphone()
+                if self._src_desktop:
+                    spk = sc.get_microphone(sc.default_speaker().id,
+                                            include_loopback=True)
+                if mic is None and spk is None:
+                    raise RuntimeError("no audio source available")
+                bs = 1024
+                with contextlib.ExitStack() as stack:
+                    mic_rec = None
+                    spk_rec = None
+                    if mic is not None:
+                        mic_rec = stack.enter_context(mic.recorder(
+                            samplerate=self.sample_rate, channels=1,
+                            blocksize=bs))
+                    if spk is not None:
+                        spk_rec = stack.enter_context(spk.recorder(
+                            samplerate=self.sample_rate, channels=1,
+                            blocksize=bs))
+                    ready.set()
+                    while not self._sc_stop.is_set() and self._recording:
+                        a = (mic_rec.record(numframes=bs)
+                             if mic_rec is not None else None)
+                        b = (spk_rec.record(numframes=bs)
+                             if spk_rec is not None else None)
+                        if a is not None and b is not None:
+                            n = min(len(a), len(b))
+                            mix = a[:n] + b[:n]
+                        elif a is not None:
+                            mix = a
+                        elif b is not None:
+                            mix = b
+                        else:
+                            continue
+                        try:
+                            mono = (mix.mean(axis=1)
+                                    if getattr(mix, "ndim", 1) > 1 else mix)
+                            block = np.clip(mono, -1.0, 1.0)
+                            self._process_block(
+                                (block * 32767.0).astype(np.int16)
+                                .reshape(-1, 1))
+                        except Exception:
+                            pass
+            except Exception as e:
+                self._sc_error = f"{e}"
+                try:
+                    ready.set()
+                except Exception:
+                    pass
+        finally:
+            if com:
+                try:
+                    ctypes.windll.ole32.CoUninitialize()
+                except Exception:
+                    pass
+
+    def _stop_soundcard(self):
+        t = self._sc_thread
+        self._sc_thread = None
+        try:
+            self._sc_stop.set()
+        except Exception:
+            pass
+        if t is not None and t.is_alive():
+            try:
+                t.join(timeout=4.0)
+            except Exception:
+                pass
 
     def _wav_writer_loop(self, q, w):
         """Dedicated archive writer: the audio thread only queues frames.
@@ -327,17 +501,21 @@ class NoteRecorder:
         self._recording = True
 
         try:
-            self._stream = sd.InputStream(
-                samplerate=self.sample_rate,
-                channels=1,
-                dtype="int16",
-                callback=self._audio_callback,
-                blocksize=1024,
-            )
-            self._stream.start()
+            if self._uses_soundcard():
+                self._start_soundcard()
+            else:
+                self._stream = sd.InputStream(
+                    samplerate=self.sample_rate,
+                    channels=1,
+                    dtype="int16",
+                    callback=self._audio_callback,
+                    blocksize=1024,
+                )
+                self._stream.start()
         except Exception as e:
             self._recording = False
             self._stream = None
+            self._stop_soundcard()
             self._close_session_wav()
             try:
                 if self.session_wav:
@@ -345,13 +523,14 @@ class NoteRecorder:
             except Exception:
                 pass
             self.session_wav = None
-            raise RuntimeError(f"Microphone error: {e}")
+            raise RuntimeError(f"Audio input error: {e}")
 
     def stop(self) -> Optional[np.ndarray]:
         """Stop recording and return any remaining audio."""
         if not self._recording:
             return None
         self._recording = False
+        self._stop_soundcard()
         if self._stream:
             try:
                 self._stream.stop()
@@ -394,12 +573,15 @@ class NoteRecorder:
                 return "idle", ""
             now = time.monotonic()
             try:
-                alive = self._stream is not None
-                if alive:
-                    try:
-                        alive = bool(self._stream.active)
-                    except Exception:
-                        pass
+                if self._sc_thread is not None:
+                    alive = self._sc_thread.is_alive()
+                else:
+                    alive = self._stream is not None
+                    if alive:
+                        try:
+                            alive = bool(self._stream.active)
+                        except Exception:
+                            pass
             except Exception:
                 alive = False
             if not alive:
