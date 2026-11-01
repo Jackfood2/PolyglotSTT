@@ -322,7 +322,7 @@ requirements*.txt  dependency pins (base / Canary / Whisper)
 
 ## Changelog
 
-### Unreleased
+### v1.4.4
 
 - Whisper hallucination guard: Silero VAD is enabled for every Whisper model
   and task, so silence is removed before decoding and empty audio returns no
