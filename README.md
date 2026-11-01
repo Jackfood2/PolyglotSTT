@@ -17,14 +17,14 @@ No API keys, no cloud, no admin rights needed once set up.
 | Canary-1B | Accurate ASR + translation to English | Source: German, English, Spanish, French (`auto` → English) |
 | Whisper | Full-size Whisper, native timestamps, word-level alignment | ~100 source languages; `transcribe` keeps source, `translate` outputs English |
 
-**Why not Turbo?** OpenAI trained `large-v3-turbo` on transcription data
-only, explicitly excluding translation data — the `<|translate|>` token is
-untrained, so Turbo silently *transcribes* instead of translating. Verified
-here with two independent conversions (correct prompt, Japanese output
-anyway). `large-v3` is therefore the smallest Whisper that translates.
-Canary-1B likewise only carries `de/en/es/fr` language tokens — anything
-else fails fast with a message pointing at Whisper. The GUI only offers
-each engine the languages it can actually do.
+**Turbo is transcription-only.** OpenAI trained `large-v3-turbo` on
+transcription data only, explicitly excluding translation data — its
+`<|translate|>` token is untrained, so it silently *transcribes* instead of
+translating. It is selectable for `transcribe` (about 2x faster than
+large-v3 on CPU), but the app blocks it in `translate` mode and keeps
+large-v3 for English output. Canary-1B likewise only carries `de/en/es/fr`
+language tokens — anything else fails fast with a message pointing at
+Whisper. The GUI only offers each engine the languages it can actually do.
 
 ## GPU acceleration (automatic)
 
@@ -56,11 +56,13 @@ Moonshine stay on CPU.
   into the focused window (clipboard fallback), with level meter, waveform,
   history, and per-engine Task / source-language selectors. The *Model* row
    follows the engine: Moonshine sizes, downloadable Whisper sizes (Tiny
-   75MB → Large v3 3GB, fetched once on first pick), or the fixed Canary-1B.
-   Whisper generations: v1 oldest, v2 middle, v3 newest and best — every
-   Large is ~3GB. The bare Large entry is gone: the installed faster-whisper
-   resolves it to byte-identical files as Large v3, so it was pure
-   duplication (saved "large" configs switch to Large v3, no re-download).
+   75MB → Large v3 3GB; Large v3 Turbo 1.6GB, fetched once on first pick),
+   or the fixed Canary-1B. Whisper generations: v1 oldest, v2 middle, v3
+   newest and best. Large v3 is ~3GB; Large v3 Turbo is ~1.6GB and
+   transcription-only. The bare Large entry is gone: the installed
+   faster-whisper resolves it to byte-identical files as Large v3, so it was
+   pure duplication (saved "large" configs switch to Large v3, no
+   re-download).
   Recording is politely refused for a moment while a model is swapping.
 - **SRT File tab** — queue one or many video/audio files (batch runs one by
   one, failures don't stop the queue), pick an output folder, generate
@@ -151,21 +153,34 @@ Moonshine stay on CPU.
   `setup.bat`/`run.bat` prefer a local portable `python\` folder if present,
   otherwise fall back to system Python 3.11).
 - Disk for models (see below) and patience on first run (large downloads).
-- ~16 GB RAM if you use Canary-1B; Whisper runs on CPU
-  (slower than Turbo, but it actually translates).
+- ~16 GB RAM if you use Canary-1B. Whisper runs on CPU: large-v3-turbo is
+  the fast default for transcription; large-v3 is slower but supports
+  translation.
 
 ## Install
 
 ```bat
 git clone https://github.com/jackfood2/PolyglotSTT.git
 cd PolyglotSTT
-setup.bat      :: creates venv, installs deps, downloads the Moonshine model
+setup.bat      :: creates venv, installs deps, pre-fetches the Moonshine model
 run.bat        :: launches the app (rechecks deps each start)
 run_windowless.vbs :: same, with no console window at all (needs venv set up)
 ```
 
 `setup.bat` installs online with `pip`, falling back to a local `wheels\`
 folder when present, then caches wheels there for fully-offline reinstalls.
+It installs the base, Whisper, and Canary dependency groups; the Canary
+group is large, and setup warns but continues if it cannot be installed.
+
+**Fresh-install defaults:** the app starts with Moonshine v2 (English).
+When you switch to Whisper, the default is `large-v3-turbo` in
+`transcribe` mode — the fastest CPU option. To translate, select
+`large-v3` and set Task to `translate` (turbo cannot translate by design).
+
+**Hallucination guard:** every Whisper model runs with the bundled Silero
+VAD. Silence is removed before decoding, so empty audio produces no text;
+short utterances and real phrases such as “Thank you for watching” are
+preserved.
 
 ## Models to download
 
@@ -178,7 +193,8 @@ connection — grab them manually:
 |---|---|---|---|
 | Moonshine (all 6 sizes: tiny → medium-streaming) | ~25–260 MB each | fetched on first pick via the *Model* row (`setup.bat` pre-fetches medium + tiny-streaming) | `models_cache\download.moonshine.ai\` |
 | `nvidia/canary-1b` | ~3.9 GB | <https://huggingface.co/nvidia/canary-1b> — or drop a `canary-1b.nemo` file at `models_cache\canary-1b\canary-1b.nemo` (>100 MB is picked up automatically, fully offline) | `models_cache\canary-1b\` (+ `models_cache\huggingface\`, `models_cache\torch\`) |
-| `Systran/faster-whisper-large-v3` | ~3 GB | <https://huggingface.co/Systran/faster-whisper-large-v3> — auto-downloaded by Faster-Whisper; pick size in the Live tab *Model* row; each size downloads once on first selection. No Turbo offered: it cannot translate by design | `models_cache\whisper-models\` |
+| `Systran/faster-whisper-large-v3` | ~3 GB | <https://huggingface.co/Systran/faster-whisper-large-v3> — auto-downloaded by Faster-Whisper; pick size in the Live tab *Model* row; each size downloads once on first selection | `models_cache\whisper-models\` |
+| `mobiuslabsgmbh/faster-whisper-large-v3-turbo` | ~1.6 GB | <https://huggingface.co/mobiuslabsgmbh/faster-whisper-large-v3-turbo> — fast default for `transcribe`; **cannot translate by design**, so the app blocks it in `translate` mode | `models_cache\whisper-models\` |
 
 `ffmpeg` ships via the `imageio-ffmpeg` wheel (no system install needed).
 Everything the app needs lives inside the project folder (except the
@@ -204,7 +220,7 @@ English), tune CPU threads, then *Generate SRT*. The engine label (e.g.
 `Whisper (translate Japanese->English)`) always shows exactly
 what the job will do. The status line counts down remaining time from an
 estimate learned per model, per burn speed, and per audio length on this
-machine (`srt_eta.json`: `whisper:large-v3` and `tiny` track separately,
+machine (`srt_eta.json`: `whisper:large-v3`, `whisper:large-v3-turbo`, and `tiny` track separately,
 as do `burn:match` vs `burn:fastest`, each in short/medium/long buckets
 plus an overall average; older shared entries are reused as fallback),
 then commits to it — linear to 99% / 0s, holding there if a job overruns —
@@ -258,7 +274,7 @@ input_sim.py       clipboard + Ctrl+V insertion
 srt.py             SRT backend: ffmpeg extract, VAD, word-anchored cue packing,
                  timing refine, batch queue, size-matched burn-in, ETA tracking
 canary_engine.py   Canary-1B wrapper (NeMo, offline, language-validated)
-whisper_engine.py  Faster-Whisper large-v3 wrapper (per-call task/lang overrides)
+whisper_engine.py  Faster-Whisper wrapper (large-v3 / turbo, per-call task/lang overrides)
 gpu.py             dGPU/VRAM/NVENC detection, device recommendation
 setup.bat          one-click setup (venv, deps, wheels cache, Moonshine model)
 run.bat            one-click launch (dependency self-check)
@@ -306,7 +322,19 @@ requirements*.txt  dependency pins (base / Canary / Whisper)
 
 ## Changelog
 
-### v1.4.3 (latest)
+### Unreleased
+
+- Whisper hallucination guard: Silero VAD is enabled for every Whisper model
+  and task, so silence is removed before decoding and empty audio returns no
+  text. Short utterances and real canned phrases are preserved.
+- Fresh-install defaults: Whisper starts in `transcribe` mode with
+  `large-v3-turbo`; Moonshine v2 remains the initial engine. Select
+  `large-v3` + `translate` for translation.
+- Portable launch scripts: removed the machine-specific drive-letter PATH filter;
+  setup/run scripts prepend the project venv and portable Python while
+  keeping the user's PATH.
+
+### v1.4.3
 
 - Note + Whisper: RECORD no longer waits forever after the model finishes loading — readiness and pre-flight now resolve the shared Whisper engine instead of a per-tab cache slot (Import had the same stale-cache wait)
 - Note engine safety: pressing RECORD while the Note preload is still running no longer unloads and restarts that same load; the target engine is excluded from cache swaps by identity
@@ -322,7 +350,7 @@ requirements*.txt  dependency pins (base / Canary / Whisper)
 - RAM safeguards: Whisper checks free RAM before loading (`whisper_engine._check_ram_budget`, `gpu.whisper_resident_mb`), refuses with a message instead of `mkl_malloc` mid-session crash; threads trim under pressure; dual-engine confirm dialog agrees on cost
 - Free memory: Live `Unload` + Note `Free memory` buttons (`gui.live_unload_btn`, `unload_tab_engines` / `unload_other_tab_engines`); idle tab engines auto-swap out before heavy loads; one universal Whisper model picker for all tabs
 - Note typing fix: transcribed chunks insert at a dedicated `transcript_end` mark, never interleaved into typed words
-- Launch fix: `run.bat` / `setup.bat` / `run_windowless.bat` use C:-only PATH (BitLocker-locked D:/Graphviz broke pip) and clear `PYTHONPATH/HOME`
+- Launch fix: `run.bat` / `setup.bat` / `run_windowless.bat` prepend the project venv/portable Python to PATH and clear `PYTHONPATH/HOME` (replaces the old machine-specific drive-letter filter)
 
 ### v1.4.1
 
@@ -639,7 +667,7 @@ requirements*.txt  dependency pins (base / Canary / Whisper)
 ## Credits & licenses
 
 - Moonshine v2 by Useful Sensors / Moonshine AI (MIT).
-- Whisper large-v3 by OpenAI (MIT weights); Faster-Whisper by SYSTRAN.
+- Whisper large-v3 and large-v3-turbo by OpenAI (MIT weights); Faster-Whisper by SYSTRAN.
 - Canary-1B by NVIDIA — check its license on Hugging Face before
   commercial use.
 - GUI: CustomTkinter; audio: sounddevice/soundfile/imageio-ffmpeg.

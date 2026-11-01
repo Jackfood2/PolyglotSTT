@@ -1,8 +1,7 @@
 @echo off
 setlocal DisableDelayedExpansion
 cd /d "%~dp0"
-rem C:-only: D: is BitLocker-locked (Graphviz) and breaks pip. Drop non-C: entries.
-for /f "delims=" %%P in ('powershell -NoProfile -Command "$a=$env:PATH -split ';' | Where-Object { $_ -ne '' -and $_ -match '^[Cc]:' -and $_ -notlike '*Graphviz*' } | Select-Object -Unique; [string]::Join(';',$a)"') do set "PATH=%%P"
+rem Put this project's venv and portable Python first, then keep the user's PATH.
 set "PATH=%~dp0venv\Scripts;%~dp0python;%PATH%"
 set "PYTHONPATH="
 set "PYTHONHOME="
@@ -61,7 +60,7 @@ echo Online Canary install failed, trying offline wheels...
 if errorlevel 1 echo Warning: Canary deps failed. Moonshine still works.
 :INSTALL_WHISPER
 if not exist "requirements-whisper.txt" goto CACHE_WHEELS
-echo Installing Whisper Large v3 dependencies (faster-whisper, CPU)...
+echo Installing Whisper dependencies (faster-whisper, CPU)...
 "%~dp0venv\Scripts\python.exe" -m pip install -r requirements-whisper.txt
 if not errorlevel 1 goto CACHE_WHEELS
 echo Online Whisper install failed, trying offline wheels...
@@ -113,9 +112,9 @@ if exist "models_cache\download.moonshine.ai\model\tiny-streaming-en" (
 )
 echo.
 echo ============================================
-echo Setup complete! This folder is now portable.
-echo Zip the entire MoonshineSTT folder for OFFLINE use.
-echo On offline PC just run run.bat (no internet, no admin needed).
+echo Setup complete! Run run.bat to start.
+echo Keep wheels\ and models_cache\ with the project for offline reinstalls.
+echo No API keys or admin rights are needed after setup.
 echo ============================================
 pause
 endlocal

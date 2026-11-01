@@ -29,6 +29,7 @@ except Exception:
         "Large v1 (3GB, oldest)": "large-v1",
         "Large v2 (3GB)": "large-v2",
         "Large v3 (3GB, best)": "large-v3",
+        "Large v3 Turbo (1.6GB, fast)": "large-v3-turbo",
     }
     WHISPER_MODEL_CHOICES_REV = {v: k for k, v in WHISPER_MODEL_CHOICES.items()}
 

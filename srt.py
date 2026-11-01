@@ -39,6 +39,7 @@ ETA_DEFAULTS = {
     "whisper:large-v1": 1.0,
     "whisper:large-v2": 1.0,
     "whisper:large-v3": 1.0,
+    "whisper:large-v3-turbo": 0.55,
     "burn:match": 1.5,
     "burn:fast": 0.7,
     "burn:fastest": 0.35,

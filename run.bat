@@ -1,8 +1,7 @@
 @echo off
 setlocal DisableDelayedExpansion
 cd /d "%~dp0"
-rem C:-only: D: is BitLocker-locked (Graphviz) and breaks pip. Drop non-C: entries.
-for /f "delims=" %%P in ('powershell -NoProfile -Command "$a=$env:PATH -split ';' | Where-Object { $_ -ne '' -and $_ -match '^[Cc]:' -and $_ -notlike '*Graphviz*' } | Select-Object -Unique; [string]::Join(';',$a)"') do set "PATH=%%P"
+rem Put this project's venv and portable Python first, then keep the user's PATH.
 set "PATH=%~dp0venv\Scripts;%~dp0python;%PATH%"
 set "PYTHONPATH="
 set "PYTHONHOME="
@@ -83,7 +82,7 @@ if errorlevel 1 echo Warning: Canary deps failed. Moonshine still works.
 :CHECK_WHISPER
 if not defined NEED_WHISPER goto GPU_NOTE
 if not exist "requirements-whisper.txt" goto GPU_NOTE
-echo Installing Whisper Large v3 dependencies (faster-whisper, CPU)...
+echo Installing Whisper dependencies (faster-whisper, CPU)...
 "%~dp0venv\Scripts\python.exe" -m pip install -r requirements-whisper.txt
 if not errorlevel 1 goto GPU_NOTE
 echo Online Whisper install failed, trying offline wheels...

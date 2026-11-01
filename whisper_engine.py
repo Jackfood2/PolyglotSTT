@@ -23,9 +23,7 @@ os.environ.setdefault(
 
 WHISPER_MODEL_ID = "large-v3"
 
-STALE_MODEL_DIRS = (
-    "models--mobiuslabsgmbh--faster-whisper-large-v3-turbo",
-)
+STALE_MODEL_DIRS = ()
 
 WHISPER_TASKS = ["transcribe", "translate"]
 
@@ -43,6 +41,7 @@ WHISPER_MODEL_CHOICES = {
     "Large v1 (3GB, oldest)": "large-v1",
     "Large v2 (3GB)": "large-v2",
     "Large v3 (3GB, best)": "large-v3",
+    "Large v3 Turbo (1.6GB, fast)": "large-v3-turbo",
 }
 
 WHISPER_MODEL_CHOICES_REV = {
@@ -63,6 +62,7 @@ _MODEL_REPOS = {
     "large-v1": "Systran/faster-whisper-large-v1",
     "large-v2": "Systran/faster-whisper-large-v2",
     "large-v3": "Systran/faster-whisper-large-v3",
+    "large-v3-turbo": "mobiuslabsgmbh/faster-whisper-large-v3-turbo",
 }
 
 _LOG = logging.getLogger(__name__)
@@ -79,6 +79,7 @@ def _resident_model_mb(model_id: str) -> int:
             "tiny": 900, "base": 950, "small": 1250,
             "medium": 1900, "large": 3400, "large-v1": 3400,
             "large-v2": 3400, "large-v3": 3400,
+            "large-v3-turbo": 2000,
         }.get((model_id or "").strip(), 3400)
 
 
@@ -1399,6 +1400,13 @@ class WhisperEngine:
             source_lang if source_lang is not None else current_source
         )
 
+        if (effective_task == "translate"
+                and "large-v3-turbo" in (self.model_id or "").lower()):
+            raise ValueError(
+                "Whisper large-v3-turbo cannot translate; "
+                "use large-v3 or switch to transcribe"
+            )
+
         with self._lock:
             lean = self._lean_decode
 
@@ -1412,6 +1420,20 @@ class WhisperEngine:
             "beam_size": 1 if lean else 5,
             "condition_on_previous_text": False,
             "word_timestamps": False,
+            # Silero VAD ships inside faster-whisper, so this works offline.
+            # Removing silence before decoding is the reliable guard against
+            # Whisper's confident "Thank you." on empty audio. Do not replace
+            # this with a phrase blacklist: real speech can say the same words.
+            "vad_filter": True,
+            "vad_parameters": {
+                "threshold": 0.5,
+                "min_speech_duration_ms": 100,
+                "min_silence_duration_ms": 500,
+                "speech_pad_ms": 200,
+            },
+            "no_speech_threshold": 0.6,
+            "log_prob_threshold": -1.0,
+            "compression_ratio_threshold": 2.4,
         }
 
     def _run(

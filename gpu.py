@@ -88,10 +88,12 @@ def ct2_cuda():
         return {"ok": False, "reason": str(e)[:160]}
 _WHISPER_FP16_MB = {"tiny": 1200, "base": 1200, "small": 1500,
                     "medium": 2600, "large": 5200, "large-v1": 5200,
-                    "large-v2": 5200, "large-v3": 5200}
+                    "large-v2": 5200, "large-v3": 5200,
+                    "large-v3-turbo": 3600}
 _WHISPER_INT8_MB = {"tiny": 700, "base": 700, "small": 900,
                     "medium": 1400, "large": 2800, "large-v1": 2800,
-                    "large-v2": 2800, "large-v3": 2800}
+                    "large-v2": 2800, "large-v3": 2800,
+                    "large-v3-turbo": 2000}
 _CANARY_CUDA_MIN_MB = 10240
 # int8 resident RAM per model, with headroom for MKL scratch buffers. Kept in
 # sync with whisper_engine._MODEL_RAM_MB so the load-time budget guard and the
@@ -100,6 +102,7 @@ _WHISPER_RESIDENT_MB = {
     "tiny": 900, "base": 950, "small": 1250,
     "medium": 1900, "large": 3400, "large-v1": 3400,
     "large-v2": 3400, "large-v3": 3400,
+    "large-v3-turbo": 2000,
 }
 
 

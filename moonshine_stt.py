@@ -72,9 +72,9 @@ except Exception:  # pragma: no cover - fallback if core/ is missing
         "engine": "Moonshine v2",
         "canary_task": "transcribe",
         "canary_src_lang": "auto",
-        "whisper_task": "translate",
+        "whisper_task": "transcribe",
         "whisper_src_lang": "auto",
-        "whisper_model": "large-v3",
+        "whisper_model": "large-v3-turbo",
         "whisper_device": "auto",
         "compute": "auto",
         "srt_cpu": 0,
@@ -178,11 +178,20 @@ class MoonshineSTTApp:
             _wmodels = tuple(WHISPER_MODEL_CHOICES.values())
         except Exception:
             _wlangs = ("auto", "en", "ja", "zh", "ko", "de", "fr", "es")
-            _wmodels = ("tiny", "base", "small", "medium", "large-v3")
+            _wmodels = ("tiny", "base", "small", "medium", "large-v3",
+                        "large-v3-turbo")
         if self.config.get("whisper_src_lang") not in _wlangs:
             self.config["whisper_src_lang"] = "auto"
             needs_save = True
         if self.config.get("whisper_model") not in _wmodels:
+            self.config["whisper_model"] = "large-v3"
+            needs_save = True
+        # Turbo was trained on transcription data only; its <|translate|>
+        # token is untrained and it returns the source language instead of
+        # English. Keep the app's translate mode on large-v3 so a saved
+        # turbo selection can never silently break translation.
+        if (self.config.get("whisper_model") == "large-v3-turbo"
+                and self.config.get("whisper_task") == "translate"):
             self.config["whisper_model"] = "large-v3"
             needs_save = True
         if self.config.get("whisper_device") not in ("auto", "cpu", "cuda"):
@@ -708,7 +717,7 @@ class MoonshineSTTApp:
     TAB_IDS = ("live", "srt", "note", "import")
     ENGINE_KINDS = ("Moonshine v2", "Canary-1B", "Whisper")
     _WHISPER_IDS = ("tiny", "base", "small", "medium", "large",
-                    "large-v1", "large-v2", "large-v3")
+                    "large-v1", "large-v2", "large-v3", "large-v3-turbo")
     _ARCHES = (0, 1, 2, 3, 4, 5)
     # Rough extra-RAM for the dual-engine confirm dialog (MB). Whisper figures
     # mirror whisper_engine's resident estimate so the dialog and the load-time
@@ -716,7 +725,8 @@ class MoonshineSTTApp:
     _ENGINE_RAM_MB = {"Moonshine v2": 300, "Canary-1B": 5500}
     _WHISPER_RAM_MB = {"tiny": 900, "base": 950, "small": 1250,
                        "medium": 1900, "large": 3400, "large-v1": 3400,
-                       "large-v2": 3400, "large-v3": 3400}
+                       "large-v2": 3400, "large-v3": 3400,
+                       "large-v3-turbo": 2000}
 
     @staticmethod
     def _norm_tab_sel(kind, arch, wmodel):
@@ -880,12 +890,20 @@ class MoonshineSTTApp:
         try:
             valid = set(getattr(MoonshineSTTApp, "_WHISPER_IDS", ())
                         or ("tiny", "base", "small", "medium",
-                            "large-v1", "large-v2", "large-v3"))
+                            "large-v1", "large-v2", "large-v3",
+                            "large-v3-turbo"))
         except Exception:
             valid = ("tiny", "base", "small", "medium",
-                     "large-v1", "large-v2", "large-v3")
+                     "large-v1", "large-v2", "large-v3",
+                     "large-v3-turbo")
         mid = str(mid or "large-v3")
         if mid not in valid:
+            mid = "large-v3"
+        if (mid == "large-v3-turbo"
+                and self.config.get("whisper_task") == "translate"):
+            self._log(
+                "Whisper turbo cannot translate; keeping large-v3 for this task"
+            )
             mid = "large-v3"
         try:
             with _CONFIG_LOCK:
@@ -2637,6 +2655,24 @@ class MoonshineSTTApp:
         new_id = WHISPER_MODEL_CHOICES.get(display_label)
         if not new_id:
             return
+        if (new_id == "large-v3-turbo"
+                and self.config.get("whisper_task") == "translate"):
+            self._log(
+                "Whisper turbo is transcription-only; "
+                "switch Task to Transcribe before selecting it"
+            )
+            try:
+                self.gui.set_status(
+                    "Turbo cannot translate. Switch Task to Transcribe first.",
+                    WARNING,
+                )
+            except Exception:
+                pass
+            try:
+                self._refresh_model_row()
+            except Exception:
+                pass
+            return
         old_id = self.config.get("whisper_model", "large-v3")
         if new_id == old_id:
             return
@@ -2956,6 +2992,21 @@ class MoonshineSTTApp:
             pass
     def _on_canary_task_changed(self, value):
         if self.config.get("engine") == "Whisper":
+            if (value == "translate"
+                    and self.config.get("whisper_model") == "large-v3-turbo"):
+                self._log(
+                    "Whisper turbo cannot translate; "
+                    "switch the model to large-v3 first"
+                )
+                try:
+                    self.gui.set_status(
+                        "Turbo cannot translate. Switch model to large-v3 first.",
+                        WARNING,
+                    )
+                    self.gui.canary_task_var.set("transcribe")
+                except Exception:
+                    pass
+                return
             self.config["whisper_task"] = value
             save_local_config(self.config)
             if self.whisper_engine:
