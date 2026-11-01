@@ -113,7 +113,48 @@ class MoonshineGUI(LiveTabMixin, NoteTabMixin, ImportTabMixin, SrtTabMixin, Dial
             self.after(50, self._drain_ui_calls)
         except Exception:
             pass
+        self._fit_after = None
         self._build_ui()
+        try:
+            self.bind("<Configure>", self._on_window_configure, add="+")
+            self.after(0, self._run_fit)
+            # Startup DPI race: CTk can apply the initial geometry before the
+            # monitor DPI is known, leaving the window narrower than the
+            # 1.25x-scaled widgets (content clipped until a manual resize).
+            self.after(350, self._ensure_window_metrics)
+            self.after(1500, self._ensure_window_metrics)
+        except Exception:
+            pass
+
+    def _ensure_window_metrics(self):
+        """Re-assert the startup window size in physical pixels.
+
+        The layout is designed for a 480x850 logical window; widgets are
+        drawn at the CTk widget scale, so the window must be that wide times
+        the widget scale. When the initial geometry was applied before DPI
+        detection the window stays at 1x while the widgets are 1.25x, which
+        clips the right edge of every tab."""
+        try:
+            import customtkinter as _ctk
+            ws = float(_ctk.ScalingTracker.get_widget_scaling(self))
+        except Exception:
+            return
+        try:
+            if ws <= 0:
+                return
+            target_w = int(round(480 * ws))
+            target_h = int(round(850 * ws))
+            cur_w = int(self.winfo_width())
+            if cur_w <= 1:
+                return
+            if cur_w >= target_w - 16:
+                return
+            self.tk.call("wm", "geometry", self._w,
+                         f"{target_w}x{target_h}")
+            self.tk.call("wm", "minsize", self._w,
+                         int(round(440 * ws)), int(round(750 * ws)))
+        except Exception:
+            pass
 
     def post_ui(self, fn):
         """Run fn on the Tk thread. Safe from audio/transcriber/export
@@ -217,9 +258,9 @@ class MoonshineGUI(LiveTabMixin, NoteTabMixin, ImportTabMixin, SrtTabMixin, Dial
         record_card = ctk.CTkFrame(live, fg_color=BG_CARD, corner_radius=16)
         record_card.grid(row=2, column=0, sticky="ew", padx=8, pady=(0, 6))
         record_card.grid_columnconfigure(0, weight=1)
-        self.meter = LevelMeter(record_card, width=420, height=10)
+        self.meter = LevelMeter(record_card, width=280, height=10)
         self.meter.grid(row=0, column=0, padx=20, pady=(12, 4), sticky="ew")
-        self.waveform = WaveformDisplay(record_card, width=420, height=70)
+        self.waveform = WaveformDisplay(record_card, width=280, height=70)
         self.waveform.grid(row=1, column=0, padx=16, pady=(8, 4), sticky="ew")
         btn_frame = ctk.CTkFrame(record_card, fg_color="transparent")
         btn_frame.grid(row=2, column=0, pady=(8, 12), sticky="ew")
@@ -227,19 +268,19 @@ class MoonshineGUI(LiveTabMixin, NoteTabMixin, ImportTabMixin, SrtTabMixin, Dial
         btn_frame.grid_columnconfigure(1, weight=1)
         btn_frame.grid_columnconfigure(2, weight=1)
         self.record_btn = ctk.CTkButton(
-            btn_frame, text="\u25CF  RECORD", font=("Segoe UI", 13, "bold"),
+            btn_frame, text="\u25CF  RECORD", font=("Segoe UI", 13, "bold"), width=130,
             fg_color=ACCENT, hover_color=ACCENT_DARK, height=40,
             text_color=BTN_TEXT,
             corner_radius=10, command=self._toggle_record)
         self.record_btn.grid(row=0, column=0, padx=(16, 4), sticky="ew")
         self.clear_btn = ctk.CTkButton(
-            btn_frame, text="Clear", font=("Segoe UI", 12),
+            btn_frame, text="Clear", font=("Segoe UI", 12), width=80,
             fg_color=BTN_DIM, hover_color=BTN_DIM_HOVER, height=40,
             corner_radius=10, text_color=FG_SECONDARY,
             command=self._clear_history)
         self.clear_btn.grid(row=0, column=1, padx=4, sticky="ew")
         self.copy_last_btn = ctk.CTkButton(
-            btn_frame, text="Copy", font=("Segoe UI", 12),
+            btn_frame, text="Copy", font=("Segoe UI", 12), width=80,
             fg_color=BTN_DIM, hover_color=BTN_DIM_HOVER, height=40,
             corner_radius=10, text_color=FG_SECONDARY,
             command=self._copy_last)
@@ -276,54 +317,59 @@ class MoonshineGUI(LiveTabMixin, NoteTabMixin, ImportTabMixin, SrtTabMixin, Dial
         self.history.grid(row=5, column=0, sticky="nsew", padx=8, pady=(0, 6))
         engine_frame = ctk.CTkFrame(live, fg_color=BG_CARD, corner_radius=10)
         engine_frame.grid(row=0, column=0, sticky="ew", padx=8, pady=(0, 6))
-        ctk.CTkLabel(engine_frame, text="Engine:", font=("Segoe UI", 10, "bold"), text_color=FG_DIM).pack(side="left", padx=(12, 4), pady=8)
+        engine_frame.grid_columnconfigure(1, weight=1)
+        engine_frame.grid_columnconfigure(3, weight=1)
+        ctk.CTkLabel(engine_frame, text="Engine:", font=("Segoe UI", 10, "bold"), text_color=FG_DIM).grid(row=0, column=0, sticky="w", padx=(12, 4), pady=(8, 2))
         self.engine_var = ctk.StringVar(value="Moonshine v2")
-        self.engine_menu = ctk.CTkOptionMenu(engine_frame, variable=self.engine_var, values=ENGINE_CHOICES, width=150, fg_color=BG_INPUT, button_color=ACCENT, command=self._on_engine_changed)
-        self.engine_menu.pack(side="left", padx=4, pady=8)
-        ctk.CTkLabel(engine_frame, text="Task:", font=("Segoe UI", 10), text_color=FG_DIM).pack(side="left", padx=(12, 4), pady=8)
+        self.engine_menu = ctk.CTkOptionMenu(engine_frame, variable=self.engine_var, values=ENGINE_CHOICES, width=120, fg_color=BG_INPUT, button_color=ACCENT, command=self._on_engine_changed)
+        self.engine_menu.grid(row=0, column=1, columnspan=3, sticky="ew", padx=(4, 12), pady=(8, 2))
+        ctk.CTkLabel(engine_frame, text="Task:", font=("Segoe UI", 10), text_color=FG_DIM).grid(row=1, column=0, sticky="w", padx=(12, 4), pady=(2, 8))
         self.canary_task_var = ctk.StringVar(value="transcribe")
-        self.canary_task_menu = ctk.CTkOptionMenu(engine_frame, variable=self.canary_task_var, values=CANARY_TASKS, width=110, fg_color=BG_INPUT, button_color=ACCENT, command=self._on_canary_task_changed)
-        self.canary_task_menu.pack(side="left", padx=4, pady=8)
-        ctk.CTkLabel(engine_frame, text="Src:", font=("Segoe UI", 10), text_color=FG_DIM).pack(side="left", padx=(8, 4), pady=8)
+        self.canary_task_menu = ctk.CTkOptionMenu(engine_frame, variable=self.canary_task_var, values=CANARY_TASKS, width=90, fg_color=BG_INPUT, button_color=ACCENT, command=self._on_canary_task_changed)
+        self.canary_task_menu.grid(row=1, column=1, sticky="ew", padx=(4, 8), pady=(2, 8))
+        ctk.CTkLabel(engine_frame, text="Src:", font=("Segoe UI", 10), text_color=FG_DIM).grid(row=1, column=2, sticky="w", padx=(0, 4), pady=(2, 8))
         self.canary_lang_var = ctk.StringVar(value="Auto-detect")
-        self.canary_lang_menu = ctk.CTkOptionMenu(engine_frame, variable=self.canary_lang_var, values=[SRT_LANG_NAMES[c] for c in CANARY_LANGS], width=140, fg_color=BG_INPUT, button_color=ACCENT, command=self._on_canary_lang_changed)
-        self.canary_lang_menu.pack(side="left", padx=4, pady=8)
+        self.canary_lang_menu = ctk.CTkOptionMenu(engine_frame, variable=self.canary_lang_var, values=[SRT_LANG_NAMES[c] for c in CANARY_LANGS], width=100, fg_color=BG_INPUT, button_color=ACCENT, command=self._on_canary_lang_changed)
+        self.canary_lang_menu.grid(row=1, column=3, sticky="ew", padx=(4, 12), pady=(2, 8))
         self._engine_callback = None
         self._canary_task_callback = None
         self._canary_lang_callback = None
         settings_frame = ctk.CTkFrame(live, fg_color=BG_CARD, corner_radius=10)
         settings_frame.grid(row=6, column=0, sticky="ew", padx=8, pady=(0, 6))
-        ctk.CTkLabel(settings_frame, text="Insert via:", font=("Segoe UI", 10), text_color=FG_DIM).pack(side="left", padx=(12, 4), pady=8)
+        settings_frame.grid_columnconfigure(1, weight=1)
+        settings_frame.grid_columnconfigure(3, weight=1)
+        ctk.CTkLabel(settings_frame, text="Insert via:", font=("Segoe UI", 10), text_color=FG_DIM).grid(row=0, column=0, sticky="w", padx=(12, 4), pady=8)
         self.method_var = ctk.StringVar(value="clipboard")
-        self.method_menu = ctk.CTkOptionMenu(settings_frame, variable=self.method_var, values=["clipboard", "unicode"], width=110, fg_color=BG_INPUT, button_color=ACCENT, command=self._on_method_changed)
-        self.method_menu.pack(side="left", padx=4, pady=8)
-        ctk.CTkLabel(settings_frame, text="Suffix:", font=("Segoe UI", 10), text_color=FG_DIM).pack(side="left", padx=(12, 4), pady=8)
+        self.method_menu = ctk.CTkOptionMenu(settings_frame, variable=self.method_var, values=["clipboard", "unicode"], width=100, fg_color=BG_INPUT, button_color=ACCENT, command=self._on_method_changed)
+        self.method_menu.grid(row=0, column=1, sticky="ew", padx=(4, 8), pady=8)
+        ctk.CTkLabel(settings_frame, text="Suffix:", font=("Segoe UI", 10), text_color=FG_DIM).grid(row=0, column=2, sticky="w", padx=(0, 4), pady=8)
         self.suffix_var = ctk.StringVar(value="none")
-        self.suffix_menu = ctk.CTkOptionMenu(settings_frame, variable=self.suffix_var, values=["none", "space", "newline", "period_space"], width=110, fg_color=BG_INPUT, button_color=ACCENT, command=self._on_suffix_changed)
-        self.suffix_menu.pack(side="left", padx=4, pady=8)
+        self.suffix_menu = ctk.CTkOptionMenu(settings_frame, variable=self.suffix_var, values=["none", "space", "newline", "period_space"], width=100, fg_color=BG_INPUT, button_color=ACCENT, command=self._on_suffix_changed)
+        self.suffix_menu.grid(row=0, column=3, sticky="ew", padx=(4, 12), pady=8)
         self._method_callback = None
         self._suffix_callback = None
         model_frame = ctk.CTkFrame(live, fg_color=BG_CARD, corner_radius=10)
         model_frame.grid(row=1, column=0, sticky="ew", padx=8, pady=(0, 6))
+        model_frame.grid_columnconfigure(1, weight=1)
         self.model_title_label = ctk.CTkLabel(model_frame, text="Model:",
                                               font=("Segoe UI", 10, "bold"), text_color=FG_DIM)
-        self.model_title_label.pack(side="left", padx=(12, 4), pady=8)
+        self.model_title_label.grid(row=0, column=0, sticky="w", padx=(12, 4), pady=(8, 2))
         self.model_var = ctk.StringVar(value="Medium Streaming (110MB, best)")
-        self.model_menu = ctk.CTkOptionMenu(model_frame, variable=self.model_var, values=list(MODEL_CHOICES.keys()), width=260, fg_color=BG_INPUT, button_color=ACCENT, command=self._on_model_changed)
-        self.model_menu.pack(side="left", padx=4, pady=8, fill="x", expand=True)
+        self.model_menu = ctk.CTkOptionMenu(model_frame, variable=self.model_var, values=list(MODEL_CHOICES.keys()), width=128, fg_color=BG_INPUT, button_color=ACCENT, command=self._on_model_changed)
+        self.model_menu.grid(row=0, column=1, sticky="ew", padx=(4, 8), pady=(8, 2))
         self.model_manage_btn = ctk.CTkButton(
-            model_frame, text="Manage…", width=80, font=("Segoe UI", 12),
+            model_frame, text="Manage…", width=76, font=("Segoe UI", 12),
             fg_color=BTN_DIM, hover_color=BTN_DIM_HOVER, height=32,
             corner_radius=8, text_color=FG_SECONDARY,
             command=self._on_model_manage)
-        self.model_manage_btn.pack(side="left", padx=4, pady=8)
+        self.model_manage_btn.grid(row=0, column=2, sticky="e", padx=(0, 6), pady=(8, 2))
         self.live_unload_btn = ctk.CTkButton(
-            model_frame, text="Unload", width=80, font=("Segoe UI", 12),
+            model_frame, text="Unload", width=58, font=("Segoe UI", 12),
             fg_color=BTN_DIM, hover_color=BTN_DIM_HOVER, height=32,
             corner_radius=8, text_color=FG_SECONDARY,
             command=self._on_live_unload)
-        self.live_unload_btn.pack(side="left", padx=4, pady=8)
-        ctk.CTkLabel(model_frame, text="Restart not needed", font=("Segoe UI", 9), text_color=FG_DIM).pack(side="left", padx=(8, 12), pady=8)
+        self.live_unload_btn.grid(row=0, column=3, sticky="e", padx=(0, 12), pady=(8, 2))
+        ctk.CTkLabel(model_frame, text="Restart not needed", font=("Segoe UI", 9), text_color=FG_DIM).grid(row=1, column=1, columnspan=3, sticky="w", padx=(4, 12), pady=(0, 6))
         self._model_callback = None
         self._model_manage_cb = None
         self._unload_cb = None
@@ -397,6 +443,10 @@ class MoonshineGUI(LiveTabMixin, NoteTabMixin, ImportTabMixin, SrtTabMixin, Dial
                 self._tab_callback(name)
             except Exception:
                 pass
+        try:
+            self.after(0, self._run_fit)
+        except Exception:
+            pass
     def set_tab_callback(self, cb: Callable):
         self._tab_callback = cb if callable(cb) else None
     def set_active_tab(self, name: str):
@@ -412,7 +462,7 @@ class MoonshineGUI(LiveTabMixin, NoteTabMixin, ImportTabMixin, SrtTabMixin, Dial
                     "srt_output_lang_menu", "sample_len_menu",
                     "burn_speed_menu", "burn_codec_menu",
                     "srt_engine_menu", "srt_model_menu",
-                    "note_engine_menu", "note_model_menu",
+                    "note_engine_menu", "note_model_menu", "note_lang_menu",
                     "import_engine_menu", "import_model_menu"):
             try:
                 _w = getattr(self, _mn, None)
@@ -460,6 +510,89 @@ class MoonshineGUI(LiveTabMixin, NoteTabMixin, ImportTabMixin, SrtTabMixin, Dial
                     if isinstance(w, _ctk.CTkScrollableFrame):
                         try:
                             w._parent_canvas.configure(yscrollincrement=12)
+                        except Exception:
+                            pass
+                except Exception:
+                    pass
+                try:
+                    stack.extend(list(w.winfo_children()))
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+    def _on_window_configure(self, event=None):
+        """Re-fit the scroll areas after the window stops resizing."""
+        try:
+            if event is not None and event.widget is not self:
+                return
+        except Exception:
+            pass
+        try:
+            if self._fit_after is not None:
+                self.after_cancel(self._fit_after)
+        except Exception:
+            pass
+        try:
+            self._fit_after = self.after(120, self._run_fit)
+        except Exception:
+            self._fit_after = None
+
+    def _run_fit(self):
+        self._fit_after = None
+        try:
+            self._fit_scroll_frames()
+        except Exception:
+            pass
+
+    def _fit_scroll_frames(self, root=None):
+        """Force every scroll area's inner frame back to its canvas width.
+
+        customtkinter only re-fits the inner frame on a canvas <Configure>
+        event, and the first one fires before the tab content exists. The
+        frame then keeps its (wider) requested size, so cards are clipped
+        at the right edge until the user resizes the window. Re-applying
+        the width here - through 1px first, so Tk really resizes even when
+        the stored value already matches - makes every tab fit on launch,
+        on tab switch and after a resize."""
+        try:
+            import customtkinter as _ctk
+        except Exception:
+            return
+        try:
+            base = root if root is not None else self
+            stack = [base]
+            while stack:
+                try:
+                    w = stack.pop()
+                except Exception:
+                    break
+                try:
+                    if isinstance(w, _ctk.CTkScrollableFrame):
+                        try:
+                            cv = w._parent_canvas
+                            wid = max(1, int(cv.winfo_width()))
+                            if int(w.winfo_width()) != wid:
+                                cv.itemconfigure(w._create_window_id, width=1)
+                                cv.itemconfigure(w._create_window_id, width=wid)
+                            cv.configure(scrollregion=cv.bbox("all"))
+                        except Exception:
+                            pass
+                    elif isinstance(w, _ctk.CTkOptionMenu):
+                        # Keep the requested width even when a value label is
+                        # long ("Medium Streaming (110MB, best)"); otherwise
+                        # the menu widens its card and clips at the edge.
+                        # CTk only honours dynamic_resizing at construction,
+                        # so pin it and re-apply the designed width.
+                        try:
+                            if getattr(w, "_dynamic_resizing", False):
+                                w._dynamic_resizing = False
+                                w.configure(width=int(getattr(
+                                    w, "_desired_width", 140)))
+                                # CTk only stops propagating the label's
+                                # width at construction; without this the
+                                # long value still inflates the menu.
+                                w.grid_propagate(0)
                         except Exception:
                             pass
                 except Exception:

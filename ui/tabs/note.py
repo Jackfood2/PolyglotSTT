@@ -8,7 +8,7 @@ import time
 from pathlib import Path
 from ui.theme import ACCENT, ACCENT_DARK, SUCCESS, WARNING, DANGER, BG_CARD, BG_INPUT, FG_PRIMARY, FG_SECONDARY, FG_DIM, BTN_DIM, BTN_DIM_HOVER, BTN_GO_HOVER, BTN_DANGER_HOVER, BTN_TEXT
 from ui.widgets import LevelMeter
-from ui.choices import MODEL_CHOICES, MODEL_CHOICES_REV, WHISPER_MODEL_CHOICES, WHISPER_MODEL_CHOICES_REV, CANARY_MODEL_LABEL, ENGINE_CHOICES
+from ui.choices import MODEL_CHOICES, MODEL_CHOICES_REV, WHISPER_MODEL_CHOICES, WHISPER_MODEL_CHOICES_REV, CANARY_MODEL_LABEL, ENGINE_CHOICES, WHISPER_LANGS, SRT_LANG_NAMES, SRT_LANG_CODE_FROM_DISPLAY
 try:
     from core.config import NOTES_AUDIO_DIR
 except Exception:  # pragma: no cover - keep the tab usable standalone
@@ -60,7 +60,7 @@ class NoteTabMixin:
                      text="Record and transcribe in real-time. Audio is processed in "
                           "40-80s chunks at natural pauses.",
                      font=("Segoe UI", 11), text_color=FG_DIM,
-                     wraplength=400, justify="left"
+                     wraplength=330, justify="left"
                      ).pack(anchor="w", padx=20, pady=(0, 12))
 
         # ── Record control card ──
@@ -127,7 +127,7 @@ class NoteTabMixin:
                      text_color=FG_DIM).pack(side="left")
 
         self.note_save_btn = ctk.CTkButton(
-            out_header, text="Save as TXT", width=110, height=30,
+            out_header, text="Save as TXT", width=90, height=30,
             font=("Segoe UI", 11),
             fg_color=SUCCESS, hover_color=BTN_GO_HOVER,
             text_color=BTN_TEXT, corner_radius=8,
@@ -135,7 +135,7 @@ class NoteTabMixin:
         self.note_save_btn.pack(side="right")
 
         self.note_save_audio_btn = ctk.CTkButton(
-            out_header, text="Save Audio", width=100, height=30,
+            out_header, text="Save Audio", width=86, height=30,
             font=("Segoe UI", 11),
             fg_color=BTN_DIM, hover_color=BTN_DIM_HOVER,
             text_color=FG_SECONDARY, corner_radius=8,
@@ -143,7 +143,7 @@ class NoteTabMixin:
         self.note_save_audio_btn.pack(side="right", padx=(0, 6))
 
         self.note_copy_btn = ctk.CTkButton(
-            out_header, text="Copy All", width=90, height=30,
+            out_header, text="Copy All", width=76, height=30,
             font=("Segoe UI", 11),
             fg_color=BTN_DIM, hover_color=BTN_DIM_HOVER,
             text_color=FG_SECONDARY, corner_radius=8,
@@ -181,43 +181,72 @@ class NoteTabMixin:
         info_card = ctk.CTkFrame(scroll, fg_color=BG_CARD, corner_radius=12)
         info_card.grid(row=0, column=0, sticky="ew", padx=4, pady=(0, 6))
         info_card.grid_columnconfigure(1, weight=1)
+        info_card.grid_columnconfigure(2, weight=2)
 
         self.note_engine_label = ctk.CTkLabel(
             info_card, text="Engine: following shared default",
             font=("Segoe UI", 10), text_color=FG_DIM)
-        self.note_engine_label.grid(row=0, column=0, columnspan=3,
+        self.note_engine_label.grid(row=0, column=0, columnspan=4,
                                      sticky="w", padx=16, pady=(10, 2))
         ctk.CTkLabel(info_card, text="Engine:",
                      font=("Segoe UI", 10, "bold"),
                      text_color=FG_DIM).grid(row=1, column=0, sticky="w",
-                                             padx=(16, 4), pady=(2, 10))
+                                             padx=(16, 4), pady=(2, 4))
         self.note_engine_var = ctk.StringVar(value="Moonshine v2")
         self.note_engine_menu = ctk.CTkOptionMenu(
             info_card, variable=self.note_engine_var,
-            values=list(ENGINE_CHOICES), width=150,
+            values=list(ENGINE_CHOICES), width=100,
             fg_color=BG_INPUT, button_color=ACCENT,
             command=self._on_note_engine_changed)
         self.note_engine_menu.grid(row=1, column=1, sticky="ew",
-                                    padx=4, pady=(2, 10))
+                                    padx=(4, 4), pady=(2, 4))
         self.note_model_var = ctk.StringVar(value="")
         self.note_model_menu = ctk.CTkOptionMenu(
             info_card, variable=self.note_model_var,
-            values=[], width=190,
+            values=[], width=140,
             fg_color=BG_INPUT, button_color=ACCENT,
             command=self._on_note_model_changed)
-        self.note_model_menu.grid(row=1, column=2, sticky="ew",
-                                   padx=(4, 4), pady=(2, 10))
+        self.note_model_menu.grid(row=1, column=2, columnspan=2, sticky="ew",
+                                   padx=(4, 16), pady=(2, 4))
+        ctk.CTkLabel(info_card, text="Language:",
+                     font=("Segoe UI", 10, "bold"),
+                     text_color=FG_DIM).grid(row=2, column=0, sticky="w",
+                                             padx=(16, 4), pady=(0, 4))
+        self.note_lang_var = ctk.StringVar(value="Auto-detect")
+        self.note_lang_menu = ctk.CTkOptionMenu(
+            info_card, variable=self.note_lang_var,
+            values=[SRT_LANG_NAMES[c] for c in WHISPER_LANGS], width=100,
+            fg_color=BG_INPUT, button_color=ACCENT,
+            command=self._on_note_lang_changed)
+        self.note_lang_menu.grid(row=2, column=1, sticky="ew",
+                                  padx=(4, 4), pady=(0, 4))
+        note_btn_row = ctk.CTkFrame(info_card, fg_color="transparent")
+        note_btn_row.grid(row=2, column=2, columnspan=2, sticky="e",
+                          padx=(4, 16), pady=(0, 4))
         self.note_free_mem_btn = ctk.CTkButton(
-            info_card, text="Free memory", width=100, height=28,
+            note_btn_row, text="Free memory", width=84, height=28,
             font=("Segoe UI", 11),
             fg_color=BTN_DIM, hover_color=BTN_DIM_HOVER,
             text_color=FG_SECONDARY, corner_radius=8,
             command=self._on_note_free_memory)
-        self.note_free_mem_btn.grid(row=1, column=3, sticky="e",
-                                    padx=(4, 16), pady=(2, 10))
+        self.note_free_mem_btn.pack(side="left", padx=(0, 6))
+        self.note_unload_btn = ctk.CTkButton(
+            note_btn_row, text="Unload", width=64, height=28,
+            font=("Segoe UI", 11),
+            fg_color=BTN_DIM, hover_color=BTN_DIM_HOVER,
+            text_color=FG_SECONDARY, corner_radius=8,
+            command=self._on_note_unload_model)
+        self.note_unload_btn.pack(side="left")
+        ctk.CTkLabel(
+            info_card, text="Language applies to Whisper (Auto = detect).",
+            font=("Segoe UI", 9), text_color=FG_DIM
+            ).grid(row=3, column=0, columnspan=4, sticky="w",
+                   padx=16, pady=(0, 8))
         self._note_engine_cb = None
         self._note_model_cb = None
         self._note_unload_cb = None
+        self._note_self_unload_cb = None
+        self._note_lang_cb = None
         try:
             self._refresh_note_model_menu()
         except Exception:
@@ -397,6 +426,51 @@ class NoteTabMixin:
         try:
             self.note_status_label.configure(text=str(msg),
                                              text_color=WARNING)
+        except Exception:
+            pass
+
+    def set_note_self_unload_callback(self, cb):
+        """App 'Unload' action for the Note tab's own engine. None-safe."""
+        try:
+            self._note_self_unload_cb = cb if callable(cb) else None
+        except Exception:
+            self._note_self_unload_cb = None
+
+    def _on_note_unload_model(self):
+        try:
+            cb = getattr(self, "_note_self_unload_cb", None)
+            msg = cb() if callable(cb) else "Unavailable"
+            if not isinstance(msg, str) or not msg.strip():
+                msg = "Model unloaded"
+        except Exception as e:
+            msg = f"Error: {e}"
+        try:
+            self.note_status_label.configure(text=str(msg),
+                                             text_color=WARNING)
+        except Exception:
+            pass
+
+    def set_note_lang_callback(self, cb):
+        """App callback for the Note tab Whisper language. None-safe."""
+        try:
+            self._note_lang_cb = cb if callable(cb) else None
+        except Exception:
+            self._note_lang_cb = None
+
+    def _on_note_lang_changed(self, value=None):
+        try:
+            code = SRT_LANG_CODE_FROM_DISPLAY.get(str(value or ""), "auto")
+            cb = getattr(self, "_note_lang_cb", None)
+            if callable(cb):
+                cb(code)
+        except Exception:
+            pass
+
+    def set_note_language(self, code):
+        """Reflect the saved Note language without firing the callback."""
+        try:
+            name = SRT_LANG_NAMES.get(str(code or "auto"), "Auto-detect")
+            self.note_lang_var.set(name)
         except Exception:
             pass
 
@@ -1276,6 +1350,12 @@ class NoteTabMixin:
                     self.note_model_var.set(cur)
                 else:
                     self.note_model_var.set(vals[0])
+        except Exception:
+            pass
+        try:
+            # Language only applies to Whisper; other engines auto-detect.
+            self.note_lang_menu.configure(
+                state="normal" if kind == "Whisper" else "disabled")
         except Exception:
             pass
 

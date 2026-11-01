@@ -322,6 +322,22 @@ requirements*.txt  dependency pins (base / Canary / Whisper)
 
 ## Changelog
 
+### v1.4.5
+
+- Responsive layout: every scroll area re-fits its cards on startup, on window
+  resize and on tab change, so nothing is clipped at the default 480 px width
+  or the 440 px minimum. Live, Note, SRT File and Import cards use stretchy
+  grids instead of fixed single rows, and option menus no longer grow to their
+  longest value.
+- Note tab: new **Language** picker (Auto-detect plus 18 spoken languages) for
+  Whisper, disabled for the other engines. The choice is saved as
+  `note_whisper_lang` and Note transcribes with it (Auto = detect).
+- Note tab: new **Unload** button beside **Free memory** to drop the Note
+  engine manually; it refuses while a recording or transcription is running.
+- Startup guard for 125% DPI: if CustomTkinter applies the initial geometry
+  before the monitor scale is known, the window size is re-applied in physical
+  pixels so the scaled widgets fit.
+
 ### v1.4.4
 
 - Whisper hallucination guard: Silero VAD is enabled for every Whisper model

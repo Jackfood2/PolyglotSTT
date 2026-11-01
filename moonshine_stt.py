@@ -74,6 +74,7 @@ except Exception:  # pragma: no cover - fallback if core/ is missing
         "canary_src_lang": "auto",
         "whisper_task": "transcribe",
         "whisper_src_lang": "auto",
+        "note_whisper_lang": "auto",
         "whisper_model": "large-v3-turbo",
         "whisper_device": "auto",
         "compute": "auto",
@@ -182,6 +183,9 @@ class MoonshineSTTApp:
                         "large-v3-turbo")
         if self.config.get("whisper_src_lang") not in _wlangs:
             self.config["whisper_src_lang"] = "auto"
+            needs_save = True
+        if self.config.get("note_whisper_lang") not in _wlangs:
+            self.config["note_whisper_lang"] = "auto"
             needs_save = True
         if self.config.get("whisper_model") not in _wmodels:
             self.config["whisper_model"] = "large-v3"
@@ -509,6 +513,18 @@ class MoonshineSTTApp:
                 try:
                     self.gui.set_note_unload_callback(
                         lambda: self.unload_other_tab_engines("note"))
+                except Exception:
+                    pass
+                try:
+                    self.gui.set_note_self_unload_callback(
+                        lambda: self.unload_tab_engines("note"))
+                except Exception:
+                    pass
+                try:
+                    self.gui.set_note_lang_callback(
+                        self._on_note_lang_changed)
+                    self.gui.set_note_language(
+                        self.config.get("note_whisper_lang", "auto"))
                 except Exception:
                     pass
                 try:
@@ -3050,6 +3066,26 @@ class MoonshineSTTApp:
             except Exception:
                 pass
         self._log(f"Canary src -> {code}")
+    def _on_note_lang_changed(self, code):
+        """Note tab language: spoken language for Whisper ("auto" = detect).
+        Per-call, so the shared Whisper instance keeps its Live options."""
+        try:
+            from whisper_engine import WHISPER_SOURCE_LANGS
+            langs = tuple(WHISPER_SOURCE_LANGS)
+        except Exception:
+            langs = ("auto", "en", "ja", "zh", "ko", "de", "fr", "es")
+        code = str(code or "auto")
+        if code not in langs:
+            code = "auto"
+        try:
+            self.config["note_whisper_lang"] = code
+            save_local_config(self.config)
+        except Exception:
+            pass
+        try:
+            self._log(f"Note language -> {code}")
+        except Exception:
+            pass
     def _on_srt_input_lang_changed(self, value):
         from gui import SRT_LANG_CODE_FROM_DISPLAY, SRT_LANGS
         code = SRT_LANG_CODE_FROM_DISPLAY.get(value, "auto")
@@ -4300,16 +4336,36 @@ class MoonshineSTTApp:
                     pass
             if engine is None:
                 return "[Error: note engine not ready]"
+            # The Note tab has its own language choice. Whisper keeps the
+            # spoken language (transcribe) unless the user picked one.
             try:
-                _nt = str(self.config.get("whisper_task", "translate")
-                          or "translate")
+                _is_whisper = type(engine).__name__ == "WhisperEngine"
             except Exception:
-                _nt = "translate"
-            try:
-                _ns = str(self.config.get("whisper_src_lang", "auto")
-                          or "auto")
-            except Exception:
-                _ns = "auto"
+                _is_whisper = False
+            if not _is_whisper:
+                try:
+                    _is_whisper = \
+                        self.tab_selection("note").get("kind") == "Whisper"
+                except Exception:
+                    _is_whisper = False
+            if _is_whisper:
+                _nt = "transcribe"
+                try:
+                    _ns = str(self.config.get("note_whisper_lang", "auto")
+                              or "auto")
+                except Exception:
+                    _ns = "auto"
+            else:
+                try:
+                    _nt = str(self.config.get("whisper_task", "translate")
+                              or "translate")
+                except Exception:
+                    _nt = "translate"
+                try:
+                    _ns = str(self.config.get("whisper_src_lang", "auto")
+                              or "auto")
+                except Exception:
+                    _ns = "auto"
             try:
                 return engine.transcribe(audio, sample_rate,
                                          task=_nt, source_lang=_ns)

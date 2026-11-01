@@ -1,11 +1,11 @@
-# core/config.py
+﻿# core/config.py
 # Single source of truth for app config (moved verbatim from
 # moonshine_stt.py in v1.4.0 - no behavior change).
 import json
 import os
 import threading
 
-APP_VERSION = "1.4.4"
+APP_VERSION = "1.4.5"
 
 PROJECT_ROOT = os.path.dirname(os.path.dirname(__file__))
 CONFIG_PATH = os.path.join(PROJECT_ROOT, "moonshine_config.json")

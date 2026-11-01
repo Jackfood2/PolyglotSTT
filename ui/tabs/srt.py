@@ -111,14 +111,14 @@ class SrtTabMixin:
         self.srt_engine_var = ctk.StringVar(value="Moonshine v2")
         self.srt_engine_menu = ctk.CTkOptionMenu(
             eng_card, variable=self.srt_engine_var,
-            values=list(ENGINE_CHOICES), width=150,
+            values=list(ENGINE_CHOICES), width=110,
             fg_color=BG_INPUT, button_color=ACCENT,
             command=self._on_srt_engine_changed)
         self.srt_engine_menu.grid(row=0, column=1, sticky="ew", padx=4, pady=(8, 2))
         self.srt_model_var = ctk.StringVar(value="")
         self.srt_model_menu = ctk.CTkOptionMenu(
             eng_card, variable=self.srt_model_var,
-            values=[], width=190,
+            values=[], width=140,
             fg_color=BG_INPUT, button_color=ACCENT,
             command=self._on_srt_model_changed)
         self.srt_model_menu.grid(row=0, column=2, sticky="ew", padx=(4, 12), pady=(8, 2))
@@ -183,7 +183,6 @@ class SrtTabMixin:
         lang_card = ctk.CTkFrame(scroll, fg_color=BG_CARD, corner_radius=12)
         lang_card.grid(row=8, column=0, sticky="ew", padx=4, pady=(0, 6))
         lang_card.grid_columnconfigure(1, weight=1)
-        lang_card.grid_columnconfigure(3, weight=1)
         ctk.CTkLabel(lang_card, text="Input Language:",
                      font=("Segoe UI", 10, "bold"), text_color=FG_DIM
                      ).grid(row=0, column=0, sticky="w", padx=(12, 4), pady=(8, 2))
@@ -192,20 +191,24 @@ class SrtTabMixin:
             lang_card, variable=self.srt_input_lang_var, values=SRT_LANG_DISPLAY,
             width=170, fg_color=BG_INPUT, button_color=ACCENT,
             command=self._on_srt_input_lang_changed)
-        self.srt_input_lang_menu.grid(row=0, column=1, sticky="ew", padx=4, pady=(8, 2))
+        self.srt_input_lang_menu.grid(row=0, column=1, sticky="ew",
+                                      padx=(4, 12), pady=(8, 2))
         ctk.CTkLabel(lang_card, text="Output Language:",
                      font=("Segoe UI", 10, "bold"), text_color=FG_DIM
-                     ).grid(row=0, column=2, sticky="w", padx=(12, 4), pady=(8, 2))
+                     ).grid(row=1, column=0, sticky="w", padx=(12, 4), pady=(2, 2))
         self.srt_output_lang_var = ctk.StringVar(value="English")
         self.srt_output_lang_menu = ctk.CTkOptionMenu(
             lang_card, variable=self.srt_output_lang_var, values=SRT_LANG_DISPLAY,
             width=170, fg_color=BG_INPUT, button_color=ACCENT,
             command=self._on_srt_output_lang_changed)
-        self.srt_output_lang_menu.grid(row=0, column=3, sticky="ew", padx=4, pady=(8, 2))
+        self.srt_output_lang_menu.grid(row=1, column=1, sticky="ew",
+                                       padx=(4, 12), pady=(2, 2))
         self.srt_lang_hint = ctk.CTkLabel(
             lang_card, text="Only Whisper and Canary-1B support language selection",
-            font=("Segoe UI", 9), text_color=FG_DIM)
-        self.srt_lang_hint.grid(row=1, column=0, columnspan=4, sticky="w", padx=12, pady=(2, 8))
+            font=("Segoe UI", 9), text_color=FG_DIM, wraplength=330,
+            justify="left")
+        self.srt_lang_hint.grid(row=2, column=0, columnspan=2, sticky="w",
+                                padx=12, pady=(2, 8))
         self._srt_input_lang_cb = None
         self._srt_output_lang_cb = None
         self.lang_card = lang_card
@@ -215,23 +218,26 @@ class SrtTabMixin:
         ctk.CTkLabel(style_card, text="Subtitle size:",
                      font=("Segoe UI", 10, "bold"), text_color=FG_DIM
                      ).grid(row=0, column=0, sticky="w", padx=(12, 4), pady=(8, 2))
+        _row0 = ctk.CTkFrame(style_card, fg_color="transparent")
+        _row0.grid(row=0, column=1, sticky="ew", padx=(0, 12), pady=(8, 2))
+        _row0.grid_columnconfigure(0, weight=1)
         self.burn_font_size_var = ctk.IntVar(value=18)
         self.burn_font_slider = ctk.CTkSlider(
-            style_card, from_=12, to=32, number_of_steps=20,
+            _row0, from_=12, to=32, number_of_steps=20, width=120,
             button_color=ACCENT, progress_color=ACCENT,
             command=self._on_burn_fontsize_changed)
-        self.burn_font_slider.grid(row=0, column=1, sticky="ew", padx=4, pady=(8, 2))
+        self.burn_font_slider.grid(row=0, column=0, sticky="ew")
         self.burn_font_slider.set(18)
-        self.burn_font_value = ctk.CTkLabel(style_card, text="18",
+        self.burn_font_value = ctk.CTkLabel(_row0, text="18",
                                             font=("Segoe UI", 11, "bold"),
                                             text_color=FG_PRIMARY)
-        self.burn_font_value.grid(row=0, column=2, sticky="e", padx=(4, 6), pady=(8, 2))
+        self.burn_font_value.grid(row=0, column=1, sticky="e", padx=(4, 6))
         self.srt_preview_btn = ctk.CTkButton(
-            style_card, text="Preview Frame", font=("Segoe UI", 12),
+            _row0, text="Preview Frame", font=("Segoe UI", 12), width=110,
             fg_color=BTN_DIM, hover_color=BTN_DIM_HOVER, height=34,
             corner_radius=8, text_color=FG_SECONDARY,
             command=self._on_srt_preview)
-        self.srt_preview_btn.grid(row=0, column=3, sticky="e", padx=(6, 12), pady=(8, 2))
+        self.srt_preview_btn.grid(row=0, column=2, sticky="e")
         try:
             import gpu as _gpumod
             _ggpu = _gpumod.best_gpu()
@@ -247,11 +253,11 @@ class SrtTabMixin:
                      "Sample from/len only pick the test spot (and the short clip "
                      "transcribed when no SRT exists yet) - Generate SRT/MP4 always "
                      "processes the FULL file." + _ghint,
-                     font=("Segoe UI", 9), text_color=FG_DIM, wraplength=420,
-                     justify="left").grid(row=5, column=0, columnspan=4,
+                     font=("Segoe UI", 9), text_color=FG_DIM, wraplength=330,
+                     justify="left").grid(row=5, column=0, columnspan=2,
                                           sticky="w", padx=12, pady=(2, 8))
         estrow = ctk.CTkFrame(style_card, fg_color="transparent")
-        estrow.grid(row=6, column=0, columnspan=4, sticky="ew",
+        estrow.grid(row=6, column=0, columnspan=2, sticky="ew",
                     padx=12, pady=(2, 10))
         ctk.CTkLabel(estrow, text="Est. size:",
                      font=("Segoe UI", 10, "bold"),
@@ -280,24 +286,30 @@ class SrtTabMixin:
         ctk.CTkLabel(style_card, text="Sample from:",
                      font=("Segoe UI", 10), text_color=FG_DIM
                      ).grid(row=1, column=0, sticky="w", padx=(12, 4), pady=(2, 2))
+        _row1 = ctk.CTkFrame(style_card, fg_color="transparent")
+        _row1.grid(row=1, column=1, sticky="ew", padx=(0, 12), pady=(2, 2))
+        _row1.grid_columnconfigure(3, weight=1)
         self.sample_start_var = ctk.StringVar(value="0:30")
         self.sample_start_entry = ctk.CTkEntry(
-            style_card, textvariable=self.sample_start_var, width=70,
+            _row1, textvariable=self.sample_start_var, width=70,
             font=("Segoe UI", 11), fg_color=BG_INPUT, text_color=FG_PRIMARY,
             corner_radius=8, height=30)
-        self.sample_start_entry.grid(row=1, column=1, sticky="w", padx=4, pady=(2, 2))
-        ctk.CTkLabel(style_card, text="Sample len:",
+        self.sample_start_entry.grid(row=0, column=0, sticky="w")
+        ctk.CTkLabel(_row1, text="Sample len:",
                      font=("Segoe UI", 10), text_color=FG_DIM
-                     ).grid(row=1, column=2, sticky="e", padx=(4, 4), pady=(2, 2))
+                     ).grid(row=0, column=1, sticky="e", padx=(8, 4))
         self.sample_len_var = ctk.StringVar(value="15s")
         self.sample_len_menu = ctk.CTkOptionMenu(
-            style_card, variable=self.sample_len_var,
+            _row1, variable=self.sample_len_var,
             values=["10s", "15s", "30s", "60s"], width=80,
             fg_color=BG_INPUT, button_color=ACCENT)
-        self.sample_len_menu.grid(row=1, column=3, sticky="e", padx=(4, 12), pady=(2, 2))
+        self.sample_len_menu.grid(row=0, column=2, sticky="w")
         ctk.CTkLabel(style_card, text="Burn speed:",
                      font=("Segoe UI", 10), text_color=FG_DIM
                      ).grid(row=2, column=0, sticky="w", padx=(12, 4), pady=(2, 2))
+        _row2 = ctk.CTkFrame(style_card, fg_color="transparent")
+        _row2.grid(row=2, column=1, sticky="ew", padx=(0, 12), pady=(2, 2))
+        _row2.grid_columnconfigure(0, weight=1)
         try:
             from srt import BURN_SPEED_LABELS as _BSL
             _speed_vals = [_BSL[k] for k in
@@ -328,52 +340,53 @@ class SrtTabMixin:
                 _speed_vals = _cpu_only
         self.burn_speed_var = ctk.StringVar(value=_speed_vals[0])
         self.burn_speed_menu = ctk.CTkOptionMenu(
-            style_card, variable=self.burn_speed_var,
-            values=_speed_vals, width=200,
+            _row2, variable=self.burn_speed_var,
+            values=_speed_vals, width=120,
             fg_color=BG_INPUT, button_color=ACCENT,
             command=self._on_burn_speed_changed)
-        self.burn_speed_menu.grid(row=2, column=1, sticky="ew",
-                                  padx=4, pady=(2, 2))
+        self.burn_speed_menu.grid(row=0, column=0, sticky="ew")
         self.burn_codec_var = ctk.StringVar(value="H.264")
         self.burn_codec_menu = ctk.CTkOptionMenu(
-            style_card, variable=self.burn_codec_var,
-            values=["H.264", "HEVC (H.265)"], width=130,
+            _row2, variable=self.burn_codec_var,
+            values=["H.264", "HEVC (H.265)"], width=90,
             fg_color=BG_INPUT, button_color=ACCENT,
             command=self._on_burn_codec_changed)
-        self.burn_codec_menu.grid(row=2, column=2, sticky="e",
-                                  padx=4, pady=(2, 2))
+        self.burn_codec_menu.grid(row=0, column=1, sticky="e",
+                                  padx=(4, 4))
         self.burn_compare_btn = ctk.CTkButton(
-            style_card, text="ⓘ", width=32, height=28, font=("Segoe UI", 13),
+            _row2, text="ⓘ", width=32, height=28, font=("Segoe UI", 13),
             fg_color=BTN_DIM, hover_color=BTN_DIM_HOVER, text_color=FG_SECONDARY,
             corner_radius=8, command=self.show_burn_compare)
-        self.burn_compare_btn.grid(row=2, column=3, sticky="e",
-                                   padx=(4, 12), pady=(2, 2))
+        self.burn_compare_btn.grid(row=0, column=2, sticky="e")
         self.burn_speed_desc = ctk.CTkLabel(
             style_card, text="", font=("Segoe UI", 10),
-            text_color=ACCENT_GLOW, wraplength=420, justify="left")
-        self.burn_speed_desc.grid(row=4, column=0, columnspan=4,
+            text_color=ACCENT_GLOW, wraplength=280, justify="left")
+        self.burn_speed_desc.grid(row=4, column=0, columnspan=2,
                                   sticky="w", padx=12, pady=(0, 2))
         self._refresh_burn_speed_desc()
         ctk.CTkLabel(style_card, text="Video bitrate:",
                      font=("Segoe UI", 10), text_color=FG_DIM
                      ).grid(row=3, column=0, sticky="w", padx=(12, 4), pady=(2, 2))
+        _row3 = ctk.CTkFrame(style_card, fg_color="transparent")
+        _row3.grid(row=3, column=1, sticky="ew", padx=(0, 12), pady=(2, 2))
+        _row3.grid_columnconfigure(0, weight=1)
         self.burn_vbr_var = ctk.IntVar(value=2000)
         self.burn_vbr_slider = ctk.CTkSlider(
-            style_card, from_=300, to=10000, number_of_steps=97,
+            _row3, from_=300, to=10000, number_of_steps=97, width=100,
             button_color=ACCENT, progress_color=ACCENT,
             command=self._on_burn_vbr_changed)
-        self.burn_vbr_slider.grid(row=3, column=1, sticky="ew", padx=4, pady=(2, 2))
+        self.burn_vbr_slider.grid(row=0, column=0, sticky="ew")
         self.burn_vbr_slider.set(2000)
-        self.burn_vbr_value = ctk.CTkLabel(style_card, text="auto",
+        self.burn_vbr_value = ctk.CTkLabel(_row3, text="auto",
                                            font=("Segoe UI", 11, "bold"),
                                            text_color=FG_PRIMARY)
-        self.burn_vbr_value.grid(row=3, column=2, sticky="e", padx=(4, 6), pady=(2, 2))
+        self.burn_vbr_value.grid(row=0, column=1, sticky="e", padx=(4, 6))
         self.burn_vbr_auto_var = ctk.BooleanVar(value=True)
         self.burn_vbr_check = ctk.CTkCheckBox(
-            style_card, text="Auto", variable=self.burn_vbr_auto_var,
+            _row3, text="Auto", variable=self.burn_vbr_auto_var,
             font=("Segoe UI", 10), text_color=FG_DIM, fg_color=ACCENT,
             command=self._on_burn_vbr_toggled)
-        self.burn_vbr_check.grid(row=3, column=3, sticky="e", padx=(6, 12), pady=(2, 2))
+        self.burn_vbr_check.grid(row=0, column=2, sticky="e")
         try:
             self.burn_vbr_slider.configure(state="disabled")
         except Exception:
@@ -405,11 +418,11 @@ class SrtTabMixin:
         self.srt_bar.set(0)
         self.srt_status = ctk.CTkLabel(prog_card, text="Idle - pick a file to begin",
                                        font=("Segoe UI", 10), text_color=FG_DIM,
-                                       wraplength=400, justify="left")
+                                       wraplength=330, justify="left")
         self.srt_status.pack(anchor="w", padx=12, pady=(0, 4))
         self.srt_beat = ctk.CTkLabel(prog_card, text="",
                                      font=("Consolas", 10), text_color=FG_DIM,
-                                     wraplength=400, justify="left")
+                                     wraplength=330, justify="left")
         self.srt_beat.pack(anchor="w", padx=12, pady=(0, 4))
         self.srt_log_box = ctk.CTkTextbox(prog_card, font=("Consolas", 10),
                                           fg_color=BG_INPUT, text_color=FG_SECONDARY,
@@ -424,12 +437,12 @@ class SrtTabMixin:
         abtn.grid_columnconfigure(2, weight=1)
         self.srt_start_btn = ctk.CTkButton(
             abtn, text="\u25B6  Generate SRT", font=("Segoe UI", 13, "bold"),
-            fg_color=SUCCESS, hover_color=BTN_GO_HOVER, height=36,
+            width=150, fg_color=SUCCESS, hover_color=BTN_GO_HOVER, height=36,
             text_color=BTN_TEXT,
             corner_radius=10, command=self._on_srt_start)
         self.srt_start_btn.grid(row=0, column=0, padx=(0, 4), sticky="ew")
         self.srt_cancel_btn = ctk.CTkButton(
-            abtn, text="Cancel", font=("Segoe UI", 12),
+            abtn, text="Cancel", font=("Segoe UI", 12), width=80,
             fg_color=DANGER, hover_color=BTN_DANGER_HOVER, height=36,
             text_color=BTN_TEXT,
             corner_radius=10, state="disabled", command=self._on_srt_cancel)
@@ -441,7 +454,7 @@ class SrtTabMixin:
             corner_radius=10, command=self._on_srt_burn)
         self.srt_burn_btn.grid(row=1, column=0, padx=(0, 4), pady=(8, 0), sticky="ew")
         ctk.CTkButton(abtn, text="Open Folder", font=("Segoe UI", 12),
-                      fg_color=BTN_DIM, hover_color=BTN_DIM_HOVER, height=36,
+                      width=90, fg_color=BTN_DIM, hover_color=BTN_DIM_HOVER, height=36,
                       corner_radius=10, text_color=FG_SECONDARY,
                       command=self._on_srt_open_folder
                       ).grid(row=0, column=2, padx=(4, 0), sticky="ew")

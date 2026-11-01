@@ -34,6 +34,7 @@ class ImportTabMixin:
         info_card = ctk.CTkFrame(scroll, fg_color=BG_CARD, corner_radius=12)
         info_card.grid(row=0, column=0, sticky="ew", padx=4, pady=(0, 6))
         info_card.grid_columnconfigure(1, weight=1)
+        info_card.grid_columnconfigure(2, weight=1)
 
         self.import_engine_label = ctk.CTkLabel(
             info_card, text="Engine: following shared default",
@@ -47,7 +48,7 @@ class ImportTabMixin:
         self.import_engine_var = ctk.StringVar(value="Moonshine v2")
         self.import_engine_menu = ctk.CTkOptionMenu(
             info_card, variable=self.import_engine_var,
-            values=list(ENGINE_CHOICES), width=150,
+            values=list(ENGINE_CHOICES), width=120,
             fg_color=BG_INPUT, button_color=ACCENT,
             command=self._on_import_engine_changed)
         self.import_engine_menu.grid(row=1, column=1, sticky="ew",
@@ -55,7 +56,7 @@ class ImportTabMixin:
         self.import_model_var = ctk.StringVar(value="")
         self.import_model_menu = ctk.CTkOptionMenu(
             info_card, variable=self.import_model_var,
-            values=[], width=190,
+            values=[], width=160,
             fg_color=BG_INPUT, button_color=ACCENT,
             command=self._on_import_model_changed)
         self.import_model_menu.grid(row=1, column=2, sticky="ew",
@@ -79,7 +80,7 @@ class ImportTabMixin:
                           "It transcribes with this tab's engine and appends "
                           "one sentence per line. Save as TXT (UTF-8) or Copy All.",
                      font=("Segoe UI", 10), text_color=FG_DIM,
-                     wraplength=400, justify="left"
+                     wraplength=330, justify="left"
                      ).pack(anchor="w", padx=16, pady=(0, 6))
         self.import_file_drop = ctk.CTkTextbox(
             import_card, font=("Segoe UI", 11),
@@ -105,7 +106,7 @@ class ImportTabMixin:
         self.import_file_label = ctk.CTkLabel(
             import_card, text="No file selected",
             font=("Segoe UI", 10), text_color=FG_DIM,
-            wraplength=400, justify="left")
+            wraplength=330, justify="left")
         self.import_file_label.pack(anchor="w", padx=16, pady=(0, 6))
         file_btn_row = ctk.CTkFrame(import_card, fg_color="transparent")
         file_btn_row.pack(fill="x", padx=12, pady=(0, 6))
@@ -113,19 +114,19 @@ class ImportTabMixin:
         file_btn_row.grid_columnconfigure(1, weight=1)
         file_btn_row.grid_columnconfigure(2, weight=1)
         self.import_file_browse_btn = ctk.CTkButton(
-            file_btn_row, text="Browse...", font=("Segoe UI", 12),
+            file_btn_row, text="Browse...", font=("Segoe UI", 12), width=100,
             fg_color=BTN_DIM, hover_color=BTN_DIM_HOVER, height=36,
             corner_radius=8, text_color=FG_SECONDARY,
             command=self._import_browse_file)
         self.import_file_browse_btn.grid(row=0, column=0, padx=(0, 4), sticky="ew")
         self.import_file_start_btn = ctk.CTkButton(
-            file_btn_row, text="▶  Transcribe File", font=("Segoe UI", 12, "bold"),
+            file_btn_row, text="▶  Transcribe File", font=("Segoe UI", 12, "bold"), width=140,
             fg_color=SUCCESS, hover_color=BTN_GO_HOVER, height=36,
             corner_radius=8, text_color=BTN_TEXT,
             command=self._on_import_file_start)
         self.import_file_start_btn.grid(row=0, column=1, padx=(4, 4), sticky="ew")
         self.import_file_cancel_btn = ctk.CTkButton(
-            file_btn_row, text="Cancel", font=("Segoe UI", 12),
+            file_btn_row, text="Cancel", font=("Segoe UI", 12), width=80,
             fg_color=DANGER, hover_color=BTN_DANGER_HOVER, height=36,
             corner_radius=8, text_color=BTN_TEXT, state="disabled",
             command=self._on_import_file_cancel)
@@ -147,7 +148,7 @@ class ImportTabMixin:
         self.import_file_status = ctk.CTkLabel(
             file_prog_row, text="Idle - pick a file to begin",
             font=("Segoe UI", 10), text_color=FG_DIM,
-            wraplength=320, justify="left")
+            wraplength=280, justify="left")
         self.import_file_status.pack(side="left")
 
         # ── Output card (own sentences box) ──
@@ -161,21 +162,21 @@ class ImportTabMixin:
                      font=("Segoe UI", 12, "bold"),
                      text_color=FG_DIM).pack(side="left")
         self.import_save_btn = ctk.CTkButton(
-            out_header, text="Save as TXT", width=110, height=30,
+            out_header, text="Save as TXT", width=84, height=30,
             font=("Segoe UI", 11),
             fg_color=SUCCESS, hover_color=BTN_GO_HOVER,
             text_color=BTN_TEXT, corner_radius=8,
             command=self._on_import_save)
         self.import_save_btn.pack(side="right")
         self.import_copy_btn = ctk.CTkButton(
-            out_header, text="Copy All", width=90, height=30,
+            out_header, text="Copy All", width=70, height=30,
             font=("Segoe UI", 11),
             fg_color=BTN_DIM, hover_color=BTN_DIM_HOVER,
             text_color=FG_SECONDARY, corner_radius=8,
             command=self._on_import_copy)
         self.import_copy_btn.pack(side="right", padx=(0, 6))
         self.import_clear_btn = ctk.CTkButton(
-            out_header, text="Clear", width=70, height=30,
+            out_header, text="Clear", width=56, height=30,
             font=("Segoe UI", 11),
             fg_color=BTN_DIM, hover_color=BTN_DIM_HOVER,
             text_color=FG_SECONDARY, corner_radius=8,
