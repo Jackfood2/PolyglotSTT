@@ -347,6 +347,23 @@ requirements*.txt  dependency pins (base / Canary / Whisper)
 
 ## Changelog
 
+### v1.4.9
+
+Bug-fix release for the Live tab's Qwen3-ASR model picker.
+
+- **The Live model dropdown now lists the Qwen quants.** Picking Qwen3-ASR as
+  the Live engine left the model row showing Moonshine's list (Tiny, Base,
+  Small, Medium Streaming) under a "Model (Qwen3-ASR)" title, and picking
+  anything did nothing. The row now shows the four Qwen3-ASR GGUF quants with
+  the configured one preselected, and a pick switches the loaded model in
+  place.
+- **Model badges work again in every dropdown.** The downloaded / not-downloaded
+  markers (✓ and ↓) were empty for all engines because the status lookup used
+  the wrong key. Whisper, Canary-1B, Qwen3-ASR and Moonshine rows now show the
+  real state of the cache.
+- **A Live Qwen model pick is persisted.** The chosen quant is written to
+  `qwen_model`, so it survives a restart instead of reverting to Q8_0.
+
 ### v1.4.8
 
 Bug-fix release for the Qwen3-ASR and Dictionary work in v1.4.7.

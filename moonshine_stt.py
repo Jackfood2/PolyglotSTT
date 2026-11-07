@@ -60,7 +60,7 @@ try:
     )
 except Exception:  # pragma: no cover - fallback if core/ is missing
     import json as _json
-    APP_VERSION = "1.4.8"
+    APP_VERSION = "1.4.9"
     CONFIG_PATH = os.path.join(os.path.dirname(__file__), "moonshine_config.json")
     NOTES_AUDIO_DIR = os.path.join(os.path.dirname(__file__), "notes_audio")
     _CONFIG_LOCK = threading.RLock()
@@ -1805,6 +1805,8 @@ class MoonshineSTTApp:
                             self.config["model_arch"] = int(arch)
                         elif kind == "Whisper":
                             self.config["whisper_model"] = str(wmid)
+                        elif kind == "Qwen3-ASR":
+                            self.config["qwen_model"] = str(wmid)
                         save_local_config(self.config)
                 node = (self._tab_sel or {}).get(tab)
                 if isinstance(node, dict):
@@ -2558,16 +2560,31 @@ class MoonshineSTTApp:
                     dl = whisper_downloaded_map()
                 except Exception:
                     dl = {}
-                rev = {v: k for k, v in WHISPER_MODEL_CHOICES.items()}
-                def _fn(base_label, _rev=rev, _dl=dl):
+                def _fn(base_label, _table=WHISPER_MODEL_CHOICES, _dl=dl):
                     try:
-                        mid = _rev.get(base_label)
+                        mid = _table.get(base_label)
                         if not mid:
                             return ""
                         return "✓" if _dl.get(mid) else "↓"
                     except Exception:
                         return ""
                 return _fn
+            if eng == "Qwen3-ASR":
+                from qwen_engine import (QWEN_MODEL_CHOICES,
+                                         qwen_downloaded_map)
+                try:
+                    dl = qwen_downloaded_map()
+                except Exception:
+                    dl = {}
+                def _fnq(base_label, _table=QWEN_MODEL_CHOICES, _dl=dl):
+                    try:
+                        mid = _table.get(base_label)
+                        if not mid:
+                            return ""
+                        return "✓" if _dl.get(mid) else "↓"
+                    except Exception:
+                        return ""
+                return _fnq
             if eng == "Canary-1B":
                 return None
             from gui import MODEL_CHOICES
@@ -2576,10 +2593,9 @@ class MoonshineSTTApp:
                 dl = moonshine_downloaded_map()
             except Exception:
                 dl = {}
-            rev = {v: k for k, v in MODEL_CHOICES.items()}
-            def _fn2(base_label, _rev=rev, _dl=dl):
+            def _fn2(base_label, _table=MODEL_CHOICES, _dl=dl):
                 try:
-                    arch = _rev.get(base_label)
+                    arch = _table.get(base_label)
                     if arch is None:
                         return ""
                     return "✓" if _dl.get(int(arch)) else "↓"
@@ -2609,6 +2625,15 @@ class MoonshineSTTApp:
                 from gui import CANARY_MODEL_LABEL
                 self.gui.set_model_options([CANARY_MODEL_LABEL], CANARY_MODEL_LABEL,
                                            self._on_model_changed, None)
+            elif eng == "Qwen3-ASR":
+                from qwen_engine import (QWEN_MODEL_CHOICES,
+                                         QWEN_MODEL_CHOICES_REV,
+                                         QWEN_DEFAULT_MODEL)
+                cur = QWEN_MODEL_CHOICES_REV.get(
+                    self.config.get("qwen_model", QWEN_DEFAULT_MODEL),
+                    QWEN_MODEL_CHOICES_REV[QWEN_DEFAULT_MODEL])
+                self.gui.set_model_options(list(QWEN_MODEL_CHOICES.keys()),
+                                           cur, self._on_model_changed, fn)
             else:
                 from gui import MODEL_CHOICES, MODEL_CHOICES_REV
                 cur_arch = int(self.config.get("model_arch", 5))
@@ -2994,6 +3019,9 @@ class MoonshineSTTApp:
         if self.config.get("engine") == "Whisper":
             self._on_whisper_model_changed(display_label)
             return
+        if self.config.get("engine") == "Qwen3-ASR":
+            self._on_qwen_model_changed(display_label)
+            return
         if self.config.get("engine") not in ("Moonshine v2",):
             return
         try:
@@ -3154,6 +3182,77 @@ class MoonshineSTTApp:
         except AttributeError:
             self._model_switching = False
             _whisper_switched(False, "engine unavailable")
+        except Exception as e:
+            self._model_switching = False
+            try:
+                if self.gui:
+                    self.gui.record_btn.configure(state="normal")
+                    self.gui.set_status(f"Model error: {e}", DANGER)
+            except Exception:
+                pass
+    def _on_qwen_model_changed(self, display_label: str):
+        """Live tab model pick while Qwen3-ASR is the active engine."""
+        try:
+            from qwen_engine import QWEN_MODEL_CHOICES
+        except Exception:
+            return
+        new_id = QWEN_MODEL_CHOICES.get(display_label)
+        if not new_id:
+            return
+        old_id = self.config.get("qwen_model", "qwen3-asr-1.7b-q8_0")
+        if new_id == old_id:
+            return
+        if self._srt_busy:
+            self._log("Stop the SRT/burn job before switching Qwen3-ASR model")
+            try:
+                self._refresh_model_row()
+            except Exception:
+                pass
+            return
+        try:
+            if not self._live_engine_pick("Qwen3-ASR", None, new_id):
+                return
+        except Exception:
+            pass
+        self.config["qwen_model"] = new_id
+        save_local_config(self.config)
+        self._log(f"Qwen3-ASR model -> {display_label} ({new_id}), reloading...")
+        if self.gui:
+            self.gui.set_model_status(f"Switching to {display_label}...",
+                                      WARNING)
+            try:
+                self.gui.record_btn.configure(state="disabled")
+            except Exception:
+                pass
+        def _qwen_switched(success, err):
+            # See _model_switched: clear the guard synchronously, paint async.
+            self._model_switching = False
+            def _ui():
+                try:
+                    self.gui.record_btn.configure(state="normal")
+                except Exception:
+                    pass
+                if success:
+                    self.gui.set_status(f"Ready \u2022 Qwen3-ASR {new_id}",
+                                        SUCCESS)
+                else:
+                    self.gui.set_status(f"Model error: {err}", DANGER)
+            if self.gui:
+                try:
+                    self.gui.after(0, _ui)
+                except Exception:
+                    pass
+        eng = self._get_qwen_engine()
+        try:
+            self._prepare_heavy_load(except_tabs=("live",))
+        except Exception:
+            pass
+        try:
+            self._model_switching = True
+            eng.switch_model(new_id, on_ready=_qwen_switched)
+        except AttributeError:
+            self._model_switching = False
+            _qwen_switched(False, "engine unavailable")
         except Exception as e:
             self._model_switching = False
             try:
