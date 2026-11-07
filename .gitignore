@@ -25,3 +25,7 @@ notes_audio/
 patch_backups/
 # Windowless-run log (pythonw has no console; app.log lives here).
 logs/
+
+# Startup smoke-test logs (dev only).
+startup.log
+startup.err

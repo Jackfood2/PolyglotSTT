@@ -22,7 +22,8 @@ from ui.choices import (MODEL_CHOICES, MODEL_CHOICES_REV,
                          CANARY_SRT_IN_CODES, CANARY_SRT_OUT_CODES,
                          WHISPER_SRT_IN_CODES, WHISPER_SRT_OUT_CODES,
                          BURN_SPEED_HELP, BURN_COMPARE_ROWS,
-                         BURN_COMPARE_CODEC_NOTE, apply_badge_map)
+                         BURN_COMPARE_CODEC_NOTE, apply_badge_map,
+                         QWEN_MODEL_CHOICES, QWEN_MODEL_CHOICES_REV)
 ACCENT = "#6C5CE7"
 ACCENT_DARK = "#5A4BD1"
 ACCENT_GLOW = "#A29BFE"
@@ -338,6 +339,12 @@ class MoonshineGUI(LiveTabMixin, NoteTabMixin, ImportTabMixin, SrtTabMixin, Dial
         self.canary_lang_var = ctk.StringVar(value="Auto-detect")
         self.canary_lang_menu = ctk.CTkOptionMenu(engine_frame, variable=self.canary_lang_var, values=[SRT_LANG_NAMES[c] for c in CANARY_LANGS], width=100, fg_color=BG_INPUT, button_color=ACCENT, command=self._on_canary_lang_changed)
         self.canary_lang_menu.grid(row=1, column=3, sticky="ew", padx=(4, 12), pady=(2, 8))
+        ctk.CTkLabel(engine_frame, text="Dictionary:", font=("Segoe UI", 10), text_color=FG_DIM).grid(row=2, column=0, sticky="w", padx=(12, 4), pady=(0, 8))
+        self.dict_status_label = ctk.CTkLabel(engine_frame, text="Dictionary off", font=("Segoe UI", 10), text_color=FG_DIM, anchor="w")
+        self.dict_status_label.grid(row=2, column=1, columnspan=2, sticky="ew", padx=(4, 8), pady=(0, 8))
+        self.dictionary_btn = ctk.CTkButton(engine_frame, text="Edit...", width=64, height=26, font=("Segoe UI", 10), fg_color=BTN_DIM, hover_color=BTN_DIM_HOVER, corner_radius=6, text_color=FG_SECONDARY, command=self._on_dictionary)
+        self.dictionary_btn.grid(row=2, column=3, sticky="e", padx=(4, 12), pady=(0, 8))
+        self._dictionary_cb = None
         self._engine_callback = None
         self._canary_task_callback = None
         self._canary_lang_callback = None
@@ -386,7 +393,7 @@ class MoonshineGUI(LiveTabMixin, NoteTabMixin, ImportTabMixin, SrtTabMixin, Dial
         footer = ctk.CTkFrame(self, fg_color="transparent")
         footer.grid(row=3, column=0, sticky="ew", padx=20, pady=(0, 12))
         self._footer_label = ctk.CTkLabel(
-            footer, text="Moonshine v2 + Canary-1B + Whisper \u2022 On-device \u2022 No API keys",
+            footer, text="Moonshine v2 + Canary-1B + Whisper + Qwen3-ASR \u2022 On-device \u2022 No API keys",
             font=("Segoe UI", 10), text_color=FG_DIM)
         self._footer_label.pack(side="left")
         self.windowless_var = ctk.BooleanVar(value=False)
@@ -410,7 +417,7 @@ class MoonshineGUI(LiveTabMixin, NoteTabMixin, ImportTabMixin, SrtTabMixin, Dial
             pass
     def set_footer_version(self, version: str):
         try:
-            base = "Moonshine v2 + Canary-1B + Whisper \u2022 On-device \u2022 No API keys"
+            base = "Moonshine v2 + Canary-1B + Whisper + Qwen3-ASR \u2022 On-device \u2022 No API keys"
             v = str(version or "").strip()
             self._footer_label.configure(
                 text=f"{base} \u2022 v{v}" if v else base)
@@ -855,6 +862,8 @@ class MoonshineGUI(LiveTabMixin, NoteTabMixin, ImportTabMixin, SrtTabMixin, Dial
         try:
             if kind == "Whisper":
                 wmid = WHISPER_MODEL_CHOICES.get(label)
+            elif kind == "Qwen3-ASR":
+                wmid = QWEN_MODEL_CHOICES.get(label)
             elif kind == "Moonshine v2":
                 arch = MODEL_CHOICES.get(label)
         except Exception:
@@ -911,6 +920,8 @@ class MoonshineGUI(LiveTabMixin, NoteTabMixin, ImportTabMixin, SrtTabMixin, Dial
             try:
                 if kind == "Whisper":
                     wmid = WHISPER_MODEL_CHOICES.get(label)
+                elif kind == "Qwen3-ASR":
+                    wmid = QWEN_MODEL_CHOICES.get(label)
                 elif kind == "Moonshine v2":
                     arch = MODEL_CHOICES.get(label)
             except Exception:

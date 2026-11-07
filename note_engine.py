@@ -719,7 +719,8 @@ class NoteTranscriber:
     # Engine failure strings (NOT transcriptions): surface them via status
     # instead of appending - or worse, silently dropping as "no speech".
     # Genuine text - even "[Music]"-led - always passes through to append.
-    _ERROR_PREFIXES = ("[Error:", "[Whisper Error:", "[Canary Error:")
+    _ERROR_PREFIXES = ("[Error:", "[Whisper Error:", "[Canary Error:",
+                       "[Qwen Error:")
 
     def __init__(self):
         self._queue: queue.Queue = queue.Queue(maxsize=25)

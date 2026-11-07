@@ -215,6 +215,377 @@ class DialogsMixin:
         except Exception:
             pass
 
+    def show_dictionary_manager(self, get_data, on_save):
+        """Add / edit / delete dictionary terms and context text.
+
+        ``get_data()`` returns {"terms", "context", "engines", "available"};
+        ``on_save(payload)`` returns (ok, message). Only engines that really
+        support a dictionary are offered; over-limit lists ask the user what
+        to do instead of silently clipping.
+        """
+        try:
+            from tkinter import messagebox as _mb
+        except Exception:
+            _mb = None
+        try:
+            from tkinter import simpledialog as _sd
+        except Exception:
+            _sd = None
+        try:
+            import dictionary as _dict
+        except Exception:
+            _dict = None
+        if _dict is None:
+            if _mb is not None:
+                try:
+                    _mb.showerror("Dictionary", "dictionary.py is missing.")
+                except Exception:
+                    pass
+            return
+        try:
+            _old = getattr(self, "_dictionary_win", None)
+            if _old is not None:
+                try:
+                    if _old.winfo_exists():
+                        _old.lift()
+                        try:
+                            _old.focus_force()
+                        except Exception:
+                            pass
+                        return
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+        try:
+            data = get_data() or {}
+        except Exception:
+            data = {}
+        state = {
+            "terms": _dict.norm_terms(data.get("terms")),
+            "context": _dict.norm_context(data.get("context")),
+            "engines": _dict.enabled_map(data.get("engines")),
+        }
+        available = dict(data.get("available") or _dict.available_map())
+
+        win = ctk.CTkToplevel(self)
+        self._dictionary_win = win
+        try:
+            win.title("Dictionary")
+            win.geometry("620x680")
+            win.minsize(540, 540)
+            win.configure(fg_color=BG_DARK)
+            try:
+                win.transient(self)
+            except Exception:
+                pass
+        except Exception:
+            pass
+
+        ctk.CTkLabel(win, text="Dictionary", font=("Segoe UI", 15, "bold"),
+                     text_color=FG_PRIMARY).pack(anchor="w", padx=16,
+                                                 pady=(14, 0))
+        ctk.CTkLabel(
+            win, text="Bias transcription toward names, jargon and acronyms. "
+            "Moonshine v2 and Canary-1B have no equivalent setting, so only "
+            "Whisper and Qwen3-ASR can use this list.",
+            font=("Segoe UI", 10), text_color=FG_DIM, wraplength=580,
+            justify="left").pack(anchor="w", padx=16, pady=(0, 8))
+
+        eng_frame = ctk.CTkFrame(win, fg_color=BG_CARD, corner_radius=10)
+        eng_frame.pack(fill="x", padx=14, pady=(0, 8))
+        eng_frame.grid_columnconfigure(0, weight=1)
+        eng_vars = {}
+        eng_status = {}
+        row = 0
+        for engine in _dict.DICT_ENGINES:
+            ok = bool(available.get(engine, True))
+            var = ctk.BooleanVar(
+                value=bool(state["engines"].get(engine)) and ok)
+            eng_vars[engine] = var
+            ctk.CTkCheckBox(
+                eng_frame, text=engine, variable=var, font=("Segoe UI", 12),
+                text_color=FG_PRIMARY, fg_color=ACCENT_GLOW,
+                hover_color=ACCENT_GLOW, border_color=FG_DIM,
+                state="normal" if ok else "disabled",
+                command=lambda: _refresh_status()
+            ).grid(row=row, column=0, sticky="w", padx=12, pady=(8, 0))
+            note = (_dict.engine_help(engine) if ok else
+                    "Not installed on this machine - skipped.")
+            ctk.CTkLabel(eng_frame, text=note, font=("Segoe UI", 9),
+                         text_color=FG_DIM, wraplength=460, justify="left"
+                         ).grid(row=row + 1, column=0, sticky="w",
+                                padx=(34, 8))
+            st = ctk.CTkLabel(eng_frame, text="", font=("Segoe UI", 10),
+                              text_color=FG_SECONDARY, anchor="e")
+            st.grid(row=row + 1, column=1, sticky="e", padx=12)
+            eng_status[engine] = st
+            row += 2
+        ctk.CTkLabel(eng_frame, text="", height=4).grid(row=row, column=0)
+
+        add_frame = ctk.CTkFrame(win, fg_color="transparent")
+        add_frame.pack(fill="x", padx=14, pady=(0, 6))
+        add_frame.grid_columnconfigure(0, weight=1)
+        entry = ctk.CTkEntry(add_frame, placeholder_text="Add a word or phrase…",
+                             font=("Segoe UI", 12), fg_color=BG_CARD,
+                             border_color=BTN_DIM, height=34)
+        entry.grid(row=0, column=0, sticky="ew", padx=(0, 6))
+
+        def _add():
+            try:
+                raw = entry.get()
+            except Exception:
+                raw = ""
+            if not raw.strip():
+                return
+            parts = [p for chunk in raw.splitlines() for p in chunk.split(",")]
+            state["terms"] = _dict.norm_terms(list(state["terms"]) + parts)
+            try:
+                entry.delete(0, "end")
+            except Exception:
+                pass
+            _rebuild()
+            _refresh_status()
+
+        ctk.CTkButton(add_frame, text="Add", width=70, height=34,
+                      font=("Segoe UI", 12), fg_color=BTN_DIM,
+                      hover_color=BTN_DIM_HOVER, text_color=FG_SECONDARY,
+                      corner_radius=8, command=_add
+                      ).grid(row=0, column=1, sticky="e")
+        entry.bind("<Return>", lambda _e: _add())
+
+        list_wrap = ctk.CTkFrame(win, fg_color="transparent")
+        list_wrap.pack(fill="both", expand=True, padx=14, pady=(0, 6))
+        count_lbl = ctk.CTkLabel(list_wrap, text="", font=("Segoe UI", 10),
+                                 text_color=FG_DIM, anchor="w")
+        count_lbl.pack(fill="x")
+        body = ctk.CTkScrollableFrame(list_wrap, fg_color="transparent")
+        body.pack(fill="both", expand=True)
+        body.grid_columnconfigure(0, weight=1)
+        try:
+            self._tune_scrollers(win)
+        except Exception:
+            pass
+
+        def _remove(idx):
+            try:
+                del state["terms"][idx]
+            except Exception:
+                return
+            _rebuild()
+            _refresh_status()
+
+        def _edit(idx):
+            try:
+                current = state["terms"][idx]
+            except Exception:
+                return
+            new = None
+            if _sd is not None:
+                try:
+                    new = _sd.askstring("Edit term", "Word or phrase:",
+                                        initialvalue=current, parent=win)
+                except Exception:
+                    new = None
+            if new is None:
+                return
+            new = str(new).strip()
+            if not new:
+                _remove(idx)
+                return
+            terms = list(state["terms"])
+            terms[idx] = new[: _dict.MAX_TERM_CHARS]
+            state["terms"] = _dict.norm_terms(terms)
+            _rebuild()
+            _refresh_status()
+
+        def _rebuild():
+            try:
+                for child in body.winfo_children():
+                    child.destroy()
+            except Exception:
+                pass
+            terms = state["terms"]
+            try:
+                count_lbl.configure(text=f"{len(terms)} term(s)")
+            except Exception:
+                pass
+            if not terms:
+                ctk.CTkLabel(body, text="No terms yet - add names, brands or "
+                             "acronyms above.", font=("Segoe UI", 11),
+                             text_color=FG_DIM).grid(row=0, column=0,
+                                                     sticky="w", padx=8, pady=10)
+                return
+            for i, term in enumerate(terms):
+                card = ctk.CTkFrame(body, fg_color=BG_CARD, corner_radius=8)
+                card.grid(row=i, column=0, sticky="ew", padx=2, pady=2)
+                card.grid_columnconfigure(0, weight=1)
+                ctk.CTkLabel(card, text=term, font=("Segoe UI", 11),
+                             text_color=FG_PRIMARY, anchor="w"
+                             ).grid(row=0, column=0, sticky="w", padx=10, pady=6)
+                ctk.CTkButton(card, text="Edit", width=52, height=26,
+                              font=("Segoe UI", 10), fg_color=BTN_DIM,
+                              hover_color=BTN_DIM_HOVER, text_color=FG_SECONDARY,
+                              corner_radius=6, command=lambda n=i: _edit(n)
+                              ).grid(row=0, column=1, padx=(0, 4), pady=4)
+                ctk.CTkButton(card, text="Remove", width=68, height=26,
+                              font=("Segoe UI", 10), fg_color=DANGER,
+                              hover_color=BTN_DANGER_HOVER, text_color=BTN_TEXT,
+                              corner_radius=6, command=lambda n=i: _remove(n)
+                              ).grid(row=0, column=2, padx=(0, 8), pady=4)
+
+        ctk.CTkLabel(win, text="Context / prompt (optional)", font=("Segoe UI", 10),
+                     text_color=FG_DIM, anchor="w"
+                     ).pack(fill="x", padx=16)
+        ctx_box = ctk.CTkTextbox(win, height=78, font=("Segoe UI", 12),
+                                 fg_color=BG_CARD, text_color=FG_PRIMARY,
+                                 wrap="word", border_width=1,
+                                 border_color=BTN_DIM)
+        ctx_box.pack(fill="x", padx=14, pady=(0, 8))
+        if state["context"]:
+            try:
+                ctx_box.insert("1.0", state["context"])
+            except Exception:
+                pass
+        ctx_box.bind("<KeyRelease>", lambda _e: _refresh_status())
+
+        def _current_terms():
+            return _dict.norm_terms(state["terms"])
+
+        def _current_ctx():
+            try:
+                return _dict.norm_context(ctx_box.get("1.0", "end"))
+            except Exception:
+                return state["context"]
+
+        def _enabled():
+            return [e for e, v in eng_vars.items() if bool(v.get())]
+
+        def _refresh_status():
+            terms = _current_terms()
+            ctx = _current_ctx()
+            on = set(_enabled())
+            for engine, lbl in eng_status.items():
+                try:
+                    if not available.get(engine, True):
+                        lbl.configure(text="not installed",
+                                      text_color=FG_DIM)
+                        continue
+                    if engine not in on:
+                        lbl.configure(text="off", text_color=FG_DIM)
+                        continue
+                    info = _dict.build(engine, terms, ctx)
+                    over = int(info.get("dropped", 0) or 0) > 0
+                    lbl.configure(text=_dict.describe(engine, terms, ctx),
+                                  text_color=DANGER if over else ACCENT_GLOW)
+                except Exception:
+                    pass
+
+        foot = ctk.CTkFrame(win, fg_color="transparent")
+        foot.pack(fill="x", padx=16, pady=(2, 14))
+        foot.grid_columnconfigure(0, weight=1)
+        foot.grid_columnconfigure(1, weight=1)
+
+        def _save():
+            terms = _current_terms()
+            ctx = _current_ctx()
+            on = _enabled()
+            skipped = [e for e in on if not available.get(e, True)]
+            if skipped and _mb is not None:
+                try:
+                    if not _mb.askyesno(
+                            "Engine not available",
+                            ", ".join(skipped) + " is not installed on this "
+                            "machine.\n\nKeep it enabled anyway?"):
+                        for e in skipped:
+                            try:
+                                eng_vars[e].set(False)
+                            except Exception:
+                                pass
+                        on = _enabled()
+                except Exception:
+                    pass
+            over = []
+            for engine in on:
+                info = _dict.build(engine, terms, ctx)
+                if int(info.get("dropped", 0) or 0) > 0:
+                    over.append((engine, info))
+            if over and _mb is not None:
+                engine, info = over[0]
+                keep = len(info.get("kept") or [])
+                unit = "tokens" if engine == "Whisper" else "terms"
+                try:
+                    ans = _mb.askyesnocancel(
+                        "Dictionary too long",
+                        f"{engine} can only take {info['limit']} {unit}, so "
+                        f"{info['dropped']} of your {len(terms)} term(s) "
+                        f"would be ignored.\n\n"
+                        f"Yes = trim the list to {keep} term(s) now\n"
+                        f"No = keep everything (extra terms are ignored)\n"
+                        f"Cancel = go back and edit")
+                except Exception:
+                    ans = None
+                if ans is None:
+                    return
+                if ans:
+                    terms = _dict.trim_to_fit(terms, ctx, on)
+                    state["terms"] = terms
+                    _rebuild()
+                    _refresh_status()
+            warnings = []
+            for engine in on:
+                info = _dict.build(engine, terms, ctx)
+                if info.get("warning"):
+                    warnings.append(f"{engine}: {info['warning']}")
+            if warnings and _mb is not None:
+                try:
+                    if not _mb.askyesno("Dictionary",
+                                        "\n\n".join(warnings) +
+                                        "\n\nSave anyway?"):
+                        return
+                except Exception:
+                    pass
+            payload = {
+                "terms": terms,
+                "context": ctx,
+                "engines": {e: bool(eng_vars[e].get())
+                            for e in _dict.DICT_ENGINES},
+            }
+            try:
+                ok, msg = on_save(payload)
+            except Exception as ex:
+                ok, msg = False, str(ex)
+            if not ok:
+                if _mb is not None:
+                    try:
+                        _mb.showerror("Dictionary", msg or "Could not save.")
+                    except Exception:
+                        pass
+                return
+            try:
+                win.destroy()
+            except Exception:
+                pass
+
+        ctk.CTkButton(foot, text="Cancel", font=("Segoe UI", 12),
+                      fg_color=BTN_DIM, hover_color=BTN_DIM_HOVER, height=38,
+                      corner_radius=8, text_color=FG_SECONDARY,
+                      command=win.destroy
+                      ).grid(row=0, column=0, padx=(0, 4), sticky="ew")
+        ctk.CTkButton(foot, text="Save", font=("Segoe UI", 12),
+                      fg_color=ACCENT_GLOW, hover_color=ACCENT_GLOW, height=38,
+                      corner_radius=8, text_color=BG_DARK, command=_save
+                      ).grid(row=0, column=1, padx=(4, 0), sticky="ew")
+
+        _rebuild()
+        _refresh_status()
+        try:
+            win.lift()
+            win.focus_force()
+        except Exception:
+            pass
+
     def show_burn_compare(self):
         try:
             _old = getattr(self, "_burn_compare_win", None)

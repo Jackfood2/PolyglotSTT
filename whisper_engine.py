@@ -602,6 +602,11 @@ class WhisperEngine:
         self._thread_limit: Optional[int] = None
         # Set after an allocator failure: keep decoding greedily from now on.
         self._lean_decode = False
+        # Optional user dictionary (hotwords + initial prompt). Terms are
+        # pre-split by dictionary.py so decoding only has to clip them.
+        self._dict_terms: List[str] = []
+        self._dict_context: str = ""
+        self._dict_enabled = False
         # Resident models in this process, for the RAM budget guard.
         self._resident_mb = 0
         self._on_ready = on_ready
@@ -1341,6 +1346,52 @@ class WhisperEngine:
 
         _invoke_callback(on_ready, True, None)
 
+    def set_dictionary(
+        self,
+        terms: Optional[List[str]] = None,
+        context: Optional[str] = None,
+        enabled: bool = True,
+    ) -> None:
+        """Attach (or clear) the user dictionary for the next decodes.
+
+        Terms are used as faster-whisper ``hotwords`` and the context text as
+        ``initial_prompt``. The 223-token cap is applied in ``_transcribe_opts``
+        so a stale long list can never overflow the decoder prompt.
+        """
+        try:
+            import dictionary as _dict
+        except Exception:
+            _dict = None
+        try:
+            clean = (_dict.norm_terms(terms) if _dict is not None
+                     else [str(t).strip() for t in (terms or []) if str(t).strip()])
+            ctx = (_dict.norm_context(context) if _dict is not None
+                   else str(context or "").strip())
+        except Exception:
+            clean, ctx = [], ""
+        with self._lock:
+            self._dict_terms = list(clean)
+            self._dict_context = ctx
+            self._dict_enabled = bool(enabled)
+
+    def dictionary_payload(self) -> Tuple[Optional[str], Optional[str]]:
+        """(hotwords, initial_prompt) for the current decode, or (None, None)."""
+        with self._lock:
+            if not self._dict_enabled:
+                return None, None
+            terms = list(self._dict_terms)
+            context = self._dict_context
+        if not terms and not context:
+            return None, None
+        try:
+            import dictionary as _dict
+
+            info = _dict.build("Whisper", terms, context)
+            return info.get("hotwords"), info.get("prompt")
+        except Exception:
+            hot = ", ".join(terms) or None
+            return hot, (context or None)
+
     def switch_model(
         self,
         model_id: str,
@@ -1410,7 +1461,7 @@ class WhisperEngine:
         with self._lock:
             lean = self._lean_decode
 
-        return {
+        opts = {
             "task": effective_task,
             "language": (
                 None if effective_source == "auto" else effective_source
@@ -1435,6 +1486,14 @@ class WhisperEngine:
             "log_prob_threshold": -1.0,
             "compression_ratio_threshold": 2.4,
         }
+        # User dictionary: hotwords win the 223-token budget, context gets
+        # the remainder (see dictionary.py). Empty -> keys omitted entirely.
+        hotwords, initial_prompt = self.dictionary_payload()
+        if hotwords:
+            opts["hotwords"] = hotwords
+        if initial_prompt:
+            opts["initial_prompt"] = initial_prompt
+        return opts
 
     def _run(
         self,

@@ -129,12 +129,14 @@ class LiveTabMixin:
         self._refresh_srt_engine_label()
         is_canary = value == "Canary-1B"
         is_whisper = value == "Whisper"
+        is_qwen = value == "Qwen3-ASR"
         try:
             self.model_menu.configure(state=self._model_menu_state(value))
             self.canary_task_menu.configure(
                 state="normal" if is_canary or is_whisper else "disabled")
             self.canary_lang_menu.configure(
-                state="normal" if is_canary or is_whisper else "disabled")
+                state="normal" if is_canary or is_whisper or is_qwen
+                else "disabled")
         except Exception:
             pass
         if self._engine_callback:
@@ -168,7 +170,8 @@ class LiveTabMixin:
 
     @staticmethod
     def _model_menu_state(engine_kind: str) -> str:
-        return ("normal" if engine_kind in ("Moonshine v2", "Whisper")
+        return ("normal" if engine_kind in ("Moonshine v2", "Whisper",
+                                           "Qwen3-ASR")
                 else "disabled")
 
     def set_model_options(self, values, current: str, callback: Callable,
@@ -206,6 +209,23 @@ class LiveTabMixin:
             except Exception:
                 pass
 
+    def set_dictionary_callback(self, cb: Callable):
+        self._dictionary_cb = cb if callable(cb) else None
+
+    def _on_dictionary(self):
+        if self._dictionary_cb:
+            try:
+                self._dictionary_cb()
+            except Exception:
+                pass
+
+    def set_dictionary_status(self, text: str):
+        """Short summary on the Live card ("Dictionary off", "2 engines ...")."""
+        try:
+            self.dict_status_label.configure(text=str(text or "Dictionary off"))
+        except Exception:
+            pass
+
     def set_unload_callback(self, cb: Callable):
         self._unload_cb = cb if callable(cb) else None
 
@@ -227,10 +247,12 @@ class LiveTabMixin:
         self.engine_var.set(engine if engine in ENGINE_CHOICES else "Moonshine v2")
         self.canary_task_var.set(task if task in CANARY_TASKS else "transcribe")
         self.canary_lang_var.set(SRT_LANG_NAMES.get(src_lang, "Auto-detect"))
-        is_heavy = (engine in ("Canary-1B", "Whisper"))
+        is_heavy = (engine in ("Canary-1B", "Whisper", "Qwen3-ASR"))
         try:
             self.model_menu.configure(state=self._model_menu_state(engine))
-            self.canary_task_menu.configure(state="normal" if is_heavy else "disabled")
+            self.canary_task_menu.configure(
+                state="normal" if engine in ("Canary-1B", "Whisper")
+                else "disabled")
             self.canary_lang_menu.configure(state="normal" if is_heavy else "disabled")
         except Exception:
             pass

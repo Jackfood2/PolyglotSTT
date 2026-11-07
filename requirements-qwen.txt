@@ -1,0 +1,4 @@
+# Qwen3-ASR (GGUF) via transcribe.cpp
+# The native wheel bundles the ggml backends (CPU + Vulkan).
+transcribe-cpp>=0.4.1
+transcribe-cpp-native>=0.4.1

@@ -29,6 +29,7 @@ BURN_SIZE_PATH = PORTABLE_ROOT / "burn_size.json"
 ETA_DEFAULTS = {
     "whisper": 1.0,
     "canary": 3.0,
+    "qwen": 2.0,
     "moonshine": 0.3,
     "burn": 1.5,
     "whisper:tiny": 0.08,
@@ -105,6 +106,7 @@ _ERROR_PREFIXES = (
     "[error:",
     "[whisper error:",
     "[canary error:",
+    "[qwen error:",
     "[moonshine error:",
 )
 
@@ -413,6 +415,8 @@ def _eta_key_for(engine_kind, arch=0) -> str:
         return "whisper"
     if "canary" in kind:
         return "canary"
+    if "qwen" in kind:
+        return "qwen"
     if "moonshine" in kind:
         return f"moonshine:{int(_number(arch, 0))}"
     return _eta_safe_key(kind, "job")
@@ -1866,6 +1870,8 @@ def run_srt_job(
     overwrite: bool = True,
     close_moonshine: bool = True,
     live_cb: Optional[Callable[[str], None]] = None,
+    get_qwen_engine: Optional[Callable] = None,
+    qwen_src: str = "auto",
 ) -> str:
     """Run one subtitle job with a live heartbeat (stage, elapsed, CPU%)."""
     heartbeat = SrtHeartbeat(live_cb)
@@ -1896,6 +1902,8 @@ def run_srt_job(
             overwrite=overwrite,
             close_moonshine=close_moonshine,
             status=heartbeat,
+            get_qwen_engine=get_qwen_engine,
+            qwen_src=qwen_src,
         )
     finally:
         heartbeat.stop()
@@ -1927,6 +1935,8 @@ def _run_srt_job_inner(
     overwrite: bool = True,
     close_moonshine: bool = True,
     status: Optional["SrtHeartbeat"] = None,
+    get_qwen_engine: Optional[Callable] = None,
+    qwen_src: str = "auto",
 ) -> str:
     import soundfile as sf
 
@@ -1959,6 +1969,8 @@ def _run_srt_job_inner(
         family = "whisper"
     elif "canary" in kind:
         family = "canary"
+    elif "qwen" in kind:
+        family = "qwen"
     elif "moonshine" in kind:
         family = "moonshine"
     else:
@@ -2416,6 +2428,86 @@ def _run_srt_job_inner(
                 prog(
                     base + span,
                     f"Canary chunk {index + 1}/{len(spans)} complete",
+                )
+
+        elif family == "qwen":
+            if not callable(get_qwen_engine):
+                raise RuntimeError("Qwen3-ASR engine is not configured")
+
+            # Qwen3-ASR is transcription-only: it preserves the spoken
+            # language and cannot translate. Cue timing comes from the VAD
+            # chunk boundaries (the model emits no timestamps).
+            source_language = (
+                input_language
+                if input_language != "auto"
+                else str(qwen_src or "auto").strip().lower()
+            )
+
+            if output_language not in {source_language, "same", "source"}:
+                raise ValueError(
+                    "Qwen3-ASR transcription preserves the source language. "
+                    "Pick the same output language (or use Whisper to "
+                    "translate)."
+                )
+
+            engine = get_qwen_engine()
+            wait_for_model(engine, "Qwen3-ASR")
+
+            checker = getattr(engine, "_check_lang_support", None)
+            supported = getattr(engine, "supported_source_langs", None)
+
+            if callable(checker) and supported:
+                error = checker(source_language)
+                if error:
+                    raise RuntimeError(str(error))
+
+            ensure_chunks()
+            log(f"Qwen3-ASR language={source_language} (transcribe)")
+
+            for index, (start, end) in enumerate(spans):
+                _check_cancel(cancel_event)
+                status.set_stage(f"Qwen3-ASR chunk {index + 1}/{len(spans)}")
+                first = round(start * sample_rate)
+                last = min(len(audio), round(end * sample_rate))
+                chunk_path = work_dir / f"qwen_{index:06d}.wav"
+
+                sf.write(
+                    str(chunk_path),
+                    audio[first:last],
+                    sample_rate,
+                    subtype="PCM_16",
+                )
+
+                base = 0.20 + 0.64 * index / len(spans)
+                span = 0.64 / len(spans)
+
+                try:
+                    with ProgressPump(
+                        prog,
+                        base,
+                        span,
+                        max(2.0, (end - start) * eta.factor),
+                        f"Qwen3-ASR chunk {index + 1}/{len(spans)}",
+                    ):
+                        text = _engine_text(
+                            engine.transcribe_file(
+                                str(chunk_path),
+                                source_lang=source_language,
+                            )
+                        )
+
+                    if text:
+                        segments.append((
+                            first / sample_rate,
+                            last / sample_rate,
+                            text,
+                        ))
+                finally:
+                    chunk_path.unlink(missing_ok=True)
+
+                prog(
+                    base + span,
+                    f"Qwen3-ASR chunk {index + 1}/{len(spans)} complete",
                 )
 
         else:

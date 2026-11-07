@@ -48,8 +48,8 @@ rem Corrupt-but-present installs are left to the app, whose per-engine
 rem fallbacks log clearly. If the probe itself fails, assume present.
 set "DEPFLAGS=%TEMP%\polyglotstt_deps.txt"
 del "%DEPFLAGS%" >nul 2>&1
-"%~dp0venv\Scripts\python.exe" -c "import importlib.util as _u; _m={'moonshine_voice':'base','faster_whisper':'whisper','torch':'canary','nemo':'canary'}; open(r'%TEMP%\polyglotstt_deps.txt','w').write(' '.join(_v for _m2,_v in _m.items() if _u.find_spec(_m2) is None))" >nul 2>&1
-set "NEED_BASE=" & set "NEED_WHISPER=" & set "NEED_CANARY="
+"%~dp0venv\Scripts\python.exe" -c "import importlib.util as _u; _m={'moonshine_voice':'base','faster_whisper':'whisper','torch':'canary','nemo':'canary','transcribe_cpp':'qwen'}; open(r'%TEMP%\polyglotstt_deps.txt','w').write(' '.join(_v for _m2,_v in _m.items() if _u.find_spec(_m2) is None))" >nul 2>&1
+set "NEED_BASE=" & set "NEED_WHISPER=" & set "NEED_CANARY=" & set "NEED_QWEN="
 if exist "%DEPFLAGS%" (
     findstr /c:"base" "%DEPFLAGS%" >nul 2>&1
     if not errorlevel 1 set "NEED_BASE=1"
@@ -57,6 +57,8 @@ if exist "%DEPFLAGS%" (
     if not errorlevel 1 set "NEED_WHISPER=1"
     findstr /c:"canary" "%DEPFLAGS%" >nul 2>&1
     if not errorlevel 1 set "NEED_CANARY=1"
+    findstr /c:"qwen" "%DEPFLAGS%" >nul 2>&1
+    if not errorlevel 1 set "NEED_QWEN=1"
     del "%DEPFLAGS%" >nul 2>&1
 )
 if not defined NEED_BASE goto CHECK_CANARY
@@ -80,14 +82,24 @@ echo Online Canary install failed, trying offline wheels...
 "%~dp0venv\Scripts\python.exe" -m pip install --no-index --find-links="%~dp0wheels" -r requirements-canary.txt
 if errorlevel 1 echo Warning: Canary deps failed. Moonshine still works.
 :CHECK_WHISPER
-if not defined NEED_WHISPER goto GPU_NOTE
-if not exist "requirements-whisper.txt" goto GPU_NOTE
+if not defined NEED_WHISPER goto CHECK_QWEN
+if not exist "requirements-whisper.txt" goto CHECK_QWEN
 echo Installing Whisper dependencies (faster-whisper, CPU)...
 "%~dp0venv\Scripts\python.exe" -m pip install -r requirements-whisper.txt
-if not errorlevel 1 goto GPU_NOTE
+if not errorlevel 1 goto CHECK_QWEN
 echo Online Whisper install failed, trying offline wheels...
 "%~dp0venv\Scripts\python.exe" -m pip install --no-index --find-links="%~dp0wheels" -r requirements-whisper.txt
 if errorlevel 1 echo Warning: Whisper deps failed. Moonshine still works.
+:CHECK_QWEN
+rem Qwen3-ASR: transcribe-cpp + transcribe-cpp-native (ggml CPU/Vulkan backends).
+if not defined NEED_QWEN goto GPU_NOTE
+if not exist "requirements-qwen.txt" goto GPU_NOTE
+echo Installing Qwen3-ASR dependencies (transcribe-cpp, CPU+Vulkan)...
+"%~dp0venv\Scripts\python.exe" -m pip install -r requirements-qwen.txt
+if not errorlevel 1 goto GPU_NOTE
+echo Online Qwen install failed, trying offline wheels...
+"%~dp0venv\Scripts\python.exe" -m pip install --no-index --find-links="%~dp0wheels" -r requirements-qwen.txt
+if errorlevel 1 echo Warning: Qwen3-ASR deps failed. Other engines still work.
 :GPU_NOTE
 rem Warning only here (never a surprise 2.5GB download on launch).
 rem The torch import (~2s) runs once: marker lives inside venv, so a

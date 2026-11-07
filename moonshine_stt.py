@@ -60,7 +60,7 @@ try:
     )
 except Exception:  # pragma: no cover - fallback if core/ is missing
     import json as _json
-    APP_VERSION = "1.4.3"
+    APP_VERSION = "1.4.7"
     CONFIG_PATH = os.path.join(os.path.dirname(__file__), "moonshine_config.json")
     NOTES_AUDIO_DIR = os.path.join(os.path.dirname(__file__), "notes_audio")
     _CONFIG_LOCK = threading.RLock()
@@ -74,6 +74,11 @@ except Exception:  # pragma: no cover - fallback if core/ is missing
         "canary_src_lang": "auto",
         "whisper_task": "transcribe",
         "whisper_src_lang": "auto",
+        "qwen_model": "qwen3-asr-1.7b-q8_0",
+        "qwen_src_lang": "auto",
+        "dict_terms": [],
+        "dict_context": "",
+        "dict_engines": {"Whisper": False, "Qwen3-ASR": False},
         "note_whisper_lang": "auto",
         "note_mic_id": "",
         "note_desktop_audio": False,
@@ -163,7 +168,7 @@ class MoonshineSTTApp:
         if self.config.get("engine") in ("Whisper Turbo v3", "Whisper Large v3"):
             self.config["engine"] = "Whisper"
             needs_save = True
-        if self.config.get("engine") not in ("Moonshine v2", "Canary-1B", "Whisper"):
+        if self.config.get("engine") not in ("Moonshine v2", "Canary-1B", "Whisper", "Qwen3-ASR"):
             self.config["engine"] = "Moonshine v2"
             needs_save = True
         if self.config.get("canary_task") not in ("transcribe", "translate"):
@@ -202,6 +207,37 @@ class MoonshineSTTApp:
             needs_save = True
         if self.config.get("whisper_device") not in ("auto", "cpu", "cuda"):
             self.config["whisper_device"] = "auto"
+            needs_save = True
+        try:
+            from qwen_engine import QWEN_LANGUAGES, QWEN_MODEL_FILES
+            _qlangs = tuple(QWEN_LANGUAGES)
+            _qmodels = tuple(QWEN_MODEL_FILES)
+        except Exception:
+            _qlangs = ("auto", "en", "zh", "ja", "ko", "de", "fr", "es")
+            _qmodels = ("qwen3-asr-1.7b-q8_0",)
+        if self.config.get("qwen_src_lang") not in _qlangs:
+            self.config["qwen_src_lang"] = "auto"
+            needs_save = True
+        if self.config.get("qwen_model") not in _qmodels:
+            self.config["qwen_model"] = "qwen3-asr-1.7b-q8_0"
+            needs_save = True
+        try:
+            import dictionary as _dictmod
+            _clean_terms = _dictmod.norm_terms(self.config.get("dict_terms"))
+            _clean_ctx = _dictmod.norm_context(self.config.get("dict_context"))
+            _clean_eng = _dictmod.enabled_map(self.config.get("dict_engines"))
+        except Exception:
+            _clean_terms = list(self.config.get("dict_terms") or [])
+            _clean_ctx = str(self.config.get("dict_context") or "")
+            _clean_eng = {"Whisper": False, "Qwen3-ASR": False}
+        if self.config.get("dict_terms") != _clean_terms:
+            self.config["dict_terms"] = _clean_terms
+            needs_save = True
+        if self.config.get("dict_context") != _clean_ctx:
+            self.config["dict_context"] = _clean_ctx
+            needs_save = True
+        if self.config.get("dict_engines") != _clean_eng:
+            self.config["dict_engines"] = _clean_eng
             needs_save = True
         if self.config.get("compute") not in ("auto", "cpu", "gpu"):
             self.config["compute"] = "auto"
@@ -312,12 +348,13 @@ class MoonshineSTTApp:
         self.moonshine_engine = TranscriptionEngine(language="en", model_arch=arch, on_ready=self._model_ready)
         self.canary_engine = None
         self.whisper_engine = None
+        self.qwen_engine = None
         self._tab_sel = {}
         self._shared_sel = {"kind": "Moonshine v2", "arch": 5, "wmodel": "large-v3"}
         self._tab_cache = {
-            "srt": {"canary": None, "whisper": None, "wmodel": None},
-            "note": {"canary": None, "whisper": None, "wmodel": None},
-            "import": {"canary": None, "whisper": None, "wmodel": None},
+            "srt": {"canary": None, "whisper": None, "qwen": None, "wmodel": None},
+            "note": {"canary": None, "whisper": None, "qwen": None, "wmodel": None},
+            "import": {"canary": None, "whisper": None, "qwen": None, "wmodel": None},
         }
         self._note_engine_obj = None
         try:
@@ -328,6 +365,8 @@ class MoonshineSTTApp:
             self.engine = self._get_canary_engine()
         elif self.config.get("engine") == "Whisper":
             self.engine = self._get_whisper_engine()
+        elif self.config.get("engine") == "Qwen3-ASR":
+            self.engine = self._get_qwen_engine()
         else:
             self.engine = self.moonshine_engine
         self.recorder = AudioRecorder(sample_rate=SAMPLE_RATE)
@@ -394,6 +433,16 @@ class MoonshineSTTApp:
                     self.gui.set_srt_preview_callback(self._burn_preview)
                     try:
                         self.gui.set_model_manage_callback(self._open_model_manager)
+                    except Exception:
+                        pass
+                    try:
+                        self.gui.set_dictionary_callback(self._open_dictionary)
+                        import dictionary as _dictmod
+                        self.gui.set_dictionary_status(_dictmod.status_text(
+                            self.config.get("dict_terms") or [],
+                            self.config.get("dict_context") or "",
+                            _dictmod.enabled_map(
+                                self.config.get("dict_engines"))))
                     except Exception:
                         pass
                     try:
@@ -628,6 +677,18 @@ class MoonshineSTTApp:
         except Exception:
             return None
 
+    def _tab_qwen(self, tab):
+        """Dedicated tab instance for jobs (see _tab_canary)."""
+        try:
+            if tab == "live":
+                return self._get_qwen_engine(False)
+            sel = self.tab_selection(tab)
+            if sel["kind"] != "Qwen3-ASR":
+                return None
+            return self._tab_heavy(tab, "Qwen3-ASR", sel["wmodel"])
+        except Exception:
+            return None
+
     def _save_srt_opts(self, opts):
         try:
             with _CONFIG_LOCK:
@@ -729,7 +790,50 @@ class MoonshineSTTApp:
                     self.whisper_engine.device = _dev
             except Exception:
                 pass
+        self._apply_dictionary(self.whisper_engine)
         return self.whisper_engine
+    def _get_qwen_engine(self, apply_live_options: bool = True):
+        if self.qwen_engine is None:
+            with self._eng_lock:
+                if self.qwen_engine is None:
+                    try:
+                        from qwen_engine import QwenEngine
+                        self.qwen_engine = QwenEngine(
+                            task="transcribe",
+                            source_lang=self.config.get("qwen_src_lang", "auto"),
+                            target_lang="en",
+                            model_id=self.config.get("qwen_model",
+                                                     "qwen3-asr-1.7b-q8_0"),
+                            device=self.config.get("compute", "auto"),
+                            on_ready=self._model_ready,
+                        )
+                    except Exception as e:
+                        print(f"Qwen3-ASR engine failed to create: {e}")
+                        import traceback; traceback.print_exc()
+                        # Degraded fallback - never silent (see Canary).
+                        try:
+                            self._gui_queue.put(
+                                ("status", ("Qwen3-ASR unavailable - using Moonshine",
+                                            WARNING)))
+                        except Exception:
+                            pass
+                        return self.moonshine_engine
+        if apply_live_options:
+            try:
+                self.qwen_engine.switch_options(
+                    source_lang=self.config.get("qwen_src_lang"),
+                )
+            except Exception:
+                pass
+            try:
+                _dev = self.config.get("compute", "auto")
+                if (_dev in ("auto", "cpu", "cuda", "gpu") and self.qwen_engine is not None
+                        and getattr(self.qwen_engine, "device", "auto") != _dev):
+                    self.qwen_engine.device = _dev
+            except Exception:
+                pass
+        self._apply_dictionary(self.qwen_engine)
+        return self.qwen_engine
     # ---------------- Per-tab engines (Live / SRT / Note / Import) ------
     # Each tab picks its own engine+model. Live keeps the pre-existing
     # singleton behavior untouched; SRT/Note/Import get dedicated heavy
@@ -741,18 +845,30 @@ class MoonshineSTTApp:
     # idle, non-diverged tabs. plan_* is pure logic (unit-testable, no Tk,
     # no loads); apply_* performs side effects (GUI thread only).
     TAB_IDS = ("live", "srt", "note", "import")
-    ENGINE_KINDS = ("Moonshine v2", "Canary-1B", "Whisper")
+    ENGINE_KINDS = ("Moonshine v2", "Canary-1B", "Whisper", "Qwen3-ASR")
     _WHISPER_IDS = ("tiny", "base", "small", "medium", "large",
                     "large-v1", "large-v2", "large-v3", "large-v3-turbo")
+    _QWEN_IDS = ("qwen3-asr-1.7b-q8_0", "qwen3-asr-1.7b-q6_k",
+                 "qwen3-asr-1.7b-q5_k_m", "qwen3-asr-1.7b-q4_k_m")
     _ARCHES = (0, 1, 2, 3, 4, 5)
     # Rough extra-RAM for the dual-engine confirm dialog (MB). Whisper figures
     # mirror whisper_engine's resident estimate so the dialog and the load-time
     # budget guard do not disagree about whether a second model fits.
-    _ENGINE_RAM_MB = {"Moonshine v2": 300, "Canary-1B": 5500}
+    _ENGINE_RAM_MB = {"Moonshine v2": 300, "Canary-1B": 5500,
+                      "Qwen3-ASR": 2800}
     _WHISPER_RAM_MB = {"tiny": 900, "base": 950, "small": 1250,
                        "medium": 1900, "large": 3400, "large-v1": 3400,
                        "large-v2": 3400, "large-v3": 3400,
                        "large-v3-turbo": 2000}
+
+    @staticmethod
+    def _engine_slot(kind):
+        """Cache slot name for an engine kind (None for shared Moonshine)."""
+        return {
+            "Canary-1B": "canary",
+            "Whisper": "whisper",
+            "Qwen3-ASR": "qwen",
+        }.get(str(kind or ""))
 
     @staticmethod
     def _norm_tab_sel(kind, arch, wmodel):
@@ -772,7 +888,10 @@ class MoonshineSTTApp:
             w = str(wmodel if wmodel is not None else "large-v3")
         except Exception:
             w = "large-v3"
-        if w not in MoonshineSTTApp._WHISPER_IDS:
+        if k == "Qwen3-ASR":
+            if w not in MoonshineSTTApp._QWEN_IDS:
+                w = "qwen3-asr-1.7b-q8_0"
+        elif w not in MoonshineSTTApp._WHISPER_IDS:
             w = "large-v3"
         return {"kind": k, "arch": a, "wmodel": w}
 
@@ -790,6 +909,14 @@ class MoonshineSTTApp:
                 except Exception:
                     return int(MoonshineSTTApp._WHISPER_RAM_MB.get(
                         wmodel or "large-v3", 3400))
+            if kind == "Qwen3-ASR":
+                try:
+                    import qwen_engine
+
+                    return int(qwen_engine._resident_model_mb(
+                        wmodel or "qwen3-asr-1.7b-q8_0"))
+                except Exception:
+                    return 2800
             return int(MoonshineSTTApp._ENGINE_RAM_MB.get(kind, 300))
         except Exception:
             return 3400
@@ -927,10 +1054,40 @@ class MoonshineSTTApp:
             mid = "large-v3"
         if (mid == "large-v3-turbo"
                 and self.config.get("whisper_task") == "translate"):
+            # Turbo was trained without translation data. Selecting it is an
+            # explicit request for transcription, so switch the shared task
+            # instead of silently reverting the model. This is the path used
+            # by the per-tab model menus (Live asks first in
+            # _on_whisper_model_changed; Note/SRT/Import land here).
             self._log(
-                "Whisper turbo cannot translate; keeping large-v3 for this task"
+                "Whisper turbo is transcription-only; "
+                "switching task to transcribe"
             )
-            mid = "large-v3"
+            try:
+                with _CONFIG_LOCK:
+                    self.config["whisper_task"] = "transcribe"
+                    save_local_config(self.config)
+            except Exception:
+                pass
+            try:
+                if getattr(self, "gui", None) is not None:
+                    self.gui.canary_task_var.set("transcribe")
+            except Exception:
+                pass
+            try:
+                _we = getattr(self, "whisper_engine", None)
+                if _we is not None:
+                    _we.switch_options(task="transcribe")
+            except Exception:
+                pass
+            try:
+                if getattr(self, "gui", None) is not None:
+                    self.gui.set_status(
+                        "Whisper Turbo selected - Task switched to Transcribe.",
+                        WARNING,
+                    )
+            except Exception:
+                pass
         try:
             with _CONFIG_LOCK:
                 self.config["whisper_model"] = mid
@@ -993,6 +1150,8 @@ class MoonshineSTTApp:
                 return f"Moonshine {name}"
             if k == "Whisper":
                 return f"Whisper {sel['wmodel']}"
+            if k == "Qwen3-ASR":
+                return f"Qwen3-ASR {sel['wmodel']}"
             return "Canary-1B"
         except Exception:
             return "?"
@@ -1136,7 +1295,8 @@ class MoonshineSTTApp:
                     return {"action": "revert", "reason": "bad model"}
             if wmid is not None:
                 want_wmid = str(wmid)
-                if want_wmid not in self._WHISPER_IDS:
+                if want_wmid not in self._WHISPER_IDS \
+                        and want_wmid not in self._QWEN_IDS:
                     return {"action": "revert", "reason": "bad model"}
             if want_kind == cur["kind"] and want_arch == cur["arch"] \
                     and want_wmid == cur["wmodel"]:
@@ -1178,6 +1338,8 @@ class MoonshineSTTApp:
                     what = f"Moonshine (shared live engine, ~{ram} MB)"
                 elif want_kind == "Canary-1B":
                     what = f"Canary-1B (~{ram / 1000:.1f} GB extra RAM)"
+                elif want_kind == "Qwen3-ASR":
+                    what = f"Qwen3-ASR {want_wmid} (~{ram / 1000:.1f} GB extra RAM)"
                 else:
                     what = f"Whisper {want_wmid} (~{ram / 1000:.1f} GB extra RAM)"
                 return {"action": "confirm", "kind": want_kind,
@@ -1198,7 +1360,7 @@ class MoonshineSTTApp:
         try:
             cache = (self._tab_cache or {}).get(tab) or {}
             return any(bool(getattr(cache.get(s), "_loading", False))
-                       for s in ("canary", "whisper"))
+                       for s in ("canary", "whisper", "qwen"))
         except Exception:
             return False
 
@@ -1212,7 +1374,7 @@ class MoonshineSTTApp:
             cache = (self._tab_cache or {}).get(tab)
             if not isinstance(cache, dict):
                 return 0
-            for slot in ("canary", "whisper"):
+            for slot in ("canary", "whisper", "qwen"):
                 try:
                     eng = cache.get(slot)
                     if eng is not None and id(eng) in skip_ids:
@@ -1231,7 +1393,7 @@ class MoonshineSTTApp:
                     pass
             try:
                 if not any(cache.get(s) is not None
-                           for s in ("canary", "whisper")):
+                           for s in ("canary", "whisper", "qwen")):
                     cache["wmodel"] = None
             except Exception:
                 pass
@@ -1270,12 +1432,14 @@ class MoonshineSTTApp:
                         candidates = (
                             ("whisper", getattr(self, "whisper_engine", None)),
                             ("canary", getattr(self, "canary_engine", None)),
+                            ("qwen", getattr(self, "qwen_engine", None)),
                         )
                     else:
                         cache = (self._tab_cache or {}).get(tab) or {}
                         candidates = (
                             ("whisper", cache.get("whisper")),
                             ("canary", cache.get("canary")),
+                            ("qwen", cache.get("qwen")),
                         )
                     for slot, eng in candidates:
                         try:
@@ -1289,6 +1453,12 @@ class MoonshineSTTApp:
                                 ram = self._engine_ram_mb("Whisper", None, mid)
                                 desc = (f"Live Whisper {mid}" if tab == "live"
                                         else f"{tab} Whisper {mid}")
+                            elif slot == "qwen":
+                                mid = str(getattr(eng, "model_id", "")
+                                          or "qwen3-asr-1.7b-q8_0")
+                                ram = self._engine_ram_mb("Qwen3-ASR", None, mid)
+                                desc = (f"Live Qwen3-ASR {mid}" if tab == "live"
+                                        else f"{tab} Qwen3-ASR {mid}")
                             else:
                                 ram = self._engine_ram_mb("Canary-1B")
                                 desc = (f"Live Canary-1B" if tab == "live"
@@ -1321,6 +1491,7 @@ class MoonshineSTTApp:
                 targets = (
                     ("whisper_engine", "Whisper"),
                     ("canary_engine", "Canary-1B"),
+                    ("qwen_engine", "Qwen3-ASR"),
                 )
                 for attr, kind in targets:
                     try:
@@ -1344,7 +1515,7 @@ class MoonshineSTTApp:
             else:
                 try:
                     cache = (self._tab_cache or {}).get(tab) or {}
-                    for slot in ("whisper", "canary"):
+                    for slot in ("whisper", "canary", "qwen"):
                         try:
                             eng = cache.get(slot)
                             if id(eng) in skip_ids:
@@ -1356,6 +1527,12 @@ class MoonshineSTTApp:
                                           or cache.get("wmodel")
                                           or "large-v3")
                                 freed += self._engine_ram_mb("Whisper", None,
+                                                             mid)
+                            elif slot == "qwen":
+                                mid = str(getattr(eng, "model_id", "")
+                                          or cache.get("wmodel")
+                                          or "qwen3-asr-1.7b-q8_0")
+                                freed += self._engine_ram_mb("Qwen3-ASR", None,
                                                              mid)
                             else:
                                 freed += self._engine_ram_mb("Canary-1B")
@@ -1474,6 +1651,17 @@ class MoonshineSTTApp:
                     device=self.config.get("compute", "auto"),
                     on_ready=None,
                 )
+            if kind == "Qwen3-ASR":
+                from qwen_engine import QwenEngine
+                return QwenEngine(
+                    task="transcribe",
+                    source_lang=self.config.get("qwen_src_lang", "auto"),
+                    target_lang="en",
+                    model_id=wmid or self.config.get("qwen_model",
+                                                     "qwen3-asr-1.7b-q8_0"),
+                    device=self.config.get("compute", "auto"),
+                    on_ready=None,
+                )
         except Exception as e:
             print(f"tab engine build failed: {e}")
         return None
@@ -1519,6 +1707,8 @@ class MoonshineSTTApp:
                 slot = "canary"
             elif kind == "Whisper":
                 slot = "whisper"
+            elif kind == "Qwen3-ASR":
+                slot = "qwen"
             else:
                 return None
             cache = (self._tab_cache or {}).get(tab)
@@ -1535,11 +1725,24 @@ class MoonshineSTTApp:
                     return None
             else:
                 if eng is None:
-                    eng = self._make_engine(kind)
+                    eng = self._make_engine(kind, wmid=wmid)
                     try:
                         cache[slot] = eng
+                        if slot == "qwen":
+                            cache["wmodel"] = wmid
                     except Exception:
                         pass
+                elif slot == "qwen":
+                    # Qwen holds one model at a time: retarget in place.
+                    try:
+                        want = str(wmid or self.config.get(
+                            "qwen_model", "qwen3-asr-1.7b-q8_0"))
+                        if str(getattr(eng, "model_id", "") or "") != want:
+                            eng.switch_model(want)
+                            cache["wmodel"] = want
+                    except Exception:
+                        pass
+            self._apply_dictionary(eng)
             return eng
         except Exception:
             return None
@@ -1660,13 +1863,14 @@ class MoonshineSTTApp:
                 pass
             # Preload for interactive tabs (SRT loads inside its job w/ progress).
             try:
-                if tab in ("live", "note") and kind in ("Canary-1B", "Whisper"):
+                if tab in ("live", "note") and kind in ("Canary-1B", "Whisper",
+                                                        "Qwen3-ASR"):
                     if tab == "live":
                         pass  # existing live flow below loads it
                     else:
                         eng = self._tab_heavy(tab, kind, wmid)
                         try:
-                            if eng is not None and kind == "Whisper":
+                            if eng is not None and kind in ("Whisper", "Qwen3-ASR"):
                                 if not self._whisper_cache_ok(eng, wmid):
                                     eng.switch_model(wmid)
                                 elif not eng.is_ready:
@@ -1700,9 +1904,13 @@ class MoonshineSTTApp:
             kind = sel["kind"]
             if kind == "Moonshine v2":
                 return False, 0, "Moonshine (shared)"
-            slot = "canary" if kind == "Canary-1B" else "whisper"
-            label = ("Canary-1B" if slot == "canary"
-                     else f"Whisper {sel['wmodel']}")
+            slot = self._engine_slot(kind)
+            if slot == "canary":
+                label = "Canary-1B"
+            elif slot == "qwen":
+                label = f"Qwen3-ASR {sel['wmodel']}"
+            else:
+                label = f"Whisper {sel['wmodel']}"
             if slot == "whisper":
                 # Single shared instance for every tab; the wanted model is
                 # the universal one.
@@ -1720,7 +1928,7 @@ class MoonshineSTTApp:
                 eng = cache.get(slot)
                 cached_model = cache.get("wmodel")
             matches = eng is not None
-            if matches and slot == "whisper":
+            if matches and slot in ("whisper", "qwen"):
                 model_id = getattr(eng, "model_id", None) or cached_model
                 matches = str(model_id or "") == str(sel["wmodel"])
             if matches:
@@ -1761,8 +1969,12 @@ class MoonshineSTTApp:
             if not others:
                 return {"go": True}
             sel = self.tab_selection("srt")
-            what = "Canary-1B" if sel["kind"] == "Canary-1B" \
-                else f"Whisper {sel['wmodel']}"
+            if sel["kind"] == "Canary-1B":
+                what = "Canary-1B"
+            elif sel["kind"] == "Qwen3-ASR":
+                what = f"Qwen3-ASR {sel['wmodel']}"
+            else:
+                what = f"Whisper {sel['wmodel']}"
             return {"confirm": f"{'; '.join(others)} still active.\n"
                                f"Start the SRT job with {what} too?\n"
                                f"Yes = run both engines (~{ram / 1000:.1f} GB "
@@ -1800,7 +2012,7 @@ class MoonshineSTTApp:
                     pass
                 return {"wait": "Note engine (Moonshine) still loading — "
                                 "recording starts automatically."}
-            slot = "canary" if kind == "Canary-1B" else "whisper"
+            slot = self._engine_slot(kind)
             # Whisper is one universal shared instance and is never stored
             # in the per-tab cache (see _tab_heavy), so a cache-only lookup
             # would report "not loaded" forever after the load finished.
@@ -1811,7 +2023,7 @@ class MoonshineSTTApp:
             ok = False
             try:
                 if eng is not None and eng.is_ready:
-                    if slot == "whisper":
+                    if slot in ("whisper", "qwen"):
                         ok = self._whisper_cache_ok(eng, sel["wmodel"])
                     else:
                         ok = True
@@ -1833,8 +2045,12 @@ class MoonshineSTTApp:
             hard = list(prep.get("kept") or [])
             freed = int(prep.get("freed") or 0)
             if hard:
-                what = "Canary-1B" if kind == "Canary-1B" \
-                    else f"Whisper {sel['wmodel']}"
+                if kind == "Canary-1B":
+                    what = "Canary-1B"
+                elif kind == "Qwen3-ASR":
+                    what = f"Qwen3-ASR {sel['wmodel']}"
+                else:
+                    what = f"Whisper {sel['wmodel']}"
                 try:
                     self._note_swap_tabs = [t for t, _d in hard]
                 except Exception:
@@ -1880,7 +2096,7 @@ class MoonshineSTTApp:
             eng = self._tab_heavy("note", kind, wmid)
             if eng is None:
                 return
-            if kind == "Whisper":
+            if kind in ("Whisper", "Qwen3-ASR"):
                 if self._whisper_cache_ok(eng, wmid):
                     if (not bool(getattr(eng, "is_ready", False))
                             and not bool(getattr(eng, "_loading", False))):
@@ -1925,7 +2141,7 @@ class MoonshineSTTApp:
                 except Exception:
                     pass
                 return False, ""
-            slot = "canary" if kind == "Canary-1B" else "whisper"
+            slot = self._engine_slot(kind)
             # Resolve through _tab_heavy: Whisper lives in the shared
             # instance (never in this tab's cache), Canary is created for
             # the tab. A raw cache lookup made every poll return "still
@@ -1936,7 +2152,7 @@ class MoonshineSTTApp:
                 eng = None
             if eng is None:
                 return False, "Note engine could not be created."
-            if slot == "whisper":
+            if slot in ("whisper", "qwen"):
                 try:
                     if not self._whisper_cache_ok(eng, sel["wmodel"]):
                         err = getattr(eng, "_last_error", None)
@@ -2033,7 +2249,7 @@ class MoonshineSTTApp:
             try:
                 cache = (self._tab_cache or {}).get(tab) or {}
                 if any(bool(getattr(cache.get(slot), "_loading", False))
-                       for slot in ("canary", "whisper")):
+                       for slot in ("canary", "whisper", "qwen")):
                     return
             except Exception:
                 pass
@@ -2236,6 +2452,12 @@ class MoonshineSTTApp:
             except Exception:
                 pass
             target = self.canary_engine
+        elif active == "Qwen3-ASR" and self.qwen_engine is not None:
+            try:
+                self.qwen_engine.device = code
+            except Exception:
+                pass
+            target = self.qwen_engine
         else:
             if self.gui:
                 self.gui.set_status(f"Compute: {display} (Moonshine is CPU-only)", SUCCESS)
@@ -2406,6 +2628,115 @@ class MoonshineSTTApp:
                 self._model_manager_delete_all)
         except Exception as e:
             print(f"model manager failed: {e}")
+
+    # ------------------------- Dictionary (Whisper / Qwen3-ASR) ----------
+    def _open_dictionary(self):
+        """Open the dictionary editor (Live tab button)."""
+        if not self.gui:
+            return
+        try:
+            self.gui.show_dictionary_manager(self._dictionary_data,
+                                             self._dictionary_save)
+        except Exception as e:
+            print(f"dictionary dialog failed: {e}")
+
+    def _dictionary_data(self):
+        try:
+            import dictionary as _dict
+        except Exception:
+            return {"terms": [], "context": "", "engines": {},
+                    "available": {}}
+        return {
+            "terms": _dict.norm_terms(self.config.get("dict_terms")),
+            "context": _dict.norm_context(self.config.get("dict_context")),
+            "engines": _dict.enabled_map(self.config.get("dict_engines")),
+            "available": _dict.available_map(),
+        }
+
+    def _dictionary_save(self, payload):
+        """Persist the dialog payload and push it to every live engine."""
+        try:
+            import dictionary as _dict
+        except Exception as e:
+            return False, f"dictionary.py missing: {e}"
+        payload = payload or {}
+        terms = _dict.norm_terms(payload.get("terms"))
+        context = _dict.norm_context(payload.get("context"))
+        engines = _dict.enabled_map(payload.get("engines"))
+        self.config["dict_terms"] = terms
+        self.config["dict_context"] = context
+        self.config["dict_engines"] = engines
+        try:
+            save_local_config(self.config)
+        except Exception as e:
+            return False, f"Could not save config: {e}"
+        self._push_dictionary()
+        try:
+            if self.gui:
+                self.gui.set_dictionary_status(
+                    _dict.status_text(terms, context, engines))
+        except Exception:
+            pass
+        try:
+            self._log(_dict.status_text(terms, context, engines))
+        except Exception:
+            pass
+        active = [e for e, on in engines.items() if on]
+        if not active:
+            return True, "Dictionary saved (not enabled for any engine)."
+        return True, ("Dictionary saved for " + ", ".join(active) +
+                      f" — {len(terms)} term(s).")
+
+    def _apply_dictionary(self, engine):
+        """Attach the saved dictionary to one engine instance (if it has one)."""
+        try:
+            setter = getattr(engine, "set_dictionary", None)
+            if not callable(setter):
+                return
+            import dictionary as _dict
+            kind = None
+            if engine is getattr(self, "whisper_engine", None) or \
+                    type(engine).__name__ == "WhisperEngine":
+                kind = "Whisper"
+            elif engine is getattr(self, "qwen_engine", None) or \
+                    type(engine).__name__ == "QwenEngine":
+                kind = "Qwen3-ASR"
+            if kind is None:
+                return
+            enabled = bool(_dict.enabled_map(
+                self.config.get("dict_engines")).get(kind))
+            setter(self.config.get("dict_terms") or [],
+                   self.config.get("dict_context") or "",
+                   enabled)
+        except Exception:
+            pass
+
+    def _push_dictionary(self):
+        """Re-apply the saved dictionary to every engine that is alive."""
+        seen = set()
+        for attr in ("moonshine_engine", "whisper_engine", "canary_engine",
+                     "qwen_engine", "_note_engine_obj"):
+            try:
+                eng = getattr(self, attr, None)
+            except Exception:
+                continue
+            if eng is None or id(eng) in seen:
+                continue
+            seen.add(id(eng))
+            self._apply_dictionary(eng)
+        for tab, cache in (self._tab_cache or {}).items():
+            if not isinstance(cache, dict):
+                continue
+            for slot in ("whisper", "qwen"):
+                try:
+                    eng = cache.get(slot)
+                except Exception:
+                    continue
+                if eng is None or id(eng) in seen:
+                    continue
+                seen.add(id(eng))
+                self._apply_dictionary(eng)
+
     def _model_manager_data(self):
         from gui import MODEL_CHOICES, WHISPER_MODEL_CHOICES
         items = []
@@ -2467,6 +2798,24 @@ class MoonshineSTTApp:
                       "id": "canary-1b", "label": "Canary-1B (3.9GB)",
                       "size": csize if cdl else None, "downloaded": cdl,
                       "in_use": active == "Canary-1B"})
+        try:
+            from qwen_engine import (qwen_cache_info, qwen_downloaded_map,
+                                     QWEN_MODEL_CHOICES_REV)
+            qinfo = qwen_cache_info()
+            qdl = qwen_downloaded_map()
+            for qid, qsize in qinfo.items():
+                downloaded = bool(qdl.get(qid))
+                if downloaded:
+                    total += int(qsize)
+                items.append({
+                    "engine": "Qwen3-ASR", "kind": "qwen", "id": qid,
+                    "label": QWEN_MODEL_CHOICES_REV.get(qid, qid),
+                    "size": int(qsize) if downloaded else None,
+                    "downloaded": downloaded,
+                    "in_use": active == "Qwen3-ASR" and wmid == qid,
+                })
+        except Exception:
+            pass
         try:
             for it in items:
                 if not it.get("in_use") and self._model_in_use(
@@ -2532,6 +2881,24 @@ class MoonshineSTTApp:
                     except Exception:
                         pass
                 return False
+            if kind == "qwen":
+                try:
+                    if (self.config.get("engine") == "Qwen3-ASR"
+                            and str(self.config.get("qwen_model",
+                                                    "qwen3-asr-1.7b-q8_0"))
+                            == str(ident)):
+                        return True
+                except Exception:
+                    pass
+                for t in ("srt", "note", "import"):
+                    try:
+                        sel = self.tab_selection(t)
+                        if sel.get("kind") == "Qwen3-ASR" \
+                                and str(sel.get("wmodel", "")) == str(ident):
+                            return True
+                    except Exception:
+                        pass
+                return False
         except Exception:
             pass
         return False
@@ -2568,6 +2935,12 @@ class MoonshineSTTApp:
                     return False, "Switch to another engine first."
                 from canary_engine import delete_canary_model
                 freed = delete_canary_model()
+            elif kind == "qwen":
+                if (self.config.get("engine") == "Qwen3-ASR"
+                        and self.config.get("qwen_model") == ident):
+                    return False, "Switch to another model first."
+                from qwen_engine import delete_qwen_model
+                freed = delete_qwen_model(ident)
             else:
                 return False, "Unknown model kind."
             if refresh:
@@ -2681,24 +3054,42 @@ class MoonshineSTTApp:
         new_id = WHISPER_MODEL_CHOICES.get(display_label)
         if not new_id:
             return
+        switch_to_transcribe = False
         if (new_id == "large-v3-turbo"
                 and self.config.get("whisper_task") == "translate"):
-            self._log(
-                "Whisper turbo is transcription-only; "
-                "switch Task to Transcribe before selecting it"
-            )
-            try:
-                self.gui.set_status(
-                    "Turbo cannot translate. Switch Task to Transcribe first.",
-                    WARNING,
+            switch_task = False
+            if self.gui is not None:
+                try:
+                    from tkinter import messagebox
+                    switch_task = bool(messagebox.askyesno(
+                        "Use Whisper Turbo?",
+                        "Whisper large-v3-turbo can only transcribe.\n\n"
+                        "Switch Task to Transcribe and use Turbo for all tabs?\n\n"
+                        "Live, SRT, Note, and Import will all switch to "
+                        "transcription. To translate again, select large-v3 "
+                        "and set Task to Translate.",
+                        parent=self.gui,
+                    ))
+                except Exception:
+                    switch_task = False
+            if not switch_task:
+                self._log(
+                    "Whisper turbo is transcription-only; "
+                    "switch Task to Transcribe before selecting it"
                 )
-            except Exception:
-                pass
-            try:
-                self._refresh_model_row()
-            except Exception:
-                pass
-            return
+                try:
+                    self.gui.set_status(
+                        "Turbo cannot translate. Switch Task to Transcribe first.",
+                        WARNING,
+                    )
+                except Exception:
+                    pass
+                try:
+                    self._refresh_model_row()
+                except Exception:
+                    pass
+                return
+            switch_to_transcribe = True
         old_id = self.config.get("whisper_model", "large-v3")
         if new_id == old_id:
             return
@@ -2714,6 +3105,13 @@ class MoonshineSTTApp:
                 return
         except Exception:
             pass
+        if switch_to_transcribe:
+            if self.gui is not None:
+                try:
+                    self.gui.canary_task_var.set("transcribe")
+                except Exception:
+                    pass
+            self._on_canary_task_changed("transcribe")
         self.config["whisper_model"] = new_id
         save_local_config(self.config)
         try:
@@ -2939,6 +3337,28 @@ class MoonshineSTTApp:
                         self.gui.after(0, lambda: self.gui.record_btn.configure(state="normal"))
                     except Exception:
                         pass
+        elif display_label == "Qwen3-ASR":
+            new_engine = self._get_qwen_engine()
+            self.engine = new_engine
+            if self.gui:
+                self.gui.set_status("Loading Qwen3-ASR...", WARNING)
+                try:
+                    self.gui.record_btn.configure(state="disabled")
+                except Exception:
+                    pass
+            try:
+                self._prepare_heavy_load(except_tabs=("live",))
+            except Exception:
+                pass
+            if not new_engine.is_ready:
+                new_engine.load()
+            else:
+                if self.gui:
+                    try:
+                        self.gui.after(0, lambda e=new_engine: self.gui.set_status(f"Ready \u2022 Qwen3-ASR ({e.model_id})", SUCCESS))
+                        self.gui.after(0, lambda: self.gui.record_btn.configure(state="normal"))
+                    except Exception:
+                        pass
         else:
             self.engine = self.moonshine_engine
             if self.gui:
@@ -2953,7 +3373,7 @@ class MoonshineSTTApp:
             # generation so a stuck download stops owning Live.
             _new_live_obj = self.engine
             if _old_live_obj is not None and _old_live_obj is not _new_live_obj \
-                    and _old_kind in ("Canary-1B", "Whisper"):
+                    and _old_kind in ("Canary-1B", "Whisper", "Qwen3-ASR"):
                 try:
                     if bool(getattr(_old_live_obj, "_loading", False)):
                         try:
@@ -2991,7 +3411,8 @@ class MoonshineSTTApp:
             except Exception:
                 pass
             active = self.config.get("engine", "Moonshine v2")
-            for name in ("canary_engine", "whisper_engine", "moonshine_engine"):
+            for name in ("canary_engine", "whisper_engine", "qwen_engine",
+                         "moonshine_engine"):
                 try:
                     eng = getattr(self, name, None)
                     if eng is None or eng is self.engine:
@@ -2999,6 +3420,8 @@ class MoonshineSTTApp:
                     if active == "Canary-1B" and name == "canary_engine":
                         continue
                     if active == "Whisper" and name == "whisper_engine":
+                        continue
+                    if active == "Qwen3-ASR" and name == "qwen_engine":
                         continue
                     if active == "Moonshine v2" and name == "moonshine_engine":
                         continue
@@ -3054,6 +3477,29 @@ class MoonshineSTTApp:
         # Live Src menu shows full names ("Japanese"); engines need codes.
         from gui import SRT_LANG_CODE_FROM_DISPLAY, SRT_LANGS
         code = SRT_LANG_CODE_FROM_DISPLAY.get(value, value)
+        if self.config.get("engine") == "Qwen3-ASR":
+            try:
+                from ui.choices import QWEN_LANG_NAMES
+                code = {v: k for k, v in QWEN_LANG_NAMES.items()}.get(
+                    value, code)
+            except Exception:
+                pass
+            try:
+                from qwen_engine import QWEN_LANGUAGES
+                _ql = tuple(QWEN_LANGUAGES)
+            except Exception:
+                _ql = ("auto",)
+            if code not in _ql:
+                code = "auto"
+            self.config["qwen_src_lang"] = code
+            save_local_config(self.config)
+            if self.qwen_engine:
+                try:
+                    self.qwen_engine.switch_options(source_lang=code)
+                except Exception:
+                    pass
+            self._log(f"Qwen3-ASR src -> {code}")
+            return
         if self.config.get("engine") == "Whisper":
             if code not in SRT_LANGS:
                 code = "auto"
@@ -3614,6 +4060,7 @@ class MoonshineSTTApp:
                 "canary_src": self.config.get("canary_src_lang", "auto"),
                 "whisper_task": self.config.get("whisper_task", "translate"),
                 "whisper_src": self.config.get("whisper_src_lang", "auto"),
+                "qwen_src": self.config.get("qwen_src_lang", "auto"),
                 "srt_input_lang": self.config.get("srt_input_lang", "auto"),
                 "srt_output_lang": self.config.get("srt_output_lang", "en"),
                 "cpu_workers": int(cpu_workers),
@@ -3628,7 +4075,7 @@ class MoonshineSTTApp:
                 "burn_vbr_kbps": _bkbps,
                 "burn_codec": _bcode,
             }
-            if job["engine_kind"] not in ("Moonshine v2", "Canary-1B", "Whisper"):
+            if job["engine_kind"] not in ("Moonshine v2", "Canary-1B", "Whisper", "Qwen3-ASR"):
                 job["engine_kind"] = "Moonshine v2"
             try:
                 if _st["kind"] == "Whisper":
@@ -3692,6 +4139,8 @@ class MoonshineSTTApp:
                         out_path=str(_out) if _out is not None else None,
                         normalize_audio=job.get("normalize_audio", False),
                         live_cb=lambda m: self._gui_queue.put(("srt_live", m)),
+                        get_qwen_engine=lambda: self._tab_qwen("srt"),
+                        qwen_src=job.get("qwen_src", "auto"),
                     )
                 def _file_cb(kind, path, info):
                     try:
@@ -4229,12 +4678,13 @@ class MoonshineSTTApp:
                     "canary_src": self.config.get("canary_src_lang", "auto"),
                     "whisper_task": self.config.get("whisper_task", "translate"),
                     "whisper_src": self.config.get("whisper_src_lang", "auto"),
+                    "qwen_src": self.config.get("qwen_src_lang", "auto"),
                     "srt_input_lang": self.config.get("srt_input_lang", "auto"),
                     "srt_output_lang": self.config.get("srt_output_lang", "en"),
                     "cpu_workers": int(self.config.get("srt_cpu", 0) or 0),
                     "normalize_audio": bool(self.config.get("srt_norm", False)),
                 }
-                if snap["engine_kind"] not in ("Moonshine v2", "Canary-1B", "Whisper"):
+                if snap["engine_kind"] not in ("Moonshine v2", "Canary-1B", "Whisper", "Qwen3-ASR"):
                     snap["engine_kind"] = "Moonshine v2"
                 ffmpeg = srtmod.get_ffmpeg_exe()
                 if not ffmpeg:
@@ -4287,6 +4737,8 @@ class MoonshineSTTApp:
                         srt_input_lang=snap["srt_input_lang"],
                         srt_output_lang=snap["srt_output_lang"],
                         normalize_audio=snap["normalize_audio"],
+                        get_qwen_engine=lambda: self._tab_qwen("srt"),
+                        qwen_src=snap.get("qwen_src", "auto"),
                     )
                     shifted = tmpd / "sample_shifted.srt"
                     srtmod.offset_srt_file(sample_srt, sample_origin, shifted)
@@ -4395,6 +4847,16 @@ class MoonshineSTTApp:
                               or "auto")
                 except Exception:
                     _ns = "auto"
+            # Qwen3-ASR is transcription-only with its own language list:
+            # reuse the Note language picker and never pass a translate task.
+            try:
+                if (type(engine).__name__ == "QwenEngine"
+                        or self.tab_selection("note").get("kind") == "Qwen3-ASR"):
+                    _nt = "transcribe"
+                    _ns = str(self.config.get("note_whisper_lang", "auto")
+                              or "auto")
+            except Exception:
+                pass
             try:
                 return engine.transcribe(audio, sample_rate,
                                          task=_nt, source_lang=_ns)
@@ -4440,18 +4902,19 @@ class MoonshineSTTApp:
                         return {"go": True}
                 else:
                     cache = (self._tab_cache or {}).get("import") or {}
-                    slot = "canary" if kind == "Canary-1B" else "whisper"
+                    slot = self._engine_slot(kind)
                     # Whisper is the universal shared instance (never in the
                     # tab cache): resolving it from the cache would keep
                     # saying "not ready" after a finished load.
-                    if slot == "whisper":
-                        eng = self._get_whisper_engine(False)
+                    if slot in ("whisper", "qwen"):
+                        eng = (self._get_whisper_engine(False)
+                               if slot == "whisper" else cache.get("qwen"))
                     else:
                         eng = cache.get(slot)
                     ok = False
                     try:
                         if eng is not None and eng.is_ready:
-                            if slot == "whisper":
+                            if slot in ("whisper", "qwen"):
                                 ok = self._whisper_cache_ok(eng, sel["wmodel"])
                             else:
                                 ok = True
@@ -4477,8 +4940,10 @@ class MoonshineSTTApp:
                 except Exception:
                     ram = 3000
                 what = ("Canary-1B" if kind == "Canary-1B"
-                        else (f"Whisper {sel['wmodel']}" if kind == "Whisper"
-                              else "Moonshine (shared)"))
+                        else (f"Qwen3-ASR {sel['wmodel']}"
+                              if kind == "Qwen3-ASR"
+                              else (f"Whisper {sel['wmodel']}" if kind == "Whisper"
+                                    else "Moonshine (shared)")))
                 return {"confirm": f"{'; '.join(others)} still active.\n"
                                     f"Transcribe this file with {what} too?\n"
                                     f"Yes = run both engines (~{ram / 1000:.1f} GB "

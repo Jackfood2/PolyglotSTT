@@ -59,13 +59,21 @@ echo Online Canary install failed, trying offline wheels...
 "%~dp0venv\Scripts\python.exe" -m pip install --no-index --find-links="%~dp0wheels" -r requirements-canary.txt
 if errorlevel 1 echo Warning: Canary deps failed. Moonshine still works.
 :INSTALL_WHISPER
-if not exist "requirements-whisper.txt" goto CACHE_WHEELS
+if not exist "requirements-whisper.txt" goto INSTALL_QWEN
 echo Installing Whisper dependencies (faster-whisper, CPU)...
 "%~dp0venv\Scripts\python.exe" -m pip install -r requirements-whisper.txt
-if not errorlevel 1 goto CACHE_WHEELS
+if not errorlevel 1 goto INSTALL_QWEN
 echo Online Whisper install failed, trying offline wheels...
 "%~dp0venv\Scripts\python.exe" -m pip install --no-index --find-links="%~dp0wheels" -r requirements-whisper.txt
 if errorlevel 1 echo Warning: Whisper deps failed. Moonshine still works.
+:INSTALL_QWEN
+if not exist "requirements-qwen.txt" goto GPU_TORCH
+echo Installing Qwen3-ASR dependencies (transcribe.cpp, CPU+Vulkan)...
+"%~dp0venv\Scripts\python.exe" -m pip install -r requirements-qwen.txt
+if not errorlevel 1 goto GPU_TORCH
+echo Online Qwen3-ASR install failed, trying offline wheels...
+"%~dp0venv\Scripts\python.exe" -m pip install --no-index --find-links="%~dp0wheels" -r requirements-qwen.txt
+if errorlevel 1 echo Warning: Qwen3-ASR deps failed. Other engines still work.
 goto GPU_TORCH
 :GPU_TORCH
 rem NVIDIA dGPU present but torch blind to it -> install the CUDA build once.
@@ -89,6 +97,7 @@ if not exist "wheels" mkdir "wheels"
 "%~dp0venv\Scripts\python.exe" -m pip download -r requirements.txt -d wheels --quiet
 if exist "requirements-canary.txt" "%~dp0venv\Scripts\python.exe" -m pip download -r requirements-canary.txt -d wheels --extra-index-url https://download.pytorch.org/whl/cpu --quiet
 if exist "requirements-whisper.txt" "%~dp0venv\Scripts\python.exe" -m pip download -r requirements-whisper.txt -d wheels --quiet
+if exist "requirements-qwen.txt" "%~dp0venv\Scripts\python.exe" -m pip download -r requirements-qwen.txt -d wheels --quiet
 echo Wheels cached.
 if not exist "models_cache" mkdir "models_cache"
 echo Checking portable model cache...

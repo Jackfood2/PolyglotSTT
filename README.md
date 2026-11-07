@@ -1,13 +1,13 @@
 # PolyglotSTT
 
 Offline, on-device speech-to-text for Windows: hold-to-talk live dictation
-plus video/audio-to-SRT subtitle generation. Three engines, multilingual
-transcribe **and translate** (e.g. Japanese audio → English subtitles).
+plus video/audio-to-SRT subtitle generation. Four engines, multilingual
+transcription — and **translation to English** on Whisper and Canary-1B.
 No API keys, no cloud, no admin rights needed once set up.
 
 > Windows 10/11 only. The app window is titled "MoonshineSTT" (original
 > project name); the repository is named PolyglotSTT because it now covers
-> Moonshine v2, NVIDIA Canary-1B, and Whisper.
+> Moonshine v2, NVIDIA Canary-1B, Whisper, and Qwen3-ASR.
 
 ## Engines
 
@@ -16,6 +16,7 @@ No API keys, no cloud, no admin rights needed once set up.
 | Moonshine v2 | Fast lightweight English ASR (Tiny → Medium-Streaming) | English |
 | Canary-1B | Accurate ASR + translation to English | Source: German, English, Spanish, French (`auto` → English) |
 | Whisper | Full-size Whisper, native timestamps, word-level alignment | ~100 source languages; `transcribe` keeps source, `translate` outputs English |
+| Qwen3-ASR | 1.7B GGUF ASR (Q8_0 → Q4_K_M), 30 languages, transcription only | 30 languages incl. zh/yue/ja/ko/ar/hi/th/vi/tr/… ; keeps the spoken language |
 
 **Turbo is transcription-only.** OpenAI trained `large-v3-turbo` on
 transcription data only, explicitly excluding translation data — its
@@ -24,7 +25,10 @@ translating. It is selectable for `transcribe` (about 2x faster than
 large-v3 on CPU), but the app blocks it in `translate` mode and keeps
 large-v3 for English output. Canary-1B likewise only carries `de/en/es/fr`
 language tokens — anything else fails fast with a message pointing at
-Whisper. The GUI only offers each engine the languages it can actually do.
+Whisper. **Qwen3-ASR is transcription-only**: it has no translate task and
+emits no timestamps, so SRT runs it over VAD chunks (like Canary) and takes
+cue timing from the chunk boundaries. The GUI only offers each engine the
+languages it can actually do.
 
 ## GPU acceleration (automatic)
 
@@ -39,6 +43,10 @@ Moonshine stay on CPU.
   with a log line when unusable, never crashes).
 - **Canary-1B** → CUDA only with ~10 GB+ free VRAM (fp32-hungry; small
   cards stay on CPU instead of OOM-crashing mid-load).
+- **Qwen3-ASR** → `transcribe.cpp`/ggml picks the fastest available backend
+  automatically (Vulkan on Intel/AMD/NVIDIA iGPUs and GPUs, CPU otherwise).
+  Set `"compute": "cpu"` to force CPU; the chosen backend is logged at load
+  (`qwen3_asr: using vulkan backend: Vulkan0`).
 - The SRT log states the chosen device per job, e.g.
   `Transcribing … (translate ja->en, cuda float16, native timestamps)`.
 - `setup.bat` installs a CUDA torch build automatically when an NVIDIA
@@ -57,13 +65,23 @@ Moonshine stay on CPU.
   history, and per-engine Task / source-language selectors. The *Model* row
    follows the engine: Moonshine sizes, downloadable Whisper sizes (Tiny
    75MB → Large v3 3GB; Large v3 Turbo 1.6GB, fetched once on first pick),
-   or the fixed Canary-1B. Whisper generations: v1 oldest, v2 middle, v3
+   the fixed Canary-1B, or Qwen3-ASR 1.7B in Q8_0 (2.2GB, default) →
+   Q6_K (1.7GB) → Q5_K_M (1.5GB) → Q4_K_M (1.3GB). Whisper generations: v1
+   oldest, v2 middle, v3
    newest and best. Large v3 is ~3GB; Large v3 Turbo is ~1.6GB and
    transcription-only. The bare Large entry is gone: the installed
    faster-whisper resolves it to byte-identical files as Large v3, so it was
    pure duplication (saved "large" configs switch to Large v3, no
    re-download).
   Recording is politely refused for a moment while a model is swapping.
+- **Dictionary (Whisper / Qwen3-ASR)** — the Live tab's *Dictionary: Edit…*
+  button opens a shared word list plus optional context text. Add, edit or
+  delete terms; tick which engines should use them. Whisper receives them as
+  `hotwords` + `initial_prompt` (its decoder keeps 223 tokens), Qwen3-ASR as a
+  priority-ordered `vocabulary` + `prompt`. If the list is too long for an
+  enabled engine the dialog asks whether to trim it, keep it (extra terms are
+  ignored) or go back and edit; engines that are not installed are greyed out.
+  Moonshine v2 and Canary-1B have no equivalent knob, so they are not offered.
 - **SRT File tab** — queue one or many video/audio files (batch runs one by
   one, failures don't stop the queue), pick an output folder, generate
   `.srt` with live progress bar, per-file status list, per-chunk log,
@@ -81,7 +99,8 @@ Moonshine stay on CPU.
   see the Import tab (mic and import no longer share a box).
 - **Import tab** — drag & drop (or Browse) any audio/video
   (`wav/mp3/m4a/mp4/mkv/avi/mov/…`), *Transcribe File* runs it through
-  this tab's own engine (Whisper single-pass, Canary/Moonshine VAD-chunked)
+  this tab's own engine (Whisper single-pass, Canary/Qwen/Moonshine
+  VAD-chunked)
   with progress + cancel, then appends the result **one sentence per line**
   (Latin + CJK aware, abbreviations kept) into its own editable box.
   *Save as TXT* writes UTF-8, *Copy All* copies to clipboard; quit warns
@@ -154,9 +173,10 @@ Moonshine stay on CPU.
   `setup.bat`/`run.bat` prefer a local portable `python\` folder if present,
   otherwise fall back to system Python 3.11).
 - Disk for models (see below) and patience on first run (large downloads).
-- ~16 GB RAM if you use Canary-1B. Whisper runs on CPU: large-v3-turbo is
-  the fast default for transcription; large-v3 is slower but supports
-  translation.
+- ~16 GB RAM if you use Canary-1B; ~4 GB free for Qwen3-ASR (2.8 GB
+  resident for the default Q8_0 model). Whisper runs on CPU:
+  large-v3-turbo is the fast default for transcription; large-v3 is slower
+  but supports translation.
 
 ## Install
 
@@ -170,8 +190,11 @@ run_windowless.vbs :: same, with no console window at all (needs venv set up)
 
 `setup.bat` installs online with `pip`, falling back to a local `wheels\`
 folder when present, then caches wheels there for fully-offline reinstalls.
-It installs the base, Whisper, and Canary dependency groups; the Canary
-group is large, and setup warns but continues if it cannot be installed.
+It installs the base, Whisper, Canary, and Qwen3-ASR dependency groups; the
+Canary group is large, and setup warns but continues if it cannot be
+installed. Qwen3-ASR needs `transcribe-cpp` + `transcribe-cpp-native`
+(`requirements-qwen.txt`), whose native wheel bundles the CPU and Vulkan
+backends — no CUDA toolkit required.
 
 **Fresh-install defaults:** the app starts with Moonshine v2 (English).
 When you switch to Whisper, the default is `large-v3-turbo` in
@@ -196,6 +219,7 @@ connection — grab them manually:
 | `nvidia/canary-1b` | ~3.9 GB | <https://huggingface.co/nvidia/canary-1b> — or drop a `canary-1b.nemo` file at `models_cache\canary-1b\canary-1b.nemo` (>100 MB is picked up automatically, fully offline) | `models_cache\canary-1b\` (+ `models_cache\huggingface\`, `models_cache\torch\`) |
 | `Systran/faster-whisper-large-v3` | ~3 GB | <https://huggingface.co/Systran/faster-whisper-large-v3> — auto-downloaded by Faster-Whisper; pick size in the Live tab *Model* row; each size downloads once on first selection | `models_cache\whisper-models\` |
 | `mobiuslabsgmbh/faster-whisper-large-v3-turbo` | ~1.6 GB | <https://huggingface.co/mobiuslabsgmbh/faster-whisper-large-v3-turbo> — fast default for `transcribe`; **cannot translate by design**, so the app blocks it in `translate` mode | `models_cache\whisper-models\` |
+| `handy-computer/Qwen3-ASR-1.7B-gguf` | 2.2 GB (Q8_0) / 1.7 / 1.5 / 1.3 GB | <https://huggingface.co/handy-computer/Qwen3-ASR-1.7B-gguf> — single `.gguf` files, auto-downloaded on first pick; drop `Qwen3-ASR-1.7B-Q8_0.gguf` (or any quant) at `models_cache\qwen3-asr\` for fully-offline use | `models_cache\qwen3-asr\` |
 
 `ffmpeg` ships via the `imageio-ffmpeg` wheel (no system install needed).
 Everything the app needs lives inside the project folder (except the
@@ -322,6 +346,28 @@ requirements*.txt  dependency pins (base / Canary / Whisper)
   and reburn to relearn.
 
 ## Changelog
+
+### v1.4.7
+
+- New engine: **Qwen3-ASR 1.7B** (GGUF via `transcribe.cpp`). 30 languages
+  including Mandarin, Cantonese, Japanese, Korean, Arabic, Hindi, Thai,
+  Vietnamese, Turkish — spoken language preserved, no translation. Four
+  quantisations (Q8_0 2.2 GB default → Q4_K_M 1.3 GB), picked per tab like
+  every other engine.
+- Runs on the ggml runtime: Vulkan is chosen automatically on capable GPUs
+  and iGPUs, CPU otherwise (`"compute": "cpu"` forces CPU).
+- SRT/Import use the VAD-chunked path (Qwen3-ASR emits no timestamps);
+  Live dictation and Note work the same as Canary.
+- Model manager lists, downloads and deletes the Qwen `.gguf` files;
+  models live in `models_cache\qwen3-asr\` so the folder stays portable.
+- New dependency group: `requirements-qwen.txt`.
+- New **Dictionary** (Live tab → *Dictionary: Edit…*): a shared word/phrase
+  list plus optional context text, addable, editable and deletable, with
+  per-engine checkboxes. Whisper uses it as `hotwords` + `initial_prompt`
+  (223-token decoder budget), Qwen3-ASR as `vocabulary` + `prompt`. Over-limit
+  lists prompt to trim, keep (ignored terms) or go back; engines that are not
+  installed are disabled, and Moonshine/Canary are excluded (no such setting).
+  The list is saved in the config and re-applied to every live engine.
 
 ### v1.4.6
 
@@ -703,4 +749,6 @@ requirements*.txt  dependency pins (base / Canary / Whisper)
 - Whisper large-v3 and large-v3-turbo by OpenAI (MIT weights); Faster-Whisper by SYSTRAN.
 - Canary-1B by NVIDIA — check its license on Hugging Face before
   commercial use.
+- Qwen3-ASR by Alibaba Qwen (Apache-2.0); GGUF conversion by
+  `handy-computer`, runtime by `transcribe.cpp` (MIT).
 - GUI: CustomTkinter; audio: sounddevice/soundfile/imageio-ffmpeg.

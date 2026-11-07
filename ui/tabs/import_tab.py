@@ -5,7 +5,7 @@
 # MoonshineGUI.set_theme, which pushes every toggle into this module.
 from pathlib import Path
 from ui.theme import ACCENT, SUCCESS, WARNING, DANGER, BG_CARD, BG_INPUT, FG_PRIMARY, FG_SECONDARY, FG_DIM, BTN_DIM, BTN_DIM_HOVER, BTN_GO_HOVER, BTN_DANGER_HOVER, BTN_TEXT
-from ui.choices import MODEL_CHOICES, MODEL_CHOICES_REV, WHISPER_MODEL_CHOICES, WHISPER_MODEL_CHOICES_REV, CANARY_MODEL_LABEL, ENGINE_CHOICES
+from ui.choices import MODEL_CHOICES, MODEL_CHOICES_REV, WHISPER_MODEL_CHOICES, WHISPER_MODEL_CHOICES_REV, CANARY_MODEL_LABEL, ENGINE_CHOICES, QWEN_MODEL_CHOICES, QWEN_MODEL_CHOICES_REV
 
 
 class ImportTabMixin:
@@ -220,6 +220,8 @@ class ImportTabMixin:
         try:
             if kind == "Whisper":
                 return list(WHISPER_MODEL_CHOICES.keys())
+            if kind == "Qwen3-ASR":
+                return list(QWEN_MODEL_CHOICES.keys())
             if kind == "Canary-1B":
                 return [CANARY_MODEL_LABEL]
             return list(MODEL_CHOICES.keys())
@@ -230,6 +232,9 @@ class ImportTabMixin:
         try:
             if kind == "Whisper":
                 return WHISPER_MODEL_CHOICES_REV.get(str(wmid or "large-v3"))
+            if kind == "Qwen3-ASR":
+                return QWEN_MODEL_CHOICES_REV.get(
+                    str(wmid or "qwen3-asr-1.7b-q8_0"))
             if kind == "Canary-1B":
                 return CANARY_MODEL_LABEL
             return MODEL_CHOICES_REV.get(int(arch if arch is not None else 5))

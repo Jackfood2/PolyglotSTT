@@ -8,7 +8,7 @@ import threading
 from pathlib import Path
 from typing import Optional, Callable, Tuple
 from ui.theme import ACCENT, ACCENT_DARK, ACCENT_GLOW, SUCCESS, WARNING, DANGER, BG_CARD, BG_INPUT, FG_PRIMARY, FG_SECONDARY, FG_DIM, BTN_DIM, BTN_DIM_HOVER, BTN_GO_HOVER, BTN_DANGER_HOVER, BTN_BURN, BTN_BURN_HOVER, BTN_TEXT, theme_color
-from ui.choices import MODEL_CHOICES, MODEL_CHOICES_REV, WHISPER_MODEL_CHOICES, WHISPER_MODEL_CHOICES_REV, CANARY_MODEL_LABEL, ENGINE_CHOICES, WHISPER_LANGS, SRT_LANG_NAMES, SRT_LANG_DISPLAY, SRT_LANG_CODE_FROM_DISPLAY, CANARY_LIVE_SRC_CODES, CANARY_SRT_IN_CODES, CANARY_SRT_OUT_CODES, WHISPER_SRT_IN_CODES, WHISPER_SRT_OUT_CODES, BURN_SPEED_HELP
+from ui.choices import MODEL_CHOICES, MODEL_CHOICES_REV, WHISPER_MODEL_CHOICES, WHISPER_MODEL_CHOICES_REV, CANARY_MODEL_LABEL, ENGINE_CHOICES, WHISPER_LANGS, SRT_LANG_NAMES, SRT_LANG_DISPLAY, SRT_LANG_CODE_FROM_DISPLAY, CANARY_LIVE_SRC_CODES, CANARY_SRT_IN_CODES, CANARY_SRT_OUT_CODES, WHISPER_SRT_IN_CODES, WHISPER_SRT_OUT_CODES, QWEN_MODEL_CHOICES, QWEN_MODEL_CHOICES_REV, QWEN_MODEL_LABEL, QWEN_SRT_IN_CODES, QWEN_SRT_OUT_CODES, QWEN_LANG_NAMES, BURN_SPEED_HELP
 
 
 class SrtTabMixin:
@@ -503,6 +503,8 @@ class SrtTabMixin:
         try:
             if kind == "Whisper":
                 return list(WHISPER_MODEL_CHOICES.keys())
+            if kind == "Qwen3-ASR":
+                return list(QWEN_MODEL_CHOICES.keys())
             if kind == "Canary-1B":
                 return [CANARY_MODEL_LABEL]
             return list(MODEL_CHOICES.keys())
@@ -535,6 +537,9 @@ class SrtTabMixin:
         try:
             if kind == "Whisper":
                 return WHISPER_MODEL_CHOICES_REV.get(str(wmid or "large-v3"))
+            if kind == "Qwen3-ASR":
+                return QWEN_MODEL_CHOICES_REV.get(
+                    str(wmid or "qwen3-asr-1.7b-q8_0"))
             if kind == "Canary-1B":
                 return CANARY_MODEL_LABEL
             return MODEL_CHOICES_REV.get(int(arch if arch is not None else 5))
@@ -586,24 +591,29 @@ class SrtTabMixin:
         if kind == "Canary-1B":
             srt_in_codes = list(CANARY_SRT_IN_CODES)
             srt_out_codes = list(CANARY_SRT_OUT_CODES)
+        elif kind == "Qwen3-ASR":
+            srt_in_codes = list(QWEN_SRT_IN_CODES)
+            srt_out_codes = list(QWEN_SRT_OUT_CODES)
         else:
             srt_in_codes = list(WHISPER_SRT_IN_CODES)
             srt_out_codes = list(WHISPER_SRT_OUT_CODES)
+        def _disp(c):
+            return SRT_LANG_NAMES.get(c) or QWEN_LANG_NAMES.get(c) or c
         try:
             self.srt_input_lang_menu.configure(
-                values=[SRT_LANG_NAMES[c] for c in srt_in_codes])
+                values=[_disp(c) for c in srt_in_codes])
             self.srt_output_lang_menu.configure(
-                values=[SRT_LANG_NAMES[c] for c in srt_out_codes])
+                values=[_disp(c) for c in srt_out_codes])
         except Exception:
             pass
         try:
             in_code, out_code = self.get_srt_lang_codes()
             if in_code not in srt_in_codes:
                 self.srt_input_lang_var.set(
-                    SRT_LANG_NAMES[srt_in_codes[0]])
+                    _disp(srt_in_codes[0]))
             if out_code not in srt_out_codes:
                 self.srt_output_lang_var.set(
-                    SRT_LANG_NAMES[srt_out_codes[0]])
+                    _disp(srt_out_codes[0]))
         except Exception:
             pass
 
@@ -1986,8 +1996,15 @@ class SrtTabMixin:
         # _refresh_srt_lang_state) - a Live switch must never rewrite them.
         eng = engine_kind or self.engine_var.get()
         is_canary = (eng == "Canary-1B")
-        live_codes = CANARY_LIVE_SRC_CODES if is_canary else WHISPER_LANGS
-        live_displays = [SRT_LANG_NAMES[c] for c in live_codes]
+        is_qwen = (eng == "Qwen3-ASR")
+        if is_canary:
+            live_codes = CANARY_LIVE_SRC_CODES
+        elif is_qwen:
+            live_codes = QWEN_SRT_IN_CODES
+        else:
+            live_codes = WHISPER_LANGS
+        live_displays = [SRT_LANG_NAMES.get(c) or QWEN_LANG_NAMES.get(c) or c
+                         for c in live_codes]
         try:
             self.canary_lang_menu.configure(values=live_displays)
         except Exception:
@@ -1995,7 +2012,9 @@ class SrtTabMixin:
         try:
             if self.canary_lang_var.get() not in live_displays:
                 fallback_code = "auto" if "auto" in live_codes else live_codes[0]
-                fallback = SRT_LANG_NAMES[fallback_code]
+                fallback = (SRT_LANG_NAMES.get(fallback_code)
+                            or QWEN_LANG_NAMES.get(fallback_code)
+                            or fallback_code)
                 self.canary_lang_var.set(fallback)
                 self._on_canary_lang_changed(fallback)
         except Exception:
@@ -2010,17 +2029,20 @@ class SrtTabMixin:
             pass
 
     def set_srt_lang_state(self, engine_kind: str):
-        has_lang = engine_kind in ("Canary-1B", "Whisper")
+        has_lang = engine_kind in ("Canary-1B", "Whisper", "Qwen3-ASR")
         try:
             state = "normal" if has_lang else "disabled"
             self.srt_input_lang_menu.configure(state=state)
             self.srt_output_lang_menu.configure(state=state)
             if engine_kind == "Canary-1B":
                 hint = "Canary-1B supports English, German, Spanish, French only (translate always outputs English)"
+            elif engine_kind == "Qwen3-ASR":
+                hint = ("Qwen3-ASR transcribes 30 languages in the spoken language "
+                        "(no translation). Output mirrors the input language.")
             elif engine_kind == "Whisper":
                 hint = "SRT subtitles use these languages (translate task always outputs English)"
             else:
-                hint = "Only Whisper and Canary-1B support language selection"
+                hint = "Only Whisper, Canary-1B and Qwen3-ASR support language selection"
             self.srt_lang_hint.configure(text=hint)
         except Exception:
             pass

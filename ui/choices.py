@@ -98,7 +98,25 @@ def apply_badge_map(values, status_fn=None):
     return displays, mapping
 
 
-ENGINE_CHOICES = ["Moonshine v2", "Canary-1B", "Whisper"]
+ENGINE_CHOICES = ["Moonshine v2", "Canary-1B", "Whisper", "Qwen3-ASR"]
+
+
+try:
+    from qwen_engine import (QWEN_MODEL_CHOICES as _QMC,
+                              QWEN_MODEL_CHOICES_REV as _QMCR)
+    QWEN_MODEL_CHOICES = dict(_QMC)
+    QWEN_MODEL_CHOICES_REV = dict(_QMCR)
+except Exception:
+    QWEN_MODEL_CHOICES = {
+        "Qwen3-ASR 1.7B Q8_0 (2.2GB, best)": "qwen3-asr-1.7b-q8_0",
+        "Qwen3-ASR 1.7B Q6_K (1.7GB)": "qwen3-asr-1.7b-q6_k",
+        "Qwen3-ASR 1.7B Q5_K_M (1.5GB)": "qwen3-asr-1.7b-q5_k_m",
+        "Qwen3-ASR 1.7B Q4_K_M (1.3GB, smallest)": "qwen3-asr-1.7b-q4_k_m",
+    }
+    QWEN_MODEL_CHOICES_REV = {v: k for k, v in QWEN_MODEL_CHOICES.items()}
+
+
+QWEN_MODEL_LABEL = "Qwen3-ASR 1.7B (2.2GB, 30 languages)"
 
 
 CANARY_TASKS = ["transcribe", "translate"]
@@ -146,3 +164,25 @@ WHISPER_SRT_IN_CODES = list(SRT_LANGS)
 
 
 WHISPER_SRT_OUT_CODES = [c for c in SRT_LANGS if c != "auto"]
+
+
+# Qwen3-ASR understands 30 languages (superset of SRT_LANGS). It transcribes
+# in the spoken language, so the output picker only ever mirrors the input.
+QWEN_SRT_IN_CODES = [
+    "auto", "en", "zh", "yue", "ja", "ko", "de", "fr", "es", "pt",
+    "it", "ru", "ar", "hi", "th", "vi", "tr", "id", "ms", "nl",
+    "sv", "da", "fi", "pl", "cs", "fil", "fa", "el", "ro", "hu", "mk",
+]
+
+QWEN_SRT_OUT_CODES = [c for c in QWEN_SRT_IN_CODES if c != "auto"]
+
+QWEN_LANG_NAMES = {
+    "auto": "Auto-detect", "en": "English", "zh": "Chinese", "yue": "Cantonese",
+    "ja": "Japanese", "ko": "Korean", "de": "German", "fr": "French",
+    "es": "Spanish", "pt": "Portuguese", "it": "Italian", "ru": "Russian",
+    "ar": "Arabic", "hi": "Hindi", "th": "Thai", "vi": "Vietnamese",
+    "tr": "Turkish", "id": "Indonesian", "ms": "Malay", "nl": "Dutch",
+    "sv": "Swedish", "da": "Danish", "fi": "Finnish", "pl": "Polish",
+    "cs": "Czech", "fil": "Filipino", "fa": "Persian", "el": "Greek",
+    "ro": "Romanian", "hu": "Hungarian", "mk": "Macedonian",
+}

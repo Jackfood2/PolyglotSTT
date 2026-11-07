@@ -8,7 +8,7 @@ import time
 from pathlib import Path
 from ui.theme import ACCENT, ACCENT_DARK, SUCCESS, WARNING, DANGER, BG_CARD, BG_INPUT, FG_PRIMARY, FG_SECONDARY, FG_DIM, BTN_DIM, BTN_DIM_HOVER, BTN_GO_HOVER, BTN_DANGER_HOVER, BTN_TEXT
 from ui.widgets import LevelMeter
-from ui.choices import MODEL_CHOICES, MODEL_CHOICES_REV, WHISPER_MODEL_CHOICES, WHISPER_MODEL_CHOICES_REV, CANARY_MODEL_LABEL, ENGINE_CHOICES, WHISPER_LANGS, SRT_LANG_NAMES, SRT_LANG_CODE_FROM_DISPLAY
+from ui.choices import MODEL_CHOICES, MODEL_CHOICES_REV, WHISPER_MODEL_CHOICES, WHISPER_MODEL_CHOICES_REV, CANARY_MODEL_LABEL, ENGINE_CHOICES, WHISPER_LANGS, SRT_LANG_NAMES, SRT_LANG_CODE_FROM_DISPLAY, QWEN_MODEL_CHOICES, QWEN_MODEL_CHOICES_REV, QWEN_LANG_NAMES, QWEN_SRT_IN_CODES
 try:
     from core.config import NOTES_AUDIO_DIR
 except Exception:  # pragma: no cover - keep the tab usable standalone
@@ -267,8 +267,8 @@ class NoteTabMixin:
                                      sticky="w", padx=(4, 16), pady=(0, 4))
         ctk.CTkLabel(
             info_card,
-            text="Language applies to Whisper (Auto = detect). Desktop "
-                 "audio records system sound.",
+            text="Language applies to Whisper and Qwen3-ASR (Auto = detect). "
+                 "Desktop audio records system sound.",
             font=("Segoe UI", 9), text_color=FG_DIM,
             wraplength=330, justify="left"
             ).grid(row=4, column=0, columnspan=4, sticky="w",
@@ -494,7 +494,15 @@ class NoteTabMixin:
 
     def _on_note_lang_changed(self, value=None):
         try:
-            code = SRT_LANG_CODE_FROM_DISPLAY.get(str(value or ""), "auto")
+            label = str(value or "")
+            code = SRT_LANG_CODE_FROM_DISPLAY.get(label)
+            if code is None:
+                for k, v in QWEN_LANG_NAMES.items():
+                    if v == label:
+                        code = k
+                        break
+            if code is None:
+                code = "auto"
             cb = getattr(self, "_note_lang_cb", None)
             if callable(cb):
                 cb(code)
@@ -504,7 +512,10 @@ class NoteTabMixin:
     def set_note_language(self, code):
         """Reflect the saved Note language without firing the callback."""
         try:
-            name = SRT_LANG_NAMES.get(str(code or "auto"), "Auto-detect")
+            key = str(code or "auto")
+            name = (SRT_LANG_NAMES.get(key)
+                    or QWEN_LANG_NAMES.get(key)
+                    or "Auto-detect")
             self.note_lang_var.set(name)
         except Exception:
             pass
@@ -1488,6 +1499,8 @@ class NoteTabMixin:
         try:
             if kind == "Whisper":
                 return list(WHISPER_MODEL_CHOICES.keys())
+            if kind == "Qwen3-ASR":
+                return list(QWEN_MODEL_CHOICES.keys())
             if kind == "Canary-1B":
                 return [CANARY_MODEL_LABEL]
             return list(MODEL_CHOICES.keys())
@@ -1515,9 +1528,23 @@ class NoteTabMixin:
         except Exception:
             pass
         try:
-            # Language only applies to Whisper; other engines auto-detect.
-            self.note_lang_menu.configure(
-                state="normal" if kind == "Whisper" else "disabled")
+            # Language applies to Whisper and Qwen3-ASR; Canary/Moonshine
+            # pick their language from their own settings.
+            if kind == "Qwen3-ASR":
+                vals = [QWEN_LANG_NAMES.get(c, c)
+                        for c in QWEN_SRT_IN_CODES]
+                self.note_lang_menu.configure(values=vals, state="normal")
+                cur = str(self.note_lang_var.get() or "")
+                if cur not in vals:
+                    self.note_lang_var.set(vals[0] if vals else "Auto-detect")
+            elif kind == "Whisper":
+                vals = [SRT_LANG_NAMES[c] for c in WHISPER_LANGS]
+                self.note_lang_menu.configure(values=vals, state="normal")
+                cur = str(self.note_lang_var.get() or "")
+                if cur not in vals:
+                    self.note_lang_var.set(vals[0] if vals else "Auto-detect")
+            else:
+                self.note_lang_menu.configure(state="disabled")
         except Exception:
             pass
 
@@ -1525,6 +1552,9 @@ class NoteTabMixin:
         try:
             if kind == "Whisper":
                 return WHISPER_MODEL_CHOICES_REV.get(str(wmid or "large-v3"))
+            if kind == "Qwen3-ASR":
+                return QWEN_MODEL_CHOICES_REV.get(
+                    str(wmid or "qwen3-asr-1.7b-q8_0"))
             if kind == "Canary-1B":
                 return CANARY_MODEL_LABEL
             return MODEL_CHOICES_REV.get(int(arch if arch is not None else 5))
