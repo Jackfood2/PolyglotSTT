@@ -347,6 +347,23 @@ requirements*.txt  dependency pins (base / Canary / Whisper)
 
 ## Changelog
 
+### v1.4.9.1
+
+Bug-fix release for SRT jobs whose output language differs from the input.
+
+- **SRT no longer fails with "transcription preserves the source language".**
+  The SRT tab has no task control — it inherits `whisper_task` from the Live
+  tab, which ships as `transcribe`. So any job with a real language pair
+  (Japanese → English, German → English, …) was rejected before a single cue
+  was written, including 2.5-hour files that had already spent minutes on audio
+  preparation. The job now derives the task from the language pair you actually
+  picked: output English means translate, output equal to the input means
+  transcribe. Canary-1B had the same dead end and got the same fix.
+- **Clearer language hints in the SRT tab.** The hint under the pickers now says
+  what the choice does ("output English to translate, pick the spoken language
+  to transcribe as-is") instead of talking about a task menu that the tab does
+  not have.
+
 ### v1.4.9
 
 Bug-fix release for the Live tab's Qwen3-ASR model picker.

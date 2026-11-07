@@ -2069,12 +2069,14 @@ class SrtTabMixin:
             else:
                 self.srt_output_lang_menu.configure(state=state)
             if engine_kind == "Canary-1B":
-                hint = "Canary-1B supports English, German, Spanish, French only (translate always outputs English)"
+                hint = ("Canary-1B: pick English as output to translate; pick the "
+                        "spoken language to transcribe it as-is (en/de/es/fr only).")
             elif engine_kind == "Qwen3-ASR":
                 hint = ("Qwen3-ASR transcribes 30 languages in the spoken language "
                         "(no translation). Output mirrors the input language.")
             elif engine_kind == "Whisper":
-                hint = "SRT subtitles use these languages (translate task always outputs English)"
+                hint = ("Whisper: output English to translate into English, or pick "
+                        "the spoken language to transcribe it as-is (Auto = detect).")
             else:
                 hint = "Only Whisper, Canary-1B and Qwen3-ASR support language selection"
             self.srt_lang_hint.configure(text=hint)

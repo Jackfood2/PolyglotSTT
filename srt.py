@@ -2118,20 +2118,35 @@ def _run_srt_job_inner(
             if task not in {"transcribe", "translate"}:
                 raise ValueError(f"Unsupported Whisper task: {task}")
 
+            # The SRT tab's output picker is the user's real intent; the task
+            # comes from the Live tab and can contradict it (the shipped
+            # default was "transcribe", which killed every ja -> en job with
+            # "transcription preserves the source language"). Coerce instead
+            # of failing: pick the task the language pair can actually honour.
+            _en_out = output_language in {"en", "english"}
+            _en_in = input_language in {"en", "english"}
+            _mirror = (
+                output_language in {"same", "source"}
+                or (input_language != "auto" and output_language == input_language)
+            )
             if task == "translate":
-                if output_language not in {"en", "english"}:
-                    raise ValueError(
-                        "Whisper translation produces English. "
-                        "Another output language requires a translation stage."
-                    )
-            elif (
-                input_language != "auto"
-                and output_language not in {input_language, "same", "source"}
-            ):
-                raise ValueError(
-                    "Whisper transcription preserves the source language. "
-                    "Use translation or select the source output language."
-                )
+                if _mirror and input_language != "auto" and not _en_in:
+                    log("Whisper: output follows the input language - "
+                        "switching to transcribe")
+                    task = "transcribe"
+                elif not _en_out:
+                    log("Whisper can only translate to English; "
+                        f"output {output_language} -> en")
+                    output_language = "en"
+            elif not _mirror:
+                if _en_out and input_language != "auto" and not _en_in:
+                    log(f"Whisper: {input_language} -> en requested - "
+                        "using translate")
+                    task = "translate"
+                elif input_language != "auto":
+                    log("Whisper transcription keeps the source language; "
+                        f"output {output_language} -> {input_language}")
+                    output_language = input_language
 
             engine = get_whisper_engine()
             wait_for_model(engine, "Whisper")
@@ -2339,23 +2354,40 @@ def _run_srt_job_inner(
                 if input_language != "auto"
                 else str(canary_src or "auto").strip().lower()
             )
+            # Same coercion as Whisper: the tab's language pair is the user's
+            # intent, the stored task may contradict it. Never fail a job over
+            # a stale task.
+            _en_out = output_language in {"en", "english"}
+            _en_in = source_language in {"en", "english"}
+            _mirror = (
+                output_language in {"same", "source"}
+                or (source_language != "auto"
+                    and output_language == source_language)
+            )
+            if task == "translate":
+                if _mirror and source_language != "auto" and not _en_in:
+                    log("Canary: output follows the input language - "
+                        "switching to transcribe")
+                    task = "transcribe"
+                elif not _en_out:
+                    log("Canary can only translate to English; "
+                        f"output {output_language} -> en")
+                    output_language = "en"
+            elif not _mirror:
+                if _en_out and source_language != "auto" and not _en_in:
+                    log(f"Canary: {source_language} -> en requested - "
+                        "using translate")
+                    task = "translate"
+                elif source_language != "auto":
+                    log("Canary transcription keeps the source language; "
+                        f"output {output_language} -> {source_language}")
+                    output_language = source_language
+
             target_language = (
                 source_language
                 if task == "transcribe"
                 else output_language
             )
-
-            if (
-                task == "transcribe"
-                and source_language != "auto"
-                and output_language not in {
-                    source_language, "same", "source"
-                }
-            ):
-                raise ValueError(
-                    "Canary transcription preserves the source language. "
-                    "Choose translate to change languages."
-                )
 
             if target_language in {"auto", "same", "source"} and task == "translate":
                 raise ValueError("Canary translation requires a target language")
