@@ -8,7 +8,7 @@ import threading
 from pathlib import Path
 from typing import Optional, Callable, Tuple
 from ui.theme import ACCENT, ACCENT_DARK, ACCENT_GLOW, SUCCESS, WARNING, DANGER, BG_CARD, BG_INPUT, FG_PRIMARY, FG_SECONDARY, FG_DIM, BTN_DIM, BTN_DIM_HOVER, BTN_GO_HOVER, BTN_DANGER_HOVER, BTN_BURN, BTN_BURN_HOVER, BTN_TEXT, theme_color
-from ui.choices import MODEL_CHOICES, MODEL_CHOICES_REV, WHISPER_MODEL_CHOICES, WHISPER_MODEL_CHOICES_REV, CANARY_MODEL_LABEL, ENGINE_CHOICES, WHISPER_LANGS, SRT_LANG_NAMES, SRT_LANG_DISPLAY, SRT_LANG_CODE_FROM_DISPLAY, CANARY_LIVE_SRC_CODES, CANARY_SRT_IN_CODES, CANARY_SRT_OUT_CODES, WHISPER_SRT_IN_CODES, WHISPER_SRT_OUT_CODES, QWEN_MODEL_CHOICES, QWEN_MODEL_CHOICES_REV, QWEN_MODEL_LABEL, QWEN_SRT_IN_CODES, QWEN_SRT_OUT_CODES, QWEN_LANG_NAMES, BURN_SPEED_HELP
+from ui.choices import MODEL_CHOICES, MODEL_CHOICES_REV, WHISPER_MODEL_CHOICES, WHISPER_MODEL_CHOICES_REV, CANARY_MODEL_LABEL, ENGINE_CHOICES, WHISPER_LANGS, SRT_LANG_NAMES, SRT_LANG_DISPLAY, CANARY_LIVE_SRC_CODES, CANARY_SRT_IN_CODES, CANARY_SRT_OUT_CODES, WHISPER_SRT_IN_CODES, WHISPER_SRT_OUT_CODES, QWEN_MODEL_CHOICES, QWEN_MODEL_CHOICES_REV, QWEN_SRT_IN_CODES, QWEN_LANG_NAMES, BURN_SPEED_HELP, lang_display, lang_code_from_display
 
 
 class SrtTabMixin:
@@ -591,19 +591,36 @@ class SrtTabMixin:
         if kind == "Canary-1B":
             srt_in_codes = list(CANARY_SRT_IN_CODES)
             srt_out_codes = list(CANARY_SRT_OUT_CODES)
+            out_locked = False
         elif kind == "Qwen3-ASR":
+            # Transcription-only: the output always mirrors the input, so the
+            # output picker is a single disabled row.
             srt_in_codes = list(QWEN_SRT_IN_CODES)
-            srt_out_codes = list(QWEN_SRT_OUT_CODES)
+            srt_out_codes = []
+            out_locked = True
         else:
             srt_in_codes = list(WHISPER_SRT_IN_CODES)
             srt_out_codes = list(WHISPER_SRT_OUT_CODES)
+            out_locked = False
+        # Moonshine v2 has no language selection at all: both pickers stay
+        # disabled (the input one is disabled by set_srt_lang_state above).
+        has_lang = kind in ("Canary-1B", "Whisper", "Qwen3-ASR")
         def _disp(c):
             return SRT_LANG_NAMES.get(c) or QWEN_LANG_NAMES.get(c) or c
         try:
             self.srt_input_lang_menu.configure(
                 values=[_disp(c) for c in srt_in_codes])
-            self.srt_output_lang_menu.configure(
-                values=[_disp(c) for c in srt_out_codes])
+        except Exception:
+            pass
+        try:
+            if out_locked:
+                self.srt_output_lang_var.set("Same as input")
+                self.srt_output_lang_menu.configure(
+                    values=["Same as input"], state="disabled")
+            else:
+                self.srt_output_lang_menu.configure(
+                    values=[_disp(c) for c in srt_out_codes],
+                    state="normal" if has_lang else "disabled")
         except Exception:
             pass
         try:
@@ -611,7 +628,7 @@ class SrtTabMixin:
             if in_code not in srt_in_codes:
                 self.srt_input_lang_var.set(
                     _disp(srt_in_codes[0]))
-            if out_code not in srt_out_codes:
+            if not out_locked and out_code not in srt_out_codes:
                 self.srt_output_lang_var.set(
                     _disp(srt_out_codes[0]))
         except Exception:
@@ -1976,18 +1993,31 @@ class SrtTabMixin:
                            input_cb: Callable, output_cb: Callable):
         self._srt_input_lang_cb = input_cb
         self._srt_output_lang_cb = output_cb
-        in_display = SRT_LANG_NAMES.get(input_lang, "")
-        out_display = SRT_LANG_NAMES.get(output_lang, "")
-        if in_display in SRT_LANG_DISPLAY:
+        in_display = lang_display(input_lang, "")
+        out_display = lang_display(output_lang, "")
+        if in_display:
             self.srt_input_lang_var.set(in_display)
-        if out_display in SRT_LANG_DISPLAY:
+        try:
+            _qwen = self.get_srt_engine_kind() == "Qwen3-ASR"
+        except Exception:
+            _qwen = False
+        if _qwen:
+            # Transcription-only: the output row is the locked mirror.
+            self.srt_output_lang_var.set("Same as input")
+        elif out_display:
             self.srt_output_lang_var.set(out_display)
 
     def get_srt_lang_codes(self) -> Tuple[str, str]:
         in_display = self.srt_input_lang_var.get()
         out_display = self.srt_output_lang_var.get()
-        in_code = SRT_LANG_CODE_FROM_DISPLAY.get(in_display, "auto")
-        out_code = SRT_LANG_CODE_FROM_DISPLAY.get(out_display, "en")
+        in_code = lang_code_from_display(in_display, "auto")
+        out_code = lang_code_from_display(out_display, "en")
+        try:
+            if self.get_srt_engine_kind() == "Qwen3-ASR":
+                # Qwen transcribes only: output mirrors the input language.
+                out_code = in_code
+        except Exception:
+            pass
         return in_code, out_code
 
     def refresh_lang_options(self, engine_kind: str = ""):
@@ -2033,7 +2063,11 @@ class SrtTabMixin:
         try:
             state = "normal" if has_lang else "disabled"
             self.srt_input_lang_menu.configure(state=state)
-            self.srt_output_lang_menu.configure(state=state)
+            if engine_kind == "Qwen3-ASR":
+                # Transcription-only: the output always mirrors the input.
+                self.srt_output_lang_menu.configure(state="disabled")
+            else:
+                self.srt_output_lang_menu.configure(state=state)
             if engine_kind == "Canary-1B":
                 hint = "Canary-1B supports English, German, Spanish, French only (translate always outputs English)"
             elif engine_kind == "Qwen3-ASR":

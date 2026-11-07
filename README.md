@@ -347,6 +347,34 @@ requirements*.txt  dependency pins (base / Canary / Whisper)
 
 ## Changelog
 
+### v1.4.8
+
+Bug-fix release for the Qwen3-ASR and Dictionary work in v1.4.7.
+
+- **Qwen3-ASR SRT jobs no longer fail.** The output-language picker offered
+  translations the model cannot do, so a default run (input Japanese, output
+  English) raised an error immediately. The picker is now a single disabled
+  *Same as input* row, and an old config that still asks for a translation is
+  coerced to the source language with a log note instead of failing.
+- **Qwen-only languages now stick.** Cantonese, Malay, Swedish, Danish,
+  Finnish, Polish, Czech, Filipino, Persian, Greek, Romanian, Hungarian and
+  Macedonian were silently reset to auto-detect in the SRT and Note tabs
+  because the handlers only knew Whisper's language list.
+- **Import tab uses Qwen's own settings.** Chunks were being transcribed with
+  the Whisper task and source language, so a Whisper source of e.g. Japanese
+  forced Japanese on Qwen. Qwen failures also stopped being appended to the
+  transcript as text.
+- **Dictionary token budget is accurate.** The Whisper prompt could overshoot
+  the 223-token decoder budget (the status still showed a green check), and one
+  over-long term discarded every later term that would still have fit. Context
+  is now trimmed word by word until the estimate fits, and the status flags an
+  overshoot.
+- Language pickers no longer get re-enabled behind the engine's back when the
+  SRT tab repaints; Moonshine's SRT output picker stays disabled (it has no
+  language setting at all).
+- Model manager, Import progress and the Import model-mismatch guard now name
+  and check the Qwen model instead of the Whisper one.
+
 ### v1.4.7
 
 - New engine: **Qwen3-ASR 1.7B** (GGUF via `transcribe.cpp`). 30 languages

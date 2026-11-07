@@ -186,3 +186,43 @@ QWEN_LANG_NAMES = {
     "cs": "Czech", "fil": "Filipino", "fa": "Persian", "el": "Greek",
     "ro": "Romanian", "hu": "Hungarian", "mk": "Macedonian",
 }
+
+
+# Combined display-name map: every code any tab can show. Shared codes have
+# identical labels in both dicts, so the merge is conflict-free. Handlers that
+# do not know which engine produced a menu label use these two helpers instead
+# of SRT_LANG_NAMES/SRT_LANG_CODE_FROM_DISPLAY (which only cover the Whisper
+# subset and would silently collapse "Cantonese" to auto-detect).
+LANG_NAMES_ALL = dict(SRT_LANG_NAMES)
+LANG_NAMES_ALL.update(QWEN_LANG_NAMES)
+
+LANG_CODE_FROM_DISPLAY_ALL = {v: k for k, v in LANG_NAMES_ALL.items()}
+
+
+def lang_display(code, default=None):
+    """Display label for a language code (any engine), or `default`."""
+    try:
+        key = str(code or "").strip().lower()
+    except Exception:
+        key = ""
+    if not key:
+        return default
+    return LANG_NAMES_ALL.get(key, default)
+
+
+def lang_code_from_display(value, default="auto"):
+    """Language code for a menu label (any engine), or `default`."""
+    try:
+        text = str(value or "").strip()
+    except Exception:
+        return default
+    if not text:
+        return default
+    if text in LANG_CODE_FROM_DISPLAY_ALL:
+        return LANG_CODE_FROM_DISPLAY_ALL[text]
+    # Tolerate a caller passing a code instead of a label.
+    low = text.lower()
+    if low in LANG_NAMES_ALL:
+        return low
+    return default
+

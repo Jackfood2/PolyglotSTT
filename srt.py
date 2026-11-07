@@ -2443,12 +2443,13 @@ def _run_srt_job_inner(
                 else str(qwen_src or "auto").strip().lower()
             )
 
+            # The output picker is disabled for Qwen, but a stale config can
+            # still carry a different language here. Coerce instead of
+            # failing: transcription output always mirrors the input.
             if output_language not in {source_language, "same", "source"}:
-                raise ValueError(
-                    "Qwen3-ASR transcription preserves the source language. "
-                    "Pick the same output language (or use Whisper to "
-                    "translate)."
-                )
+                log("Qwen3-ASR cannot translate; output follows the input "
+                    f"({source_language if source_language != 'auto' else 'auto-detected'})")
+                output_language = source_language
 
             engine = get_qwen_engine()
             wait_for_model(engine, "Qwen3-ASR")

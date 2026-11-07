@@ -29,3 +29,5 @@ logs/
 # Startup smoke-test logs (dev only).
 startup.log
 startup.err
+st.log
+st.err

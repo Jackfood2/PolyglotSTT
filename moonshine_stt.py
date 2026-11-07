@@ -60,7 +60,7 @@ try:
     )
 except Exception:  # pragma: no cover - fallback if core/ is missing
     import json as _json
-    APP_VERSION = "1.4.7"
+    APP_VERSION = "1.4.8"
     CONFIG_PATH = os.path.join(os.path.dirname(__file__), "moonshine_config.json")
     NOTES_AUDIO_DIR = os.path.join(os.path.dirname(__file__), "notes_audio")
     _CONFIG_LOCK = threading.RLock()
@@ -1461,7 +1461,7 @@ class MoonshineSTTApp:
                                         else f"{tab} Qwen3-ASR {mid}")
                             else:
                                 ram = self._engine_ram_mb("Canary-1B")
-                                desc = (f"Live Canary-1B" if tab == "live"
+                                desc = ("Live Canary-1B" if tab == "live"
                                         else f"{tab} Canary-1B")
                             try:
                                 if not bool(getattr(eng, "is_ready", False)):
@@ -2803,6 +2803,7 @@ class MoonshineSTTApp:
                                      QWEN_MODEL_CHOICES_REV)
             qinfo = qwen_cache_info()
             qdl = qwen_downloaded_map()
+            qmid = self.config.get("qwen_model", "qwen3-asr-1.7b-q8_0")
             for qid, qsize in qinfo.items():
                 downloaded = bool(qdl.get(qid))
                 if downloaded:
@@ -2812,7 +2813,7 @@ class MoonshineSTTApp:
                     "label": QWEN_MODEL_CHOICES_REV.get(qid, qid),
                     "size": int(qsize) if downloaded else None,
                     "downloaded": downloaded,
-                    "in_use": active == "Qwen3-ASR" and wmid == qid,
+                    "in_use": active == "Qwen3-ASR" and qmid == qid,
                 })
         except Exception:
             pass
@@ -3523,14 +3524,26 @@ class MoonshineSTTApp:
                 pass
         self._log(f"Canary src -> {code}")
     def _on_note_lang_changed(self, code):
-        """Note tab language: spoken language for Whisper ("auto" = detect).
-        Per-call, so the shared Whisper instance keeps its Live options."""
+        """Note tab language: spoken language for Whisper/Qwen ("auto" =
+        detect). Per-call, so the shared Whisper instance keeps its Live
+        options."""
+        code = str(code or "auto").strip().lower()
         try:
-            from whisper_engine import WHISPER_SOURCE_LANGS
-            langs = tuple(WHISPER_SOURCE_LANGS)
+            _kind = self.tab_selection("note").get("kind", "Moonshine v2")
         except Exception:
-            langs = ("auto", "en", "ja", "zh", "ko", "de", "fr", "es")
-        code = str(code or "auto")
+            _kind = "Moonshine v2"
+        if _kind == "Qwen3-ASR":
+            try:
+                from qwen_engine import QWEN_LANGUAGES
+                langs = tuple(QWEN_LANGUAGES)
+            except Exception:
+                langs = ("auto",)
+        else:
+            try:
+                from whisper_engine import WHISPER_SOURCE_LANGS
+                langs = tuple(WHISPER_SOURCE_LANGS)
+            except Exception:
+                langs = ("auto", "en", "ja", "zh", "ko", "de", "fr", "es")
         if code not in langs:
             code = "auto"
         try:
@@ -3561,19 +3574,46 @@ class MoonshineSTTApp:
         except Exception:
             pass
 
+    def _srt_lang_codes_for_tab(self):
+        """Language codes the SRT tab's own engine accepts (input side)."""
+        try:
+            kind = self.tab_selection("srt").get("kind", "Moonshine v2")
+        except Exception:
+            kind = "Moonshine v2"
+        if kind == "Canary-1B":
+            return ("auto", "en", "de", "es", "fr")
+        if kind == "Qwen3-ASR":
+            try:
+                from qwen_engine import QWEN_LANGUAGES
+                return tuple(QWEN_LANGUAGES)
+            except Exception:
+                return ("auto",)
+        try:
+            from ui.choices import WHISPER_SRT_IN_CODES
+            return tuple(WHISPER_SRT_IN_CODES)
+        except Exception:
+            return ("auto",)
+
     def _on_srt_input_lang_changed(self, value):
-        from gui import SRT_LANG_CODE_FROM_DISPLAY, SRT_LANGS
-        code = SRT_LANG_CODE_FROM_DISPLAY.get(value, "auto")
-        if code not in SRT_LANGS:
+        from ui.choices import lang_code_from_display
+        code = lang_code_from_display(value, "auto")
+        if code not in self._srt_lang_codes_for_tab():
             code = "auto"
         with _CONFIG_LOCK:
             self.config["srt_input_lang"] = code
             save_local_config(self.config)
         self._log(f"SRT input lang -> {code}")
     def _on_srt_output_lang_changed(self, value):
-        from gui import SRT_LANG_CODE_FROM_DISPLAY, SRT_LANGS
-        code = SRT_LANG_CODE_FROM_DISPLAY.get(value, "en")
-        if code not in SRT_LANGS:
+        from ui.choices import lang_code_from_display
+        code = lang_code_from_display(value, "en")
+        try:
+            if self.tab_selection("srt").get("kind") == "Qwen3-ASR":
+                # Transcription-only: output mirrors the input language.
+                code = str(self.config.get("srt_input_lang", "auto")
+                           or "auto")
+        except Exception:
+            pass
+        if code not in self._srt_lang_codes_for_tab():
             code = "en"
         with _CONFIG_LOCK:
             self.config["srt_output_lang"] = code
@@ -4153,7 +4193,6 @@ class MoonshineSTTApp:
                             idx = int((info or {}).get("index", -1))
                         except Exception:
                             idx = -1
-                    total = len(job["src_paths"])
                     if kind == "start":
                         self._gui_queue.put(
                             ("srt_file_status", (idx, "working…")))
@@ -4384,9 +4423,9 @@ class MoonshineSTTApp:
             elif kind == "done":
                 if (info or {}).get("ok"):
                     try:
-                        _o, _ib, _ob = (info or {}).get("out"), 0, 0
+                        _o, _ob = (info or {}).get("out"), 0
                         if isinstance(_o, (list, tuple)) and len(_o) >= 3:
-                            _ib, _ob = _o[1], _o[2]
+                            _ob = _o[2]
                         tag = (f"\u2713 {self._fmt_gb(_ob)}"
                                if _ob else "\u2713 burned")
                     except Exception:
@@ -5116,8 +5155,12 @@ class MoonshineSTTApp:
             except Exception:
                 pass
         waited = 0
-        label = ("Canary-1B" if kind == "Canary-1B"
-                 else f"Whisper {sel.get('wmodel', '')}")
+        if kind == "Canary-1B":
+            label = "Canary-1B"
+        elif kind == "Qwen3-ASR":
+            label = f"Qwen3-ASR {sel.get('wmodel', '')}"
+        else:
+            label = f"Whisper {sel.get('wmodel', '')}"
         while not eng.is_ready:
             if cancel_event.is_set():
                 raise InterruptedError("cancelled")
@@ -5130,7 +5173,7 @@ class MoonshineSTTApp:
             waited += 1
             if waited > 1200:
                 raise RuntimeError(f"{label} load timed out")
-        if kind == "Whisper":
+        if kind in ("Whisper", "Qwen3-ASR"):
             try:
                 if not self._whisper_cache_ok(eng, sel.get("wmodel")):
                     raise RuntimeError(f"{label} model mismatch - retry")
@@ -5318,7 +5361,8 @@ class MoonshineSTTApp:
             try:
                 s = str(t or "").strip()
                 return (not s) or s.startswith(
-                    ("[Error:", "[Whisper Error:", "[Canary Error:"))
+                    ("[Error:", "[Whisper Error:", "[Canary Error:",
+                     "[Qwen Error:"))
             except Exception:
                 return True
 
@@ -5396,17 +5440,27 @@ class MoonshineSTTApp:
                                 pass
                     else:
                         # Moonshine + Whisper fallback: in-memory array.
-                        try:
-                            _ct = str(self.config.get("whisper_task",
-                                                      "translate")
-                                      or "translate")
-                        except Exception:
-                            _ct = "translate"
-                        try:
-                            _cs = str(self.config.get("whisper_src_lang",
-                                                      "auto") or "auto")
-                        except Exception:
-                            _cs = "auto"
+                        # Qwen is transcription-only and has its own source
+                        # language; never feed it the Whisper settings.
+                        if kind == "Qwen3-ASR":
+                            _ct = "transcribe"
+                            try:
+                                _cs = str(self.config.get("qwen_src_lang",
+                                                          "auto") or "auto")
+                            except Exception:
+                                _cs = "auto"
+                        else:
+                            try:
+                                _ct = str(self.config.get("whisper_task",
+                                                          "translate")
+                                          or "translate")
+                            except Exception:
+                                _ct = "translate"
+                            try:
+                                _cs = str(self.config.get("whisper_src_lang",
+                                                          "auto") or "auto")
+                            except Exception:
+                                _cs = "auto"
                         try:
                             text = eng.transcribe(chunk, sr, task=_ct,
                                                   source_lang=_cs)

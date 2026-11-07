@@ -109,15 +109,26 @@ def _whisper_budget(terms: Sequence[str], context: str) -> Dict:
     for term in terms:
         cost = estimate_tokens(term) + 1  # trailing comma separator
         if used + cost > budget:
-            break
+            # Skip this term but keep scanning: a shorter one later may fit.
+            continue
         kept.append(term)
         used += cost
     remaining = max(0, budget - used)
     prompt = ""
-    if context:
-        # 4 chars per token, minus a little headroom.
-        limit_chars = max(0, remaining * 4 - 8)
-        prompt = context[:limit_chars].rstrip() if limit_chars else ""
+    if context and remaining > 0:
+        # Trim on word boundaries until the *estimated* count fits. A plain
+        # chars/4 cut under-counts wordy text, which used to push the prompt
+        # past 223 tokens (Whisper then silently clipped a hotword).
+        target = max(0, remaining - 1)  # headroom for the ellipsis
+        limit_chars = max(0, target * 4)
+        candidate = context[:limit_chars].rstrip() if limit_chars else ""
+        while candidate and estimate_tokens(candidate) > target:
+            words = candidate.split()
+            if len(words) <= 1:
+                candidate = ""
+                break
+            candidate = " ".join(words[:-1]).rstrip()
+        prompt = candidate
         if prompt and prompt != context:
             prompt += " …"
         used += estimate_tokens(prompt)
@@ -218,6 +229,8 @@ def describe(engine: str, terms: Sequence[str], context: str) -> str:
         text = f"{info['tokens']} / {info['limit']} tokens"
         if info["dropped"]:
             text += f" — {info['dropped']} term(s) over the limit"
+        elif info["tokens"] > info["limit"]:
+            text += " — over the limit"
         else:
             text += " ✓"
         return text
