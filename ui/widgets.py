@@ -19,6 +19,22 @@ class LevelMeter(ctk.CTkCanvas):
         self.meter_width = width
         self.meter_height = height
         self.level = 0.0
+        # The meter is packed with sticky="ew"/fill="x" in both tabs, so its
+        # real width only exists after layout. Without this the bar (and its
+        # fill) stops at the construction width and looks cut off.
+        try:
+            self.bind("<Configure>", self._on_resize)
+        except Exception:
+            pass
+        self._draw()
+
+    def _on_resize(self, event=None):
+        try:
+            w = int(getattr(event, "width", 0) or 0)
+        except Exception:
+            w = 0
+        if w > 1 and w != self.meter_width:
+            self.meter_width = w
         self._draw()
 
     def set_level(self, level: float):
@@ -50,6 +66,40 @@ class WaveformDisplay(ctk.CTkFrame):
         self.canvas.pack(padx=2, pady=2, fill="both", expand=True)
         self.amplitude = 0.0
         self._animating = False
+        self._idle_w = max(1, width - 4)
+        self._idle_h = max(1, height - 4)
+        # The frame is packed with sticky="ew", so the real canvas width is
+        # only known after layout - and it changes when the window resizes.
+        # Redraw the idle line on every geometry change or it stays stuck at
+        # the construction width and stops short of the box edge.
+        try:
+            self.canvas.bind("<Configure>", self._on_canvas_configure)
+        except Exception:
+            pass
+        self._draw_idle()
+
+    def _on_canvas_configure(self, event=None):
+        if self._animating:
+            return
+        try:
+            w = int(getattr(event, "width", 0) or 0)
+            h = int(getattr(event, "height", 0) or 0)
+        except Exception:
+            w, h = 0, 0
+        self._draw_idle(w or None, h or None)
+
+    def _draw_idle(self, w=None, h=None):
+        try:
+            self.canvas.delete("all")
+            try:
+                w = int(w or self.canvas.winfo_width() or self._idle_w)
+                h = int(h or self.canvas.winfo_height() or self._idle_h)
+            except Exception:
+                w, h = self._idle_w, self._idle_h
+            self.canvas.create_line(0, h // 2, w, h // 2,
+                                    fill=_t.FG_DIM, width=2, dash=(4, 4))
+        except Exception:
+            pass
 
     def set_amplitude(self, amp: float):
         self.amplitude = max(0.0, min(1.0, amp))
@@ -62,11 +112,7 @@ class WaveformDisplay(ctk.CTkFrame):
 
     def stop_animation(self):
         self._animating = False
-        self.canvas.delete("all")
-        w = self.canvas.winfo_width() or 400
-        h = self.canvas.winfo_height() or 80
-        self.canvas.create_line(0, h // 2, w, h // 2,
-                                fill=_t.FG_DIM, width=2, dash=(4, 4))
+        self._draw_idle()
 
     def _animate(self):
         if not self._animating:

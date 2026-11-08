@@ -326,3 +326,65 @@ class LiveTabMixin:
     def set_record_callback(self, on_start: Callable, on_stop: Callable):
         self._on_record_start = on_start if callable(on_start) else None
         self._on_record_stop = on_stop if callable(on_stop) else None
+
+    def set_input_device_callback(self, cb: Callable):
+        """App callback: device index (-1 = system default) on mic change."""
+        self._mic_callback = cb if callable(cb) else None
+
+    def _on_mic_changed(self, value=None):
+        try:
+            idx = getattr(self, "_mic_value_map", {}).get(str(value or ""), -1)
+        except Exception:
+            idx = -1
+        cb = getattr(self, "_mic_callback", None)
+        if callable(cb):
+            try:
+                cb(idx)
+            except Exception:
+                pass
+
+    def set_input_devices(self, devices, current=-1):
+        """Fill the mic picker. The row only appears when the machine
+        actually offers a choice, so single-mic setups look unchanged."""
+        vals = ["System default"]
+        mapping = {"System default": -1}
+        seen = {"system default"}
+        for d in (devices or []):
+            try:
+                name = str(d.get("name") or "Microphone").strip() or "Microphone"
+                idx = int(d.get("index", -1))
+            except Exception:
+                continue
+            base, n = name, 2
+            while name.lower() in seen:
+                name = f"{base} ({n})"
+                n += 1
+            seen.add(name.lower())
+            vals.append(name)
+            mapping[name] = idx
+        self._mic_value_map = mapping
+        try:
+            self.mic_menu.configure(values=vals)
+        except Exception:
+            pass
+        try:
+            want = int(current)
+        except Exception:
+            want = -1
+        label = "System default"
+        if want != -1:
+            for text, idx in mapping.items():
+                if idx == want:
+                    label = text
+                    break
+        try:
+            self.mic_menu.set(label)
+        except Exception:
+            pass
+        try:
+            if len(vals) > 2:
+                self.mic_frame.grid()
+            else:
+                self.mic_frame.grid_remove()
+        except Exception:
+            pass

@@ -270,8 +270,21 @@ class MoonshineGUI(LiveTabMixin, NoteTabMixin, ImportTabMixin, SrtTabMixin, Dial
         self.meter.grid(row=0, column=0, padx=20, pady=(12, 4), sticky="ew")
         self.waveform = WaveformDisplay(record_card, width=280, height=70)
         self.waveform.grid(row=1, column=0, padx=16, pady=(8, 4), sticky="ew")
+        self.mic_frame = ctk.CTkFrame(record_card, fg_color="transparent")
+        self.mic_frame.grid(row=2, column=0, padx=16, pady=(0, 4), sticky="ew")
+        ctk.CTkLabel(self.mic_frame, text="Mic:", width=30,
+                     font=("Segoe UI", 11), text_color=FG_DIM,
+                     anchor="w").grid(row=0, column=0, sticky="w")
+        self.mic_menu = ctk.CTkOptionMenu(
+            self.mic_frame, values=["System default"], width=300, height=28,
+            fg_color=BG_INPUT, button_color=ACCENT,
+            button_hover_color=ACCENT_DARK, text_color=FG_PRIMARY,
+            corner_radius=8, command=self._on_mic_changed)
+        self.mic_menu.grid(row=0, column=1, sticky="w", padx=(6, 0))
+        self.mic_menu.set("System default")
+        self.mic_frame.grid_remove()
         btn_frame = ctk.CTkFrame(record_card, fg_color="transparent")
-        btn_frame.grid(row=2, column=0, pady=(8, 12), sticky="ew")
+        btn_frame.grid(row=3, column=0, pady=(8, 12), sticky="ew")
         btn_frame.grid_columnconfigure(0, weight=1)
         btn_frame.grid_columnconfigure(1, weight=1)
         btn_frame.grid_columnconfigure(2, weight=1)
@@ -482,7 +495,7 @@ class MoonshineGUI(LiveTabMixin, NoteTabMixin, ImportTabMixin, SrtTabMixin, Dial
                     "burn_speed_menu", "burn_codec_menu",
                     "srt_engine_menu", "srt_model_menu",
                     "note_engine_menu", "note_model_menu", "note_lang_menu",
-                    "note_src_menu",
+                    "note_src_menu", "mic_menu",
                     "import_engine_menu", "import_model_menu"):
             try:
                 _w = getattr(self, _mn, None)

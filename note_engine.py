@@ -119,15 +119,31 @@ class NoteRecorder:
 
     def set_source(self, mic_id: str = "", desktop: bool = False):
         """Choose what to capture. mic_id "" = system default microphone,
-        "__none__" = no microphone, anything else = a soundcard endpoint
-        id (USB mic, array mic, ...). desktop=True mixes in the default
-        speaker's WASAPI loopback (system sound)."""
+        "__none__" = no microphone, a number = sounddevice input index,
+        anything else = a soundcard endpoint id (legacy form).
+        desktop=True mixes in the default speaker's WASAPI loopback
+        (system sound)."""
         self._src_mic_id = str(mic_id or "")
         self._src_desktop = bool(desktop)
 
+    def _sd_device(self):
+        """The sounddevice input index encoded in the source, or None."""
+        mid = self._src_mic_id
+        if mid and mid.isdigit():
+            try:
+                return int(mid)
+            except Exception:
+                return None
+        return None
+
     def _uses_soundcard(self) -> bool:
-        """The sounddevice path handles only the plain default mic."""
-        return bool(self._src_desktop) or self._src_mic_id not in ("", "__none__")
+        """The soundcard path is needed for desktop audio and for legacy
+        endpoint ids; a numeric index goes straight to sounddevice."""
+        if self._src_desktop:
+            return True
+        if self._sd_device() is not None:
+            return False
+        return self._src_mic_id not in ("", "__none__")
 
     def _has_any_source(self) -> bool:
         return self._src_desktop or self._src_mic_id != "__none__"
@@ -248,7 +264,7 @@ class NoteRecorder:
                 mic = None
                 spk = None
                 if self._src_mic_id != "__none__":
-                    if self._src_mic_id:
+                    if self._src_mic_id and self._sd_device() is None:
                         mic = sc.get_microphone(self._src_mic_id)
                     else:
                         mic = sc.default_microphone()
@@ -510,6 +526,7 @@ class NoteRecorder:
                     dtype="int16",
                     callback=self._audio_callback,
                     blocksize=1024,
+                    device=self._sd_device(),
                 )
                 self._stream.start()
         except Exception as e:

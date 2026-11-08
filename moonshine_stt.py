@@ -60,7 +60,7 @@ try:
     )
 except Exception:  # pragma: no cover - fallback if core/ is missing
     import json as _json
-    APP_VERSION = "1.4.10"
+    APP_VERSION = "1.4.11"
     CONFIG_PATH = os.path.join(os.path.dirname(__file__), "moonshine_config.json")
     NOTES_AUDIO_DIR = os.path.join(os.path.dirname(__file__), "notes_audio")
     _CONFIG_LOCK = threading.RLock()
@@ -103,6 +103,7 @@ except Exception:  # pragma: no cover - fallback if core/ is missing
         "completion_alert": True,
         "theme": "dark",
         "windowless": False,
+        "input_device": -1,
     }
 
     def load_local_config():
@@ -370,6 +371,10 @@ class MoonshineSTTApp:
         else:
             self.engine = self.moonshine_engine
         self.recorder = AudioRecorder(sample_rate=SAMPLE_RATE)
+        try:
+            self.recorder.set_device(self.config.get("input_device", -1))
+        except Exception:
+            pass
         self._recording = False
         self._model_switching = False
         self._rec_lock = threading.Lock()
@@ -589,6 +594,12 @@ class MoonshineSTTApp:
                 try:
                     self.gui.set_unload_callback(
                         lambda: self.unload_tab_engines("live"))
+                except Exception:
+                    pass
+                try:
+                    self.gui.set_input_device_callback(
+                        self._on_input_device_changed)
+                    self._refresh_input_devices()
                 except Exception:
                     pass
                 try:
@@ -2404,6 +2415,12 @@ class MoonshineSTTApp:
                 self.config["srt_tab"] = name
                 save_local_config(self.config)
 
+        if name == "Live":
+            try:
+                self._refresh_input_devices()
+            except Exception:
+                pass
+
         try:
             mapping = {"Live": "live", "SRT File": "srt", "Note": "note",
                        "Import": "import"}
@@ -3697,6 +3714,63 @@ class MoonshineSTTApp:
         except Exception:
             pass
 
+    def _on_input_device_changed(self, index):
+        """Live tab mic picker: persist the choice and re-point the recorder
+        (takes effect on the next hold-to-record, never mid-capture)."""
+        try:
+            idx = int(index)
+        except Exception:
+            idx = -1
+        self.config["input_device"] = idx
+        try:
+            save_local_config(self.config)
+        except Exception:
+            pass
+        try:
+            self.recorder.set_device(idx)
+        except Exception:
+            pass
+        name = "system default"
+        if idx >= 0:
+            try:
+                name = str(AudioRecorder.list_devices()[idx]["name"])
+            except Exception:
+                name = f"device {idx}"
+        try:
+            self._log(f"Input device -> {name}")
+        except Exception:
+            pass
+
+    def _refresh_input_devices(self):
+        """Rebuild the Live mic picker (hot-plugged mics, unplugged ones).
+        Keeps the saved choice when it is still present, else falls back to
+        the system default so a vanished USB mic cannot wedge recording."""
+        try:
+            devices = AudioRecorder.list_input_devices()
+        except Exception:
+            devices = []
+        try:
+            want = int(self.config.get("input_device", -1))
+        except Exception:
+            want = -1
+        if want >= 0 and not any(d.get("index") == want for d in devices):
+            want = -1
+            if self.config.get("input_device", -1) != -1:
+                self.config["input_device"] = -1
+                try:
+                    save_local_config(self.config)
+                except Exception:
+                    pass
+                try:
+                    self.recorder.set_device(-1)
+                except Exception:
+                    pass
+        try:
+            self.gui.set_input_devices(devices, want)
+        except Exception:
+            pass
+        return devices
+
     def _srt_lang_codes_for_tab(self):
         """Language codes the SRT tab's own engine accepts (input side)."""
         try:
@@ -3944,9 +4018,31 @@ class MoonshineSTTApp:
                 self._rec_start_t = time.monotonic()
             except Exception:
                 pass
+            try:
+                threading.Thread(target=self._watch_silent_stream,
+                                 daemon=True).start()
+            except Exception:
+                pass
             if self.gui:
                 self.gui.after(0, lambda: self.gui.set_recording_state(True))
                 self.gui.after(0, lambda: self.gui.set_status("Recording... F2 held", DANGER))
+    def _watch_silent_stream(self):
+        """Warn when the opened mic never delivers a single block: dead
+        endpoint, muted device, or another app holding it exclusively."""
+        try:
+            time.sleep(2.5)
+        except Exception:
+            return
+        if not self._recording:
+            return
+        try:
+            got = len(getattr(self.recorder, "_frames", None) or [])
+        except Exception:
+            return
+        if got == 0:
+            self._gui_queue.put(("status", (
+                "Mic open but silent - pick another mic", DANGER)))
+
     def _stop_recording(self):
         with self._rec_lock:
             if not self._recording:
@@ -4390,14 +4486,15 @@ class MoonshineSTTApp:
         with self._srt_lock:
             self._srt_thread = _t
         _t.start()
-    @staticmethod
-    def _shutdown_pc(self):
+    def _shutdown_pc(self) -> bool:
         try:
             import subprocess as _sp
-            _sp.Popen(["shutdown", "/s", "/f", "/t", "60"],
-                      stdout=_sp.DEVNULL, stderr=_sp.DEVNULL)
+            _r = _sp.run(["shutdown", "/s", "/f", "/t", "60"],
+                         stdout=_sp.DEVNULL, stderr=_sp.DEVNULL,
+                         timeout=10)
+            return bool(getattr(_r, "returncode", 1) == 0)
         except Exception:
-            pass
+            return False
     @staticmethod
     def _abort_shutdown() -> bool:
         try:
@@ -4425,13 +4522,19 @@ class MoonshineSTTApp:
         except Exception:
             want_sd = False
         if bool(full_ok) and want_sd:
-            self._gui_queue.put(
-                ("srt_log", "Auto-shutdown ON: PC powers off in 60s "
-                 "(run `shutdown /a` in cmd to abort)"))
             try:
-                self._shutdown_pc()
+                _sd_ok = self._shutdown_pc()
             except Exception:
-                pass
+                _sd_ok = False
+            if _sd_ok:
+                self._gui_queue.put(
+                    ("srt_log", "Auto-shutdown ON: PC powers off in 60s "
+                     "(run `shutdown /a` in cmd to abort)"))
+            else:
+                self._gui_queue.put(
+                    ("srt_log", "Auto-shutdown FAILED: could not schedule "
+                     "shutdown (run `shutdown /s /f /t 60` in cmd; "
+                     "abort with `shutdown /a`)"))
             return
         try:
             want_alert = bool(self.config.get("completion_alert", True))

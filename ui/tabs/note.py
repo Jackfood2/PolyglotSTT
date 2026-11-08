@@ -7,7 +7,7 @@ import customtkinter as ctk
 import time
 from pathlib import Path
 from ui.theme import ACCENT, ACCENT_DARK, SUCCESS, WARNING, DANGER, BG_CARD, BG_INPUT, FG_PRIMARY, FG_SECONDARY, FG_DIM, BTN_DIM, BTN_DIM_HOVER, BTN_GO_HOVER, BTN_DANGER_HOVER, BTN_TEXT
-from ui.widgets import LevelMeter
+from ui.widgets import LevelMeter, WaveformDisplay
 from ui.choices import MODEL_CHOICES, MODEL_CHOICES_REV, WHISPER_MODEL_CHOICES, WHISPER_MODEL_CHOICES_REV, CANARY_MODEL_LABEL, ENGINE_CHOICES, WHISPER_LANGS, SRT_LANG_NAMES, SRT_LANG_CODE_FROM_DISPLAY, QWEN_MODEL_CHOICES, QWEN_MODEL_CHOICES_REV, QWEN_LANG_NAMES, QWEN_SRT_IN_CODES
 try:
     from core.config import NOTES_AUDIO_DIR
@@ -91,9 +91,17 @@ class NoteTabMixin:
         # lands 40-80s in; doubles as the mic-death visual).
         try:
             self.note_meter = LevelMeter(ctrl_card, width=360, height=8)
-            self.note_meter.pack(pady=(0, 8))
+            self.note_meter.pack(fill="x", padx=24, pady=(0, 6))
         except Exception:
             self.note_meter = None
+
+        # Waveform mirroring the Live tab, so Note recordings get the same
+        # "is the mic hearing me" feedback while a chunk is being captured.
+        try:
+            self.note_waveform = WaveformDisplay(ctrl_card, width=360, height=60)
+            self.note_waveform.pack(fill="x", padx=24, pady=(0, 8))
+        except Exception:
+            self.note_waveform = None
 
         # Record / Stop button
         btn_row = ctk.CTkFrame(ctrl_card, fg_color="transparent")
@@ -543,24 +551,28 @@ class NoteTabMixin:
         current selection when the endpoint is still present; falls back to
         the default mic when it vanished."""
         try:
-            from note_engine import list_input_sources
-            sources = list_input_sources()
+            from recorder import list_input_devices
+            sources = list_input_devices()
         except Exception:
             sources = []
         self._note_src_list = sources
-        vals = ["Default mic"]
-        mapping = {"Default mic": ""}
-        seen = set()
+        vals = ["System default"]
+        mapping = {"System default": ""}
+        seen = {"system default"}
         for s in sources:
-            base = str(s.get("name") or "Microphone")
+            try:
+                base = str(s.get("name") or "Microphone").strip() or "Microphone"
+                idx = int(s.get("index", -1))
+            except Exception:
+                continue
             name = base
             i = 2
-            while name in seen:
+            while name.lower() in seen:
                 name = f"{base} ({i})"
                 i += 1
-            seen.add(name)
+            seen.add(name.lower())
             vals.append(name)
-            mapping[name] = str(s.get("id") or "")
+            mapping[name] = str(idx)
         vals.append("No microphone")
         mapping["No microphone"] = "__none__"
         self._note_src_map = mapping
@@ -576,9 +588,9 @@ class NoteTabMixin:
                 label = name
                 break
         if label is None:
-            label = "Default mic"
+            label = "System default"
             # Only forget a missing endpoint when the list really loaded:
-            # a transient soundcard failure must not wipe the saved choice.
+            # a transient enumeration failure must not wipe the saved choice.
             if sources and want not in ("", "__none__"):
                 self._note_mic_id = ""
                 self._note_notify_source()
@@ -883,6 +895,11 @@ class NoteTabMixin:
             self.note_record_btn.configure(
                 text="■  STOP", fg_color=DANGER, hover_color=BTN_DANGER_HOVER)
             self.note_status_label.configure(text="Recording...", text_color=DANGER)
+            try:
+                if getattr(self, "note_waveform", None) is not None:
+                    self.note_waveform.start_animation()
+            except Exception:
+                pass
             self._note_prepare_box()
             self._note_mic_warned = False
 
@@ -953,6 +970,13 @@ class NoteTabMixin:
 
         self.note_record_btn.configure(
             text="●  RECORD", fg_color=ACCENT, hover_color=ACCENT_DARK)
+        try:
+            if getattr(self, "note_waveform", None) is not None:
+                self.note_waveform.stop_animation()
+            if getattr(self, "note_meter", None) is not None:
+                self.note_meter.set_level(0)
+        except Exception:
+            pass
         try:
             _pend = self._note_pending_chunks()
         except Exception:
@@ -1087,11 +1111,16 @@ class NoteTabMixin:
         except Exception:
             pass
 
-    @staticmethod
-    def _note_safe_level(meter, value):
+    def _note_safe_level(self, meter, value):
         try:
             if meter is not None and meter.winfo_exists():
                 meter.set_level(value)
+        except Exception:
+            pass
+        try:
+            wf = getattr(self, "note_waveform", None)
+            if wf is not None and wf.winfo_exists():
+                wf.set_amplitude(value)
         except Exception:
             pass
 

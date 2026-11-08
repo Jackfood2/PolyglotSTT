@@ -97,6 +97,14 @@ Moonshine stay on CPU.
 - **Note tab** — mic dictation in 40–80s chunks with timer, *Save as TXT*
   (UTF-8), *Copy All*, and session-audio export. File import moved out —
   see the Import tab (mic and import no longer share a box).
+- **Microphone picker** — Live and Note both list every capture endpoint the
+  app can open (USB mic, headset, laptop array), so a machine with more than
+  one input is no longer stuck with whatever Windows defaulted to. The row
+  appears only when there is a real choice, the pick persists across
+  restarts, and an unplugged mic falls back to the system default instead of
+  failing. Both tabs animate a live waveform, and a mic that opens but never
+  delivers audio is called out in the status line instead of leaving a flat
+  line.
 - **Import tab** — drag & drop (or Browse) any audio/video
   (`wav/mp3/m4a/mp4/mkv/avi/mov/…`), *Transcribe File* runs it through
   this tab's own engine (Whisper single-pass, Canary/Qwen/Moonshine
@@ -346,6 +354,40 @@ requirements*.txt  dependency pins (base / Canary / Whisper)
   and reburn to relearn.
 
 ## Changelog
+
+### v1.4.11
+
+Microphone choice in Live and Note, a waveform for Note, and two
+silent-failure fixes.
+
+- **Microphone picker (Live + Note).** Both tabs now list every capture
+  endpoint the app can open — USB mic, headset, laptop array — instead of
+  quietly using whatever Windows picked. Only DirectSound and MME endpoints
+  are offered, because those are the only host APIs that resample to the
+  16 kHz the engines expect (WASAPI refuses anything but the endpoint's
+  native rate, WDM-KS fails on most drivers). The row stays hidden on
+  single-mic machines, the choice persists across restarts
+  (`input_device` / `note_mic_id`), and a mic that disappears falls back to
+  the system default instead of wedging the recorder.
+- **Silent-mic warning.** If a recording opens but never receives a single
+  audio block, the status line now says *"Mic open but silent - pick
+  another mic"* after 2.5 s instead of showing a flat line indefinitely.
+- **Note waveform.** The Note tab has the same animated waveform and
+  full-width level meter as Live, so you can see whether the mic is hearing
+  you while a chunk records.
+- **Fixed: auto-shutdown never ran.** *Shut down PC when done* was a
+  `@staticmethod` that still declared `self`, so the call raised
+  `TypeError` and a bare `except: pass` swallowed it — the log claimed the
+  shutdown was scheduled while nothing was. It now checks the exit code and
+  only reports success when `shutdown.exe` accepted the request, otherwise
+  it prints the command to run by hand.
+- **Fixed: invisible mic dropdown in light theme.** The Live mic menu
+  inherited hardcoded colours that the light-theme remap turned into
+  near-black text on a near-black background; it now uses the same
+  appearance-aware colours as every other menu.
+- **Fixed: cut-off waveform and level bar.** The idle line and the meter
+  fill were drawn once at the widget's construction width, so they stopped
+  short of the box edge; both now track the real canvas width on resize.
 
 ### v1.4.10
 
