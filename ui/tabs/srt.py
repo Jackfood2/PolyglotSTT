@@ -5,9 +5,8 @@
 
 import customtkinter as ctk
 import threading
-from pathlib import Path
 from typing import Optional, Callable, Tuple
-from ui.theme import ACCENT, ACCENT_DARK, ACCENT_GLOW, SUCCESS, WARNING, DANGER, BG_CARD, BG_INPUT, FG_PRIMARY, FG_SECONDARY, FG_DIM, BTN_DIM, BTN_DIM_HOVER, BTN_GO_HOVER, BTN_DANGER_HOVER, BTN_BURN, BTN_BURN_HOVER, BTN_TEXT, theme_color
+from ui.theme import ACCENT, ACCENT_DARK, ACCENT_GLOW, SUCCESS, DANGER, BG_CARD, BG_INPUT, FG_PRIMARY, FG_SECONDARY, FG_DIM, BTN_DIM, BTN_DIM_HOVER, BTN_GO_HOVER, BTN_DANGER_HOVER, BTN_BURN, BTN_BURN_HOVER, BTN_TEXT, theme_color
 from ui.choices import MODEL_CHOICES, MODEL_CHOICES_REV, WHISPER_MODEL_CHOICES, WHISPER_MODEL_CHOICES_REV, CANARY_MODEL_LABEL, ENGINE_CHOICES, WHISPER_LANGS, SRT_LANG_NAMES, SRT_LANG_DISPLAY, CANARY_LIVE_SRC_CODES, CANARY_SRT_IN_CODES, CANARY_SRT_OUT_CODES, WHISPER_SRT_IN_CODES, WHISPER_SRT_OUT_CODES, QWEN_MODEL_CHOICES, QWEN_MODEL_CHOICES_REV, QWEN_SRT_IN_CODES, QWEN_LANG_NAMES, BURN_SPEED_HELP, lang_display, lang_code_from_display
 
 
@@ -590,10 +589,17 @@ class SrtTabMixin:
         can_translate = True
         if kind == "Whisper":
             try:
-                from core.config import load_local_config
                 import capabilities as _cap
-                _mid = str(load_local_config().get("whisper_model",
-                                                   "large-v3"))
+                _mid = ""
+                try:
+                    _label = str(self.srt_model_var.get() or "")
+                    _mid = str(WHISPER_MODEL_CHOICES.get(_label) or "")
+                except Exception:
+                    _mid = ""
+                if not _mid:
+                    from core.config import load_local_config
+                    _mid = str(load_local_config().get("whisper_model",
+                                                      "large-v3"))
                 can_translate = _cap.model_supports(
                     "Whisper", _mid, _cap.TRANSLATE)
             except Exception:
@@ -679,6 +685,10 @@ class SrtTabMixin:
     def _on_srt_model_changed(self, value):
         try:
             self._request_tab_engine("srt", model_display=value)
+        except Exception:
+            pass
+        try:
+            self._refresh_srt_lang_state()
         except Exception:
             pass
 
@@ -1664,7 +1674,21 @@ class SrtTabMixin:
             except Exception:
                 srt_in, srt_out = "auto", "en"
             try:
-                srt_task = (self.canary_task_var.get() or "").strip().lower()
+                srt_task = ""
+                try:
+                    _kind = self.get_srt_engine_kind()
+                except Exception:
+                    _kind = "Moonshine v2"
+                if _kind in ("Whisper", "Canary-1B"):
+                    from core.config import load_local_config as _llc
+                    _cfg = _llc()
+                    if _kind == "Whisper":
+                        srt_task = str(
+                            _cfg.get("whisper_task", "translate") or "")
+                    else:
+                        srt_task = str(
+                            _cfg.get("canary_task", "transcribe") or "")
+                    srt_task = srt_task.strip().lower()
             except Exception:
                 srt_task = ""
             if srt_task not in ("transcribe", "translate"):

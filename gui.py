@@ -1,12 +1,7 @@
-import pathlib
-# gui.py
 import customtkinter as ctk
 import queue
 import threading
-import time
-import math
-from pathlib import Path
-from typing import Optional, Callable, Tuple
+from typing import Optional, Callable
 from ui.tabs.live import LiveTabMixin
 from ui.tabs.note import NoteTabMixin
 from ui.tabs.import_tab import ImportTabMixin

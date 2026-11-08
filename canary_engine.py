@@ -1,4 +1,3 @@
-import pathlib
 # canary_engine.py
 import threading
 import numpy as np
@@ -338,8 +337,8 @@ class CanaryEngine:
             try:
                 sf.write(tmp_path, audio_float, samplerate=sample_rate)
                 task_arg = "ast" if eff_task == "translate" else "asr"
-                src = eff_src if eff_src != "auto" else None
-                tgt = eff_tgt
+                src = eff_src if eff_src not in (None, "", "auto") else None
+                tgt = eff_tgt if eff_tgt not in (None, "", "auto") else None
                 with self._infer_lock:
                     with self._lock:
                         if not self._ready or self._model is None:
@@ -352,7 +351,7 @@ class CanaryEngine:
                         results = model.transcribe(
                             [tmp_path],
                             batch_size=1,
-                            source_lang=src or "en",
+                            source_lang=src,
                             target_lang=tgt,
                             task=task_arg,
                             pnc="yes",
@@ -402,8 +401,8 @@ class CanaryEngine:
             if err:
                 return "[Canary Error: %s]" % err
             task_arg = "ast" if eff_task == "translate" else "asr"
-            src = eff_src if eff_src != "auto" else None
-            tgt = eff_tgt
+            src = eff_src if eff_src not in (None, "", "auto") else None
+            tgt = eff_tgt if eff_tgt not in (None, "", "auto") else None
             with self._infer_lock:
                 with self._lock:
                     if not self._ready or self._model is None:
@@ -416,7 +415,7 @@ class CanaryEngine:
                     results = model.transcribe(
                         [wav_path],
                         batch_size=1,
-                        source_lang=src or "en",
+                        source_lang=src,
                         target_lang=tgt,
                         task=task_arg,
                         pnc="yes",

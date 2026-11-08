@@ -43,12 +43,6 @@ def format_note_sentences(text: str) -> str:
         # Re-glue abbreviations split above ("Mr." + "Smith" -> one line).
         out = []
         for c in cands:
-            try:
-                tail = c.strip().split()[-1].lower() if c.strip() else ""
-            except Exception:
-                tail = ""
-            if out and tail in _ABBREV_TAILS:
-                pass  # current line IS the abbrev tail start - keep, merge next
             if out:
                 try:
                     prev_tail = out[-1].strip().split()[-1].lower()

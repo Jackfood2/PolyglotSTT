@@ -9,6 +9,7 @@ import time
 import wave
 import numpy as np
 import sounddevice as sd
+from recorder import open_input_stream, close_input_stream
 from typing import Optional, Callable, List
 from pathlib import Path
 
@@ -100,6 +101,7 @@ class NoteRecorder:
         self._wav_lock = threading.Lock()
         self._wav_q: Optional[queue.Queue] = None
         self._wav_thread: Optional[threading.Thread] = None
+        self._wav_stop: Optional[threading.Event] = None
         self._wav_dropped = 0
         self._stream_status = ""
         self.session_wav: Optional[str] = None
@@ -335,13 +337,17 @@ class NoteRecorder:
             except Exception:
                 pass
 
-    def _wav_writer_loop(self, q, w):
+    def _wav_writer_loop(self, q, w, stop_event=None):
         """Dedicated archive writer: the audio thread only queues frames.
         The wave handle is per-session (not read from self) so a new
         recording can never inherit a stalled previous writer's chunks."""
         while True:
             try:
-                item = q.get()
+                item = q.get(timeout=0.2)
+            except queue.Empty:
+                if stop_event is not None and stop_event.is_set():
+                    return
+                continue
             except Exception:
                 return
             if item is None:
@@ -376,12 +382,13 @@ class NoteRecorder:
 
     def _stop_wav_writer(self, timeout=10.0):
         """Flush/drain the archive writer before the WAV is closed."""
-        q, t = self._wav_q, self._wav_thread
+        t, stop = self._wav_thread, self._wav_stop
         self._wav_q = None
         self._wav_thread = None
-        if q is not None:
+        self._wav_stop = None
+        if stop is not None:
             try:
-                q.put(None, timeout=1.0)
+                stop.set()
             except Exception:
                 pass
         if t is not None and t.is_alive():
@@ -493,12 +500,14 @@ class NoteRecorder:
                 with self._wav_lock:
                     self._wav = w
                 q = queue.Queue(maxsize=8)
+                stop_event = threading.Event()
                 t = threading.Thread(target=self._wav_writer_loop,
-                                     args=(q, w),
+                                     args=(q, w, stop_event),
                                      daemon=True, name="note-wav-writer")
                 t.start()
                 self._wav_q = q
                 self._wav_thread = t
+                self._wav_stop = stop_event
                 self.session_wav = str(wp)
             except Exception:
                 try:
@@ -513,6 +522,7 @@ class NoteRecorder:
                     pass
                 self._wav_q = None
                 self._wav_thread = None
+                self._wav_stop = None
                 self.session_wav = None
         self._recording = True
 
@@ -520,7 +530,7 @@ class NoteRecorder:
             if self._uses_soundcard():
                 self._start_soundcard()
             else:
-                self._stream = sd.InputStream(
+                self._stream = open_input_stream(
                     samplerate=self.sample_rate,
                     channels=1,
                     dtype="int16",
@@ -528,7 +538,6 @@ class NoteRecorder:
                     blocksize=1024,
                     device=self._sd_device(),
                 )
-                self._stream.start()
         except Exception as e:
             self._recording = False
             self._stream = None
@@ -549,11 +558,7 @@ class NoteRecorder:
         self._recording = False
         self._stop_soundcard()
         if self._stream:
-            try:
-                self._stream.stop()
-                self._stream.close()
-            except Exception:
-                pass
+            close_input_stream(self._stream)
             self._stream = None
 
         with self._lock:

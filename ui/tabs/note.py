@@ -23,7 +23,6 @@ class NoteTabMixin:
     # ═══════════════════════════════════════════════════════════
     def _build_note_tab(self, tab):
         """Build the Note tab UI - professional dictation layout."""
-        import customtkinter as ctk
 
         self._note_recording = False
         self._note_start_time = 0
@@ -44,6 +43,7 @@ class NoteTabMixin:
         # Audio source (Note only): mic endpoint id, "" = system default,
         # "__none__" = no mic; desktop = mix in WASAPI loopback.
         self._note_mic_id = ""
+        self._note_mic_name = ""
         self._note_desktop_audio = False
         self._note_src_cb = None
         self._note_src_list = []
@@ -559,12 +559,14 @@ class NoteTabMixin:
         vals = ["System default"]
         mapping = {"System default": ""}
         seen = {"system default"}
+        by_index = {}
         for s in sources:
             try:
                 base = str(s.get("name") or "Microphone").strip() or "Microphone"
                 idx = int(s.get("index", -1))
             except Exception:
                 continue
+            by_index[idx] = base
             name = base
             i = 2
             while name.lower() in seen:
@@ -582,6 +584,35 @@ class NoteTabMixin:
             pass
         want = (self._note_mic_id if select_id is None
                 else str(select_id or ""))
+        # Track the endpoint by name as well: Windows hands a replugged USB
+        # mic a new index, and can hand the old index to another device. The
+        # name is written on every pick, so adopting it here cannot undo a
+        # deliberate choice - only a stale index.
+        nm = str(getattr(self, "_note_mic_name", "") or "").strip()
+        # A saved name is only set while a specific mic is wanted, so an
+        # empty id here means "it went away": re-select it when it returns.
+        # Picking System default clears the name, so that choice is safe.
+        if nm and (want.isdigit() or want == ""):
+            try:
+                from recorder import match_listed_device
+                new_idx = match_listed_device(nm, sources)
+            except Exception:
+                new_idx = None
+            if new_idx is not None and str(new_idx) != want:
+                want = str(new_idx)
+                self._note_mic_id = want
+                self._note_notify_source()
+        # Keep the endpoint name in sync for the next replug. A temporarily
+        # missing mic keeps its name so it can be re-selected when it returns.
+        try:
+            if want.isdigit():
+                nm = by_index.get(int(want))
+                if nm:
+                    self._note_mic_name = nm
+            elif want in ("", "__none__"):
+                self._note_mic_name = ""
+        except Exception:
+            pass
         label = None
         for name, mid in mapping.items():
             if mid == want:
@@ -606,7 +637,30 @@ class NoteTabMixin:
         except Exception:
             mid = ""
         self._note_mic_id = mid
+        # Remember which endpoint this index belongs to right now, so the
+        # next rebuild follows the device by name instead of the index.
+        try:
+            self._note_mic_name = self._note_name_for(int(mid))
+        except Exception:
+            self._note_mic_name = ""
         self._note_notify_source()
+
+    def _note_name_for(self, index):
+        """Endpoint name behind a capture index, or ""."""
+        for s in (getattr(self, "_note_src_list", None) or []):
+            try:
+                if int(s.get("index", -1)) == int(index):
+                    return str(s.get("name") or "").strip()
+            except Exception:
+                continue
+        try:
+            from recorder import list_input_devices
+            for s in list_input_devices():
+                if int(s.get("index", -1)) == int(index):
+                    return str(s.get("name") or "").strip()
+        except Exception:
+            pass
+        return ""
 
     def _on_note_desktop_toggle(self):
         try:

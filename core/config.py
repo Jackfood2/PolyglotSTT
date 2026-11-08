@@ -5,7 +5,7 @@ import json
 import os
 import threading
 
-APP_VERSION = "1.4.11"
+APP_VERSION = "1.4.12"
 
 PROJECT_ROOT = os.path.dirname(os.path.dirname(__file__))
 CONFIG_PATH = os.path.join(PROJECT_ROOT, "moonshine_config.json")
@@ -49,6 +49,7 @@ DEFAULT_CONFIG = {
     "theme": "dark",
     "windowless": False,
     "input_device": -1,
+    "input_device_name": "",
 }
 
 

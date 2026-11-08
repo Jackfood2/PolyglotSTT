@@ -708,18 +708,18 @@ class ImportTabMixin:
             if not txt:
                 return
             try:
-                current = self.import_text.get("1.0", "end").strip()
+                current = self.import_text.get("1.0", "end").rstrip()
+                if current == "Imported sentences will appear here...":
+                    current = ""
             except Exception:
                 current = ""
             try:
-                if (not current
-                        or current == "Imported sentences will appear here..."):
-                    self.import_text.delete("1.0", "end")
+                self.import_text.delete("1.0", "end")
+                if current:
+                    self.import_text.insert(
+                        "end", current + "\n\n" + txt + "\n")
                 else:
-                    if not current.endswith("\n"):
-                        self.import_text.insert("end", "\n")
-                    self.import_text.insert("end", "\n")
-                self.import_text.insert("end", txt + "\n\n")
+                    self.import_text.insert("end", txt + "\n")
                 try:
                     self.import_text.see("end")
                 except Exception:

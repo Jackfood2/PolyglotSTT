@@ -1,4 +1,3 @@
-import pathlib
 # engine.py
 import os
 import threading
@@ -147,7 +146,7 @@ class TranscriptionEngine:
                         raise RuntimeError("no portable cache")
                 except Exception as e:
                     try:
-                        from moonshine_voice.download import get_model_for_language as _g
+                        from moonshine_voice.download import get_model_for_language
                         model_path, model_arch = get_model_for_language(
                             self.language, wanted
                         )

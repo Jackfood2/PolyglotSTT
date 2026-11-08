@@ -1,5 +1,3 @@
-import pathlib
-
 import os
 import sys
 import time
@@ -26,7 +24,6 @@ from engine import TranscriptionEngine
 from recorder import AudioRecorder
 from input_sim import (
     insert_text,
-    set_clipboard_text,
     get_foreground_window,
     get_focused_child,
     get_window_title,
@@ -60,7 +57,7 @@ try:
     )
 except Exception:  # pragma: no cover - fallback if core/ is missing
     import json as _json
-    APP_VERSION = "1.4.11"
+    APP_VERSION = "1.4.12"
     CONFIG_PATH = os.path.join(os.path.dirname(__file__), "moonshine_config.json")
     NOTES_AUDIO_DIR = os.path.join(os.path.dirname(__file__), "notes_audio")
     _CONFIG_LOCK = threading.RLock()
@@ -104,6 +101,7 @@ except Exception:  # pragma: no cover - fallback if core/ is missing
         "theme": "dark",
         "windowless": False,
         "input_device": -1,
+        "input_device_name": "",
     }
 
     def load_local_config():
@@ -372,10 +370,13 @@ class MoonshineSTTApp:
             self.engine = self.moonshine_engine
         self.recorder = AudioRecorder(sample_rate=SAMPLE_RATE)
         try:
-            self.recorder.set_device(self.config.get("input_device", -1))
+            self.recorder.set_device(self.config.get("input_device", -1),
+                                     self.config.get("input_device_name", ""))
         except Exception:
             pass
+        self._mic_watch_stop = threading.Event()
         self._recording = False
+        self._rec_session = 0
         self._model_switching = False
         self._rec_lock = threading.Lock()
         self._key_pressed = False
@@ -599,7 +600,12 @@ class MoonshineSTTApp:
                 try:
                     self.gui.set_input_device_callback(
                         self._on_input_device_changed)
-                    self._refresh_input_devices()
+                    self._refresh_input_devices(refresh=True)
+                except Exception:
+                    pass
+                try:
+                    threading.Thread(target=self._watch_input_devices,
+                                     daemon=True).start()
                 except Exception:
                     pass
                 try:
@@ -2417,7 +2423,7 @@ class MoonshineSTTApp:
 
         if name == "Live":
             try:
-                self._refresh_input_devices()
+                self._refresh_input_devices(refresh=True)
             except Exception:
                 pass
 
@@ -3112,7 +3118,7 @@ class MoonshineSTTApp:
                 pass
     def _on_whisper_model_changed(self, display_label: str):
         try:
-            from gui import WHISPER_MODEL_CHOICES, WHISPER_MODEL_CHOICES_REV
+            from gui import WHISPER_MODEL_CHOICES
         except Exception:
             return
         new_id = WHISPER_MODEL_CHOICES.get(display_label)
@@ -3721,55 +3727,146 @@ class MoonshineSTTApp:
             idx = int(index)
         except Exception:
             idx = -1
+        name = ""
+        if idx >= 0:
+            try:
+                name = str(AudioRecorder.list_devices()[idx]["name"]).strip()
+            except Exception:
+                name = ""
         self.config["input_device"] = idx
+        self.config["input_device_name"] = name
         try:
             save_local_config(self.config)
         except Exception:
             pass
         try:
-            self.recorder.set_device(idx)
+            self.recorder.set_device(idx, name or None)
         except Exception:
             pass
-        name = "system default"
-        if idx >= 0:
-            try:
-                name = str(AudioRecorder.list_devices()[idx]["name"])
-            except Exception:
-                name = f"device {idx}"
+        shown = name or ("system default" if idx < 0 else f"device {idx}")
         try:
-            self._log(f"Input device -> {name}")
+            self._log(f"Input device -> {shown}")
         except Exception:
             pass
 
-    def _refresh_input_devices(self):
+    def _refresh_input_devices(self, refresh: bool = False):
         """Rebuild the Live mic picker (hot-plugged mics, unplugged ones).
-        Keeps the saved choice when it is still present, else falls back to
-        the system default so a vanished USB mic cannot wedge recording."""
+
+        The saved endpoint is tracked by *name*, because Windows hands a
+        replugged USB mic a new index. While it is away the picker falls
+        back to the system default so recording keeps working, and the name
+        is kept so the same mic is re-selected automatically on replug.
+        """
         try:
-            devices = AudioRecorder.list_input_devices()
+            devices = AudioRecorder.list_input_devices(refresh=refresh)
         except Exception:
             devices = []
+        by_index = {}
+        for d in devices:
+            try:
+                by_index[int(d.get("index", -1))] = str(
+                    d.get("name") or "").strip()
+            except Exception:
+                continue
         try:
-            want = int(self.config.get("input_device", -1))
+            old = int(self.config.get("input_device", -1))
         except Exception:
+            old = -1
+        want_name = str(self.config.get("input_device_name", "") or "").strip()
+        want = old
+        if want_name:
+            # The name is the stable handle. A replugged USB mic comes back
+            # on a new index, and its old index can be handed to a different
+            # device, so the name wins over the stored index either way.
+            try:
+                from recorder import match_listed_device
+                hit = match_listed_device(want_name, devices)
+            except Exception:
+                hit = None
+            if hit is not None:
+                want = int(hit)
+            elif want >= 0 and want not in by_index:
+                # Away: keep the name, fall back to the system default so
+                # holding F2 still records from something.
+                want = -1
+        elif want >= 0 and want not in by_index:
             want = -1
-        if want >= 0 and not any(d.get("index") == want for d in devices):
-            want = -1
-            if self.config.get("input_device", -1) != -1:
-                self.config["input_device"] = -1
-                try:
-                    save_local_config(self.config)
-                except Exception:
-                    pass
-                try:
-                    self.recorder.set_device(-1)
-                except Exception:
-                    pass
+        if want != old:
+            self.config["input_device"] = want
+            try:
+                save_local_config(self.config)
+            except Exception:
+                pass
+            try:
+                if want >= 0:
+                    self._log(f"Mic -> {by_index.get(want, want_name)}")
+            except Exception:
+                pass
+        try:
+            self.recorder.set_device(want, want_name or None)
+        except Exception:
+            pass
+        self._apply_input_devices(devices, want)
+        return devices
+
+    def _apply_input_devices(self, devices, want):
+        """Push the device list into the pickers.
+
+        Tk widgets may only be touched from the thread that created them,
+        and this runs from the hotkey thread too (after a mic error), so an
+        off-thread call hands the work to the GUI queue instead.
+        """
+        if getattr(self, "gui", None) is None:
+            return
+        if threading.current_thread() is not threading.main_thread():
+            try:
+                self._gui_queue.put(("mic_devices_ui", (devices, want)))
+            except Exception:
+                pass
+            return
         try:
             self.gui.set_input_devices(devices, want)
         except Exception:
             pass
-        return devices
+        try:
+            note_refresh = getattr(self.gui, "_refresh_note_sources", None)
+            if callable(note_refresh):
+                note_refresh()
+        except Exception:
+            pass
+
+    def _watch_input_devices(self):
+        """Hot-plug watcher. PortAudio caches the endpoint list at init, so
+        an unplugged or replugged mic is invisible until it is re-scanned.
+        Poll every few seconds and rebuild the picker when the list moves,
+        so a replug works without restarting the app."""
+        last = None
+        while not self._mic_watch_stop.wait(5.0):
+            try:
+                if self.recorder.is_recording or self._recording:
+                    continue
+                note = getattr(self.gui, "_note_recorder", None)
+                if note is not None and getattr(note, "is_recording", False):
+                    continue
+            except Exception:
+                continue
+            try:
+                devices = AudioRecorder.list_input_devices(refresh=True)
+            except Exception:
+                continue
+            try:
+                sig = tuple(sorted(
+                    (int(d.get("index", -1)), str(d.get("name") or ""))
+                    for d in devices))
+            except Exception:
+                continue
+            if sig == last:
+                continue
+            last = sig
+            try:
+                self._gui_queue.put(("mic_devices", devices))
+            except Exception:
+                pass
 
     def _srt_lang_codes_for_tab(self):
         """Language codes the SRT tab's own engine accepts (input side)."""
@@ -3946,6 +4043,16 @@ class MoonshineSTTApp:
                         self.gui.set_srt_file_status(payload[0], payload[1])
                     except Exception:
                         pass
+                elif msg_type == "mic_devices":
+                    try:
+                        self._refresh_input_devices()
+                    except Exception:
+                        pass
+                elif msg_type == "mic_devices_ui":
+                    try:
+                        self._apply_input_devices(payload[0], payload[1])
+                    except Exception:
+                        pass
             except Exception as e:
                 try:
                     print(f"[MoonshineSTT] gui queue item failed: {e}")
@@ -4006,12 +4113,23 @@ class MoonshineSTTApp:
             try:
                 self.recorder.start()
             except Exception as e:
-                msg = f"Mic error: {e}"
-                print(msg)
+                raw = str(e)
+                print(f"Mic error: {raw}")
+                low = raw.lower()
+                if ("9999" in raw or "unanticipated" in low
+                        or "2005401480" in raw or "invalidated" in low):
+                    msg = ("Mic error: device was reset - replug it or "
+                           "pick another mic")
+                else:
+                    msg = f"Mic error: {raw}"
                 if self.gui:
                     self._gui_queue.put(("status", (msg, DANGER)))
                     self.gui.after(0, lambda: self.gui.set_recording_state(False))
                 self._recording = False
+                try:
+                    self._refresh_input_devices(refresh=True)
+                except Exception:
+                    pass
                 return
             self._recording = True
             try:
@@ -4019,29 +4137,109 @@ class MoonshineSTTApp:
             except Exception:
                 pass
             try:
+                self._rec_session = int(getattr(self, "_rec_session", 0)) + 1
+                session = self._rec_session
+            except Exception:
+                session = 0
+            try:
                 threading.Thread(target=self._watch_silent_stream,
-                                 daemon=True).start()
+                                 args=(session,), daemon=True).start()
             except Exception:
                 pass
             if self.gui:
                 self.gui.after(0, lambda: self.gui.set_recording_state(True))
                 self.gui.after(0, lambda: self.gui.set_status("Recording... F2 held", DANGER))
-    def _watch_silent_stream(self):
-        """Warn when the opened mic never delivers a single block: dead
-        endpoint, muted device, or another app holding it exclusively."""
+    def _reopen_mic(self, why: str) -> bool:
+        """Drop and re-open the capture stream, reporting the outcome."""
         try:
-            time.sleep(2.5)
+            ok = bool(self.recorder.reopen())
         except Exception:
-            return
-        if not self._recording:
-            return
+            ok = False
         try:
-            got = len(getattr(self.recorder, "_frames", None) or [])
+            self._log(f"Mic {why} - reopen {'ok' if ok else 'failed'}")
         except Exception:
-            return
-        if got == 0:
-            self._gui_queue.put(("status", (
-                "Mic open but silent - pick another mic", DANGER)))
+            pass
+        return ok
+
+    def _watch_silent_stream(self, session: int = 0):
+        """Watch the live capture while it runs.
+
+        Three failure modes: an endpoint that opens but never delivers a
+        block (dead device, or another app holding it exclusively), an
+        endpoint that is unplugged mid-session, and a stream that sleeps
+        after minutes of silence (USB selective suspend). None of them may
+        end the capture: the audio already collected still gets
+        transcribed, and once the mic is back -- replugged, or re-enumerated
+        after Windows settles -- capture resumes on its own instead of
+        leaving the app "recording" nothing until a restart.
+        """
+        started = time.monotonic()
+        last_try = 0.0
+        backoff = 1.0
+        warned = False
+
+        def alive() -> bool:
+            try:
+                return (bool(self._recording)
+                        and int(getattr(self, "_rec_session", 0)) == session)
+            except Exception:
+                return False
+
+        def status(msg: str, colour=DANGER):
+            try:
+                self._gui_queue.put(("status", (msg, colour)))
+            except Exception:
+                pass
+
+        while alive():
+            try:
+                time.sleep(1.0)
+            except Exception:
+                return
+            if not alive():
+                return
+            try:
+                rec = self.recorder
+                frames = len(getattr(rec, "_frames", None) or [])
+                stalled = float(rec.stalled_for())
+                silent = float(rec.silent_for())
+                has_stream = bool(getattr(rec, "has_stream", True))
+            except Exception:
+                return
+            elapsed = time.monotonic() - started
+            if has_stream and frames > 0 and stalled < 6.0 and silent < 30.0:
+                warned = False
+                continue
+            if has_stream and frames == 0 and elapsed < 2.5:
+                continue
+            now = time.monotonic()
+            if now - last_try < backoff:
+                continue
+            last_try = now
+            if frames == 0:
+                why = "delivers no audio"
+                if not warned:
+                    warned = True
+                    status("Mic open but silent - pick another mic or replug it")
+            elif stalled >= 6.0:
+                why = "stopped delivering audio"
+            else:
+                why = "went silent"
+            if self._reopen_mic(why):
+                warned = False
+                if frames > 0:
+                    started = time.monotonic()
+                    backoff = 1.0
+                    status("Mic re-opened", WARNING)
+                else:
+                    # The endpoint opens but still delivers nothing (muted,
+                    # held exclusively, or a dead USB endpoint). Keep trying,
+                    # but stop hammering it every second.
+                    backoff = min(5.0, backoff + 1.0)
+                    status("Mic open but silent - replug it or pick another mic")
+            else:
+                backoff = min(5.0, backoff + 1.0)
+                status("Microphone disconnected - reconnecting when it returns")
 
     def _stop_recording(self):
         with self._rec_lock:
@@ -4265,15 +4463,19 @@ class MoonshineSTTApp:
             srt_task = (srt_task or "").strip().lower()
             if srt_task not in ("transcribe", "translate"):
                 srt_task = ""
+            try:
+                _st = self.tab_selection("srt")
+            except Exception:
+                _st = {"kind": "Moonshine v2", "arch": 5, "wmodel": "large-v3"}
+            _srt_kind = _st.get("kind", "Moonshine v2")
             with _CONFIG_LOCK:
                 if srt_in in _SRT_LANGS:
                     self.config["srt_input_lang"] = srt_in
                 if srt_out in _SRT_LANGS:
                     self.config["srt_output_lang"] = srt_out
-                _eng = self.config.get("engine", "Moonshine v2")
-                if srt_task and _eng == "Whisper":
+                if srt_task and _srt_kind == "Whisper":
                     self.config["whisper_task"] = srt_task
-                elif srt_task and _eng == "Canary-1B":
+                elif srt_task and _srt_kind == "Canary-1B":
                     self.config["canary_task"] = srt_task
                 self.config["srt_out_dir"] = out_dir or ""
                 try:
@@ -4308,16 +4510,16 @@ class MoonshineSTTApp:
                 self.config["burn_vbr_auto"] = _bauto
                 self.config["burn_vbr_kbps"] = _bkbps
                 save_local_config(self.config)
-            try:
-                _st = self.tab_selection("srt")
-            except Exception:
-                _st = {"kind": "Moonshine v2", "arch": 5, "wmodel": "large-v3"}
             job = {
                 "engine_kind": _st["kind"],
                 "moonshine_arch": int(_st["arch"]),
-                "canary_task": self.config.get("canary_task", "transcribe"),
+                "canary_task": (
+                    srt_task if srt_task and _srt_kind == "Canary-1B"
+                    else self.config.get("canary_task", "transcribe")),
                 "canary_src": self.config.get("canary_src_lang", "auto"),
-                "whisper_task": self.config.get("whisper_task", "translate"),
+                "whisper_task": (
+                    srt_task if srt_task and _srt_kind == "Whisper"
+                    else self.config.get("whisper_task", "translate")),
                 "whisper_src": self.config.get("whisper_src_lang", "auto"),
                 "qwen_src": self.config.get("qwen_src_lang", "auto"),
                 "srt_input_lang": self.config.get("srt_input_lang", "auto"),
@@ -5374,6 +5576,14 @@ class MoonshineSTTApp:
         eng = self._tab_heavy("import", kind, sel.get("wmodel"))
         if eng is None:
             raise RuntimeError(f"{kind} engine unavailable")
+        if kind in ("Whisper", "Qwen3-ASR"):
+            want = sel.get("wmodel")
+            try:
+                got = str(getattr(eng, "model_id", "") or "")
+                if want and got != str(want):
+                    eng.switch_model(want)
+            except Exception:
+                pass
         if not eng.is_ready:
             try:
                 if not getattr(eng, "_loading", False):
@@ -5467,16 +5677,22 @@ class MoonshineSTTApp:
 
             try:
                 import tempfile as _tf2
+                _tmpd = _P(_tf2.gettempdir())
+                _tmpd.mkdir(parents=True, exist_ok=True)
                 _fd, _tmp = _tf2.mkstemp(prefix=src.stem + ".import_",
                                          suffix="_16k.wav",
-                                         dir=str(src.parent))
+                                         dir=str(_tmpd))
                 try:
                     _os.close(_fd)
                 except Exception:
                     pass
                 tmp_wav = _P(_tmp)
             except Exception:
-                tmp_wav = src.parent / (src.stem + ".import_tmp16k.wav")
+                try:
+                    _tmpd = _P(_os.environ.get("TEMP") or _os.getcwd())
+                except Exception:
+                    _tmpd = src.parent
+                tmp_wav = _tmpd / (src.stem + ".import_tmp16k.wav")
             try:
                 if tmp_wav.resolve() == src.resolve():
                     tmp_wav = tmp_wav.with_name(src.stem + "_import16k.wav")
@@ -5799,6 +6015,13 @@ class MoonshineSTTApp:
                 self.recorder.stop()
             except Exception:
                 pass
+        try:
+            # Stop the hot-plug watcher before the window goes away, so it
+            # cannot touch a destroyed Tk widget or restart PortAudio while
+            # the process is shutting down.
+            self._mic_watch_stop.set()
+        except Exception:
+            pass
         if self.gui:
             self.gui.destroy()
         try:

@@ -355,6 +355,53 @@ requirements*.txt  dependency pins (base / Canary / Whisper)
 
 ## Changelog
 
+### v1.4.12
+
+A mic that is unplugged, replugged or reset mid-session now recovers on
+its own, and SRT jobs stop dying over one bad timestamp.
+
+- **Mic hot-plug recovery.** Holding F2 after a USB mic was unplugged or
+  re-enumerated used to fail with *"Error opening InputStream … [-9999]"*
+  until the app was restarted, because MME and DirectSound only read the
+  endpoint list once, at start-up. The saved endpoint is now tracked **by
+  name** as well as by index, the list is re-scanned when the device set
+  changes, and a capture that dies mid-session (unplugged, suspended by
+  USB selective suspend, or held exclusively by another app) is dropped
+  and re-opened — the audio already captured is kept and still transcribed.
+  Every capture stream now goes through one registry, so a re-scan can
+  never terminate PortAudio under a live stream (the state that used to
+  wedge the host API for the rest of the process).
+- **Note follows the same rule.** A replugged mic keeps its selection even
+  though Windows gave it a new index, and an index that Windows handed to a
+  *different* device no longer silently records the wrong microphone.
+- **Fixed: mic picker never refreshed after a mic error.** The refresh ran
+  on the hotkey thread and touched Tk widgets from there, which raises
+  *"main thread is not in main loop"* into a bare `except: pass`. Off-thread
+  updates are now queued to the GUI thread.
+- **Fixed: silent-mic reopen loop.** A muted or exclusively-held endpoint
+  was closed and re-opened every second forever; the retry now backs off to
+  one attempt per 5 s and says *"Mic open but silent — replug it or pick
+  another mic"*.
+- **Fixed: one bad segment killed a whole SRT batch.** A segment with a
+  zero-length or out-of-audio timestamp (quantised decoder output) raised
+  and aborted the file — after the audio had already been transcribed.
+  Zero-length segments now get a minimal duration and unusable ones are
+  skipped, so the rest of the batch still lands.
+- **Fixed: Whisper turbo could be asked to translate.** *Large v3 Turbo* has
+  no translate task; a language pair stored before a model switch made the
+  job fail from inside the engine after decoding. The SRT job now logs and
+  falls back to transcription instead.
+- **Fixed: SRT task followed the wrong engine.** The task handed to a batch
+  was read from the *Live* tab's engine rather than the SRT tab's, so a
+  Whisper batch could run with Canary's task (or vice versa).
+- **Smaller fixes.** Canary no longer passes `"auto"` as a language code to
+  NeMo (it is translated to *unset*), Whisper/Canary language-pair coercion
+  handles *source*/*same* output without a known input language, the Note
+  WAV writer stops on a stop flag instead of a sentinel so a stalled writer
+  cannot hold the next session's handle, and Import files are converted
+  through the system temp directory instead of the source folder (read-only
+  network shares no longer fail).
+
 ### v1.4.11
 
 Microphone choice in Live and Note, a waveform for Note, and two

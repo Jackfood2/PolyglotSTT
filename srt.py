@@ -3,7 +3,6 @@ import json
 import logging
 import math
 import os
-import pathlib
 import re
 import shutil
 import subprocess
@@ -12,8 +11,6 @@ import tempfile
 import threading
 import time
 import unicodedata
-import uuid
-from fractions import Fraction
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Tuple
 
@@ -63,6 +60,9 @@ MAX_LINES_PER_CUE = 2
 MAX_CUE_SECONDS = 7.0
 MIN_CUE_SECONDS = 0.6
 MIN_GAP_SECONDS = 0.0
+# A segment whose start and end round to the same instant still carries
+# real text, so it is given this much room instead of being dropped.
+MIN_SEGMENT_SECONDS = 0.30
 
 CUE_START_LEAD_S = 0.060
 CUE_END_EARLY_S = 0.030
@@ -1081,14 +1081,28 @@ def _clean_segments(segments, duration=None):
                 continue
             if text.lower().startswith(_ERROR_PREFIXES):
                 raise RuntimeError(text)
-            if start is None or end is None or end <= start:
+            if start is None or end is None:
                 raise SubtitleTimingError(f"Invalid segment timestamps: {item}")
 
             start = max(0.0, start)
             if limit is not None:
+                if start >= limit:
+                    # Starts after the audio ends: no cue can be placed from
+                    # it. Skipping beats failing a whole batch over one
+                    # segment a decoder reported past the end.
+                    continue
                 end = min(limit, end)
-            if end <= start:
-                raise SubtitleTimingError("Segment lies outside the audio")
+            if end < start:
+                # Reversed timestamps: nothing trustworthy to place.
+                continue
+            if end == start:
+                # Zero-length segments come from quantised timestamps. Give
+                # the cue a minimal duration rather than aborting the job.
+                end = start + MIN_SEGMENT_SECONDS
+                if limit is not None:
+                    end = min(limit, end)
+                if end <= start:
+                    continue
 
             cleaned.append((start, end, text))
         except (KeyError, TypeError) as exc:
@@ -2201,13 +2215,12 @@ def _run_srt_job_inner(
             # "transcription preserves the source language"). Coerce instead
             # of failing: pick the task the language pair can actually honour.
             _en_out = output_language in {"en", "english"}
-            _en_in = input_language in {"en", "english"}
             _mirror = (
                 output_language in {"same", "source"}
                 or (input_language != "auto" and output_language == input_language)
             )
             if task == "translate":
-                if _mirror and input_language != "auto" and not _en_in:
+                if _mirror:
                     log("Whisper: output follows the input language - "
                         "switching to transcribe")
                     task = "transcribe"
@@ -2216,7 +2229,7 @@ def _run_srt_job_inner(
                         f"output {output_language} -> en")
                     output_language = "en"
             elif not _mirror:
-                if _en_out and input_language != "auto" and not _en_in:
+                if _en_out:
                     log(f"Whisper: {input_language} -> en requested - "
                         "using translate")
                     task = "translate"
@@ -2224,9 +2237,30 @@ def _run_srt_job_inner(
                     log("Whisper transcription keeps the source language; "
                         f"output {output_language} -> {input_language}")
                     output_language = input_language
+                else:
+                    log("Whisper cannot translate to "
+                        f"{output_language} without a known input language; "
+                        "transcribing in the source language")
 
             engine = get_whisper_engine()
             wait_for_model(engine, "Whisper")
+
+            # large-v3-turbo has no translate task at all. The language menu
+            # already hides English output for it, but a pair stored before a
+            # model switch can still ask for translation. Fall back to
+            # transcription instead of raising from inside the engine after
+            # the audio has already been decoded.
+            if task == "translate":
+                try:
+                    import capabilities as _cap
+                    _mid = str(getattr(engine, "model_id", "") or "")
+                    if _mid and not _cap.model_supports(
+                            "Whisper", _mid, _cap.TRANSLATE):
+                        log(f"Whisper {_mid} cannot translate - "
+                            "transcribing in the source language")
+                        task = "transcribe"
+                except Exception:
+                    pass
 
             eta.key = "whisper:" + _eta_safe_key(
                 getattr(engine, "model_id", ""),
@@ -2435,14 +2469,13 @@ def _run_srt_job_inner(
             # intent, the stored task may contradict it. Never fail a job over
             # a stale task.
             _en_out = output_language in {"en", "english"}
-            _en_in = source_language in {"en", "english"}
             _mirror = (
                 output_language in {"same", "source"}
                 or (source_language != "auto"
                     and output_language == source_language)
             )
             if task == "translate":
-                if _mirror and source_language != "auto" and not _en_in:
+                if _mirror:
                     log("Canary: output follows the input language - "
                         "switching to transcribe")
                     task = "transcribe"
@@ -2451,7 +2484,7 @@ def _run_srt_job_inner(
                         f"output {output_language} -> en")
                     output_language = "en"
             elif not _mirror:
-                if _en_out and source_language != "auto" and not _en_in:
+                if _en_out and source_language != "auto":
                     log(f"Canary: {source_language} -> en requested - "
                         "using translate")
                     task = "translate"
@@ -2459,6 +2492,10 @@ def _run_srt_job_inner(
                     log("Canary transcription keeps the source language; "
                         f"output {output_language} -> {source_language}")
                     output_language = source_language
+                else:
+                    log("Canary cannot translate to English without a "
+                        "known input language; pick the source language to "
+                        "translate. Transcribing in the source language.")
 
             target_language = (
                 source_language
@@ -2696,9 +2733,9 @@ def _run_srt_job_inner(
             prog(0.86, "Aligning transcription to speech...")
             log(f"Aligning {len(segments)} segments to the audio")
 
-            if family == "whisper" and whisper_task == "translate":
+            if family == "whisper" and task == "translate":
                 alignment_language = "en"
-            elif family == "canary" and canary_task == "translate":
+            elif family == "canary" and task == "translate":
                 alignment_language = output_language
             else:
                 alignment_language = input_language
