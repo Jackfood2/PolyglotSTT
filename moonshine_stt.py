@@ -1,5 +1,5 @@
 import pathlib
-# moonshine_stt.py
+
 import os
 import sys
 import time
@@ -8,8 +8,8 @@ import queue
 import json
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 if sys.stdout is None or sys.stderr is None:
-    # Windowless launch (pythonw.exe): there is no console, and any print
-    # would raise. Keep a rolling log next to the script instead.
+
+
     try:
         _logdir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "logs")
         os.makedirs(_logdir, exist_ok=True)
@@ -45,8 +45,8 @@ except Exception as e:
 RECORD_KEY = keyboard.Key.f2
 SAMPLE_RATE = 16000
 _SINGLE_INSTANCE_MUTEX = None
-# v1.4.0: config lives in core/config.py. Same names are re-exported here
-# so `from moonshine_stt import DEFAULT_CONFIG` keeps working.
+
+
 try:
     from core.config import (
         APP_VERSION,
@@ -60,7 +60,7 @@ try:
     )
 except Exception:  # pragma: no cover - fallback if core/ is missing
     import json as _json
-    APP_VERSION = "1.4.9.2"
+    APP_VERSION = "1.4.10"
     CONFIG_PATH = os.path.join(os.path.dirname(__file__), "moonshine_config.json")
     NOTES_AUDIO_DIR = os.path.join(os.path.dirname(__file__), "notes_audio")
     _CONFIG_LOCK = threading.RLock()
@@ -197,10 +197,10 @@ class MoonshineSTTApp:
         if self.config.get("whisper_model") not in _wmodels:
             self.config["whisper_model"] = "large-v3"
             needs_save = True
-        # Turbo was trained on transcription data only; its <|translate|>
-        # token is untrained and it returns the source language instead of
-        # English. Keep the app's translate mode on large-v3 so a saved
-        # turbo selection can never silently break translation.
+
+
+
+
         if (self.config.get("whisper_model") == "large-v3-turbo"
                 and self.config.get("whisper_task") == "translate"):
             self.config["whisper_model"] = "large-v3"
@@ -391,7 +391,7 @@ class MoonshineSTTApp:
         self._note_file_lock = threading.Lock()
         self._note_file_thread = None
         self._note_cancel_event = threading.Event()
-        # Import tab file job (primary since v1.4.0; note_* mirrors it).
+
         self._import_file_busy = False
         self._import_file_lock = threading.Lock()
         self._import_file_thread = None
@@ -487,9 +487,9 @@ class MoonshineSTTApp:
                             self._on_srt_input_lang_changed,
                             self._on_srt_output_lang_changed,
                         )
-                        # SRT menus follow the SRT tab's engine (aligned when
-                        # its engine state is painted below); Live flows
-                        # must not drive them.
+
+
+
                         try:
                             self.gui.refresh_lang_options(
                                 self.config.get("engine", "Moonshine v2"))
@@ -635,9 +635,9 @@ class MoonshineSTTApp:
                 self.gui = None
         self.recorder.set_level_callback(self._level_callback)
         try:
-            # Unfinished session WAVs from crashed/hung runs (close-cleanup
-            # never ran). Recover, never delete: the WAV can be the only
-            # copy of a meeting. Previous runs' MP3s are untouched.
+
+
+
             from note_engine import recover_stale_session_wavs as _recover
             _n = _recover(NOTES_AUDIO_DIR)
             if _n:
@@ -725,8 +725,8 @@ class MoonshineSTTApp:
                     except Exception as e:
                         print(f"Canary engine failed to create: {e}")
                         import traceback; traceback.print_exc()
-                        # Degraded fallback - never silent: the caller asked
-                        # for Canary, so say so on the status line too.
+
+
                         try:
                             self._gui_queue.put(
                                 ("status", ("Canary unavailable - using Moonshine",
@@ -767,7 +767,7 @@ class MoonshineSTTApp:
                     except Exception as e:
                         print(f"Whisper engine failed to create: {e}")
                         import traceback; traceback.print_exc()
-                        # Degraded fallback - never silent (see Canary).
+
                         try:
                             self._gui_queue.put(
                                 ("status", ("Whisper unavailable - using Moonshine",
@@ -810,7 +810,7 @@ class MoonshineSTTApp:
                     except Exception as e:
                         print(f"Qwen3-ASR engine failed to create: {e}")
                         import traceback; traceback.print_exc()
-                        # Degraded fallback - never silent (see Canary).
+
                         try:
                             self._gui_queue.put(
                                 ("status", ("Qwen3-ASR unavailable - using Moonshine",
@@ -834,16 +834,16 @@ class MoonshineSTTApp:
                 pass
         self._apply_dictionary(self.qwen_engine)
         return self.qwen_engine
-    # ---------------- Per-tab engines (Live / SRT / Note / Import) ------
-    # Each tab picks its own engine+model. Live keeps the pre-existing
-    # singleton behavior untouched; SRT/Note/Import get dedicated heavy
-    # instances (Moonshine is always the shared live object - tiny,
-    # serialized).
-    # Rule: changing a tab while another session is ACTIVE asks first
-    # (dual engines = dual RAM); with others idle, their cached instances
-    # are simply unloaded. Selections mirror as shared defaults across
-    # idle, non-diverged tabs. plan_* is pure logic (unit-testable, no Tk,
-    # no loads); apply_* performs side effects (GUI thread only).
+
+
+
+
+
+
+
+
+
+
     TAB_IDS = ("live", "srt", "note", "import")
     ENGINE_KINDS = ("Moonshine v2", "Canary-1B", "Whisper", "Qwen3-ASR")
     _WHISPER_IDS = ("tiny", "base", "small", "medium", "large",
@@ -851,9 +851,9 @@ class MoonshineSTTApp:
     _QWEN_IDS = ("qwen3-asr-1.7b-q8_0", "qwen3-asr-1.7b-q6_k",
                  "qwen3-asr-1.7b-q5_k_m", "qwen3-asr-1.7b-q4_k_m")
     _ARCHES = (0, 1, 2, 3, 4, 5)
-    # Rough extra-RAM for the dual-engine confirm dialog (MB). Whisper figures
-    # mirror whisper_engine's resident estimate so the dialog and the load-time
-    # budget guard do not disagree about whether a second model fits.
+
+
+
     _ENGINE_RAM_MB = {"Moonshine v2": 300, "Canary-1B": 5500,
                       "Qwen3-ASR": 2800}
     _WHISPER_RAM_MB = {"tiny": 900, "base": 950, "small": 1250,
@@ -899,8 +899,8 @@ class MoonshineSTTApp:
     def _engine_ram_mb(kind, arch=None, wmodel=None):
         try:
             if kind == "Whisper":
-                # Prefer the engine's own estimate so the confirm dialog and
-                # the load-time RAM guard stay in sync.
+
+
                 try:
                     import whisper_engine
 
@@ -1054,11 +1054,11 @@ class MoonshineSTTApp:
             mid = "large-v3"
         if (mid == "large-v3-turbo"
                 and self.config.get("whisper_task") == "translate"):
-            # Turbo was trained without translation data. Selecting it is an
-            # explicit request for transcription, so switch the shared task
-            # instead of silently reverting the model. This is the path used
-            # by the per-tab model menus (Live asks first in
-            # _on_whisper_model_changed; Note/SRT/Import land here).
+
+
+
+
+
             self._log(
                 "Whisper turbo is transcription-only; "
                 "switching task to transcribe"
@@ -1302,13 +1302,13 @@ class MoonshineSTTApp:
                     and want_wmid == cur["wmodel"]:
                 return {"action": "ok", "kind": want_kind, "arch": want_arch,
                         "wmodel": want_wmid, "noop": True, "mirrored": []}
-            # Never retarget a tab mid-recording/processing: unloading or
-            # mutating its engine mid-session corrupts the running job.
-            # A pure model load MAY be abandoned: the old load is cancelled
-            # (generation bump) and superseded. This avoids the launch trap
-            # where a missing 3GB Whisper model starts downloading and the
-            # menus snap back on every pick because "loading" counts active.
-            # (A dual-engine confirm only covers *other* tabs.)
+
+
+
+
+
+
+
             if self.tab_active(tab):
                 try:
                     hard = self._tab_hard_active(tab)
@@ -1320,7 +1320,7 @@ class MoonshineSTTApp:
                         "reason": ("Stop this tab's recording or processing "
                                    "before changing its engine."),
                     }
-                # else: loading-only -> fall through and allow the switch.
+
             others = []
             for t in self.TAB_IDS:
                 if t == tab:
@@ -1716,9 +1716,9 @@ class MoonshineSTTApp:
                 return None
             eng = cache.get(slot)
             if slot == "whisper":
-                # Universal model, single shared instance: tabs never own a
-                # Whisper object (per-tab instances are what OOM'd 16GB
-                # boxes). Model switches go through the shared instance.
+
+
+
                 try:
                     return self._get_whisper_engine(False)
                 except Exception:
@@ -1733,7 +1733,7 @@ class MoonshineSTTApp:
                     except Exception:
                         pass
                 elif slot == "qwen":
-                    # Qwen holds one model at a time: retarget in place.
+
                     try:
                         want = str(wmid or self.config.get(
                             "qwen_model", "qwen3-asr-1.7b-q8_0"))
@@ -1755,8 +1755,8 @@ class MoonshineSTTApp:
         try:
             if tab not in self.TAB_IDS:
                 return {"action": "revert", "reason": "unknown tab"}
-            # None = keep this tab's current value (callers pass verdict
-            # fields through; GUI verdicts are always fully resolved).
+
+
             try:
                 _cur0 = self.tab_selection(tab)
             except Exception:
@@ -1769,9 +1769,9 @@ class MoonshineSTTApp:
                 wmid = _cur0["wmodel"]
             norm = self._norm_tab_sel(kind, arch, wmid)
             kind, arch, wmid = norm["kind"], norm["arch"], norm["wmodel"]
-            # Revalidate at application time: activity may have changed
-            # while a confirmation dialog was open (TOCTOU). Never commit
-            # on a stale verdict.
+
+
+
             plan = self.plan_tab_change(tab, kind=kind, arch=arch,
                                         wmid=wmid)
             action = (plan or {}).get("action")
@@ -1788,15 +1788,15 @@ class MoonshineSTTApp:
             kind = plan["kind"]
             arch = plan["arch"]
             wmid = plan["wmodel"]
-            # Universal Whisper model: one picker for all tabs. Fan out
-            # before the sweep/preload below so only one model is wanted.
+
+
             try:
                 if kind == "Whisper":
                     wmid = self._set_universal_whisper_model(
                         wmid, source=tab)
             except Exception:
                 pass
-            # Commit selection + shared default.
+
             try:
                 if tab == "live":
                     with _CONFIG_LOCK:
@@ -1817,9 +1817,9 @@ class MoonshineSTTApp:
                 self._save_tab_sel()
             except Exception as e:
                 return {"action": "revert", "reason": str(e)}
-            # Mirror to idle, non-diverged followers (srt/note/import -
-            # live is the anchor: its menus always show the running engine).
-            # Callers sync follower menus from the returned list.
+
+
+
             mirrored = []
             try:
                 for t in ("srt", "note", "import"):
@@ -1841,11 +1841,11 @@ class MoonshineSTTApp:
                 self._save_tab_sel()
             except Exception:
                 pass
-            # Lifecycle: drop this tab's stale heavies, then every OTHER
-            # tab's cache that is idle right now. Active sessions always
-            # keep theirs (their turn comes when they go idle); instances
-            # with a load in flight are never dropped (TOCTOU between the
-            # plan verdict and now) - the idle sweep reclaims them later.
+
+
+
+
+
             try:
                 if not self._tab_cache_loading(tab):
                     self._drop_tab_cache(tab)
@@ -1863,12 +1863,12 @@ class MoonshineSTTApp:
                         pass
             except Exception:
                 pass
-            # Preload for interactive tabs (SRT loads inside its job w/ progress).
+
             try:
                 if tab in ("live", "note") and kind in ("Canary-1B", "Whisper",
                                                         "Qwen3-ASR"):
                     if tab == "live":
-                        pass  # existing live flow below loads it
+                        pass
                     else:
                         eng = self._tab_heavy(tab, kind, wmid)
                         try:
@@ -1883,10 +1883,10 @@ class MoonshineSTTApp:
                             pass
             except Exception:
                 pass
-            # Push follower menu states (best effort, GUI thread).
-            # Live menus are owned by the existing engine/model flows, which
-            # repaint from config as they continue - mirrored srt/note menus
-            # are synced by the caller from the returned list.
+
+
+
+
             return {"action": "ok", "mirrored": mirrored}
         except Exception as e:
             return {"action": "revert", "reason": str(e)}
@@ -1914,8 +1914,8 @@ class MoonshineSTTApp:
             else:
                 label = f"Whisper {sel['wmodel']}"
             if slot == "whisper":
-                # Single shared instance for every tab; the wanted model is
-                # the universal one.
+
+
                 eng = getattr(self, "whisper_engine", None)
                 try:
                     cached_model = self.config.get("whisper_model",
@@ -1948,7 +1948,7 @@ class MoonshineSTTApp:
                 self._log(f"Engine cost check failed for {tab}: {exc}")
             except Exception:
                 pass
-            # Unknown state must never be reported as a ready engine.
+
             return True, 3000, "Engine state unavailable"
 
     def srt_start_request(self):
@@ -2015,9 +2015,9 @@ class MoonshineSTTApp:
                 return {"wait": "Note engine (Moonshine) still loading — "
                                 "recording starts automatically."}
             slot = self._engine_slot(kind)
-            # Whisper is one universal shared instance and is never stored
-            # in the per-tab cache (see _tab_heavy), so a cache-only lookup
-            # would report "not loaded" forever after the load finished.
+
+
+
             try:
                 eng = self._tab_heavy("note", kind, sel["wmodel"])
             except Exception:
@@ -2034,13 +2034,13 @@ class MoonshineSTTApp:
             if ok:
                 self._note_engine_obj = eng
                 return {"go": True}
-            # Need a load. Swap out other tabs' resident heavy engines
-            # first: an idle tab's finished session must not hold gigabytes
-            # hostage while Note loads. Only a tab with a running session
-            # asks for confirmation (swapping it stops its engine).
-            # Exclude the target engine itself by identity: the shared
-            # Whisper is reported as a Live holder, and a RECORD pressed
-            # during its preload must not unload the very load it waits for.
+
+
+
+
+
+
+
             prep = self._prepare_heavy_load(
                 except_tabs=("note",),
                 except_engines=(eng,) if eng is not None else ())
@@ -2066,14 +2066,14 @@ class MoonshineSTTApp:
                 self._note_swap_tabs = []
             except Exception:
                 pass
-            # No resident holders left (or they were just swapped out):
-            # a tab still running on a light engine (e.g. Live on Moonshine)
-            # coexists fine with one heavy, so no dialog. The budget check
-            # below re-probes against the freshly freed memory.
+
+
+
+
             warn = self._ram_warning(kind, sel["arch"], sel["wmodel"])
 
             if warn:
-                # Refuse rather than start recording into a guaranteed OOM.
+
                 return {"abort": True, "reason": warn}
 
             try:
@@ -2144,10 +2144,10 @@ class MoonshineSTTApp:
                     pass
                 return False, ""
             slot = self._engine_slot(kind)
-            # Resolve through _tab_heavy: Whisper lives in the shared
-            # instance (never in this tab's cache), Canary is created for
-            # the tab. A raw cache lookup made every poll return "still
-            # loading" even after the shared Whisper model was ready.
+
+
+
+
             try:
                 eng = self._tab_heavy("note", kind, sel["wmodel"])
             except Exception:
@@ -2159,19 +2159,19 @@ class MoonshineSTTApp:
                     if not self._whisper_cache_ok(eng, sel["wmodel"]):
                         err = getattr(eng, "_last_error", None)
                         if err:
-                            # Report instead of retrying on every poll; the
-                            # next explicit RECORD press may retry.
+
+
                             return False, f"Note engine failed: {err}"
                         if bool(getattr(eng, "_loading", False)):
                             return False, ""
                         mid = str(getattr(eng, "model_id", "") or "")
                         if mid and mid != str(sel["wmodel"]):
-                            # Shared engine holds another model: retarget
-                            # it (async) and keep polling until it settles.
+
+
                             self._note_kick_load(kind, sel["wmodel"])
                             return False, ""
-                        # Same model, just not loaded yet: fall through to
-                        # the generic kick below.
+
+
                 except Exception:
                     pass
             try:
@@ -2185,7 +2185,7 @@ class MoonshineSTTApp:
                     return False, f"Note engine failed: {err}"
                 eng.load()
                 if bool(getattr(eng, "is_ready", False)):
-                    # Synchronous implementations can finish immediately.
+
                     self._note_engine_obj = eng
                     return True, ""
                 err = getattr(eng, "_last_error", None)
@@ -2231,8 +2231,8 @@ class MoonshineSTTApp:
         raises; never touches an active tab or a tab with a load in
         flight, and never rewrites config when nothing changed."""
         try:
-            # Accept both tab ids ("srt") and display names ("SRT File"):
-            # _on_tab_changed passes ids, older callers passed names.
+
+
             if tabid in ("live", "srt", "note", "import"):
                 tab = tabid
             else:
@@ -2246,8 +2246,8 @@ class MoonshineSTTApp:
             node = (self._tab_sel or {}).get(tab)
             if not isinstance(node, dict) or bool(node.get("explicit", False)):
                 return
-            # tab_active() does not cover a kicked load with no chunks yet:
-            # adopting mid-load would yank the selection under it.
+
+
             try:
                 cache = (self._tab_cache or {}).get(tab) or {}
                 if any(bool(getattr(cache.get(slot), "_loading", False))
@@ -2352,8 +2352,8 @@ class MoonshineSTTApp:
                     cache = (self._tab_cache or {}).get(tab)
                     if not isinstance(cache, dict):
                         continue
-                    # Whisper slot stale? A load in flight owns its
-                    # instance - skip just this slot until it settles.
+
+
                     try:
                         eng = cache.get("whisper")
                         if eng is not None and not bool(
@@ -2376,7 +2376,7 @@ class MoonshineSTTApp:
                                     pass
                     except Exception:
                         pass
-                    # Canary slot stale? (Same load-in-flight rule.)
+
                     try:
                         eng = cache.get("canary")
                         if eng is not None and sel["kind"] != "Canary-1B" \
@@ -2403,7 +2403,7 @@ class MoonshineSTTApp:
             with _CONFIG_LOCK:
                 self.config["srt_tab"] = name
                 save_local_config(self.config)
-        # Adopt-shared-default for never-explicitly-picked tabs.
+
         try:
             mapping = {"Live": "live", "SRT File": "srt", "Note": "note",
                        "Import": "import"}
@@ -2616,11 +2616,29 @@ class MoonshineSTTApp:
             fn = self._model_status_fn()
             if eng == "Whisper":
                 from gui import WHISPER_MODEL_CHOICES, WHISPER_MODEL_CHOICES_REV
+                model_id = str(self.config.get("whisper_model", "large-v3"))
                 cur = WHISPER_MODEL_CHOICES_REV.get(
-                    self.config.get("whisper_model", "large-v3"),
-                    "Large v3 (3GB, best)")
+                    model_id, "Large v3 (3GB, best)")
                 self.gui.set_model_options(list(WHISPER_MODEL_CHOICES.keys()),
                                            cur, self._on_model_changed, fn)
+
+
+                try:
+                    import capabilities as _cap
+                    tasks = _cap.task_options("Whisper", model_id)
+                    old_task = str(self.config.get("whisper_task",
+                                                   "transcribe")
+                                   or "").strip().lower()
+                    task = old_task if old_task in tasks else tasks[0]
+                    if task != old_task:
+                        with _CONFIG_LOCK:
+                            self.config["whisper_task"] = task
+                        save_local_config(self.config)
+                        self._log(f"Whisper {model_id} cannot {old_task}; "
+                                  f"task set to {task}")
+                    self.gui.set_task_options(tasks, current=task)
+                except Exception:
+                    pass
             elif eng == "Canary-1B":
                 from gui import CANARY_MODEL_LABEL
                 self.gui.set_model_options([CANARY_MODEL_LABEL], CANARY_MODEL_LABEL,
@@ -2654,7 +2672,7 @@ class MoonshineSTTApp:
         except Exception as e:
             print(f"model manager failed: {e}")
 
-    # ------------------------- Dictionary (Whisper / Qwen3-ASR) ----------
+
     def _open_dictionary(self):
         """Open the dictionary editor (Live tab button)."""
         if not self.gui:
@@ -3047,8 +3065,8 @@ class MoonshineSTTApp:
             except Exception:
                 pass
         def _model_switched(success, err):
-            # The guard flag is state, not UI: always clear it here so a
-            # headless run or a dead GUI can never wedge recording.
+
+
             self._model_switching = False
             def _ui():
                 try:
@@ -3141,6 +3159,12 @@ class MoonshineSTTApp:
                 except Exception:
                     pass
             self._on_canary_task_changed("transcribe")
+            if self.gui is not None:
+                try:
+                    self.gui.set_task_options(["transcribe"],
+                                              current="transcribe")
+                except Exception:
+                    pass
         self.config["whisper_model"] = new_id
         save_local_config(self.config)
         try:
@@ -3155,7 +3179,7 @@ class MoonshineSTTApp:
             except Exception:
                 pass
         def _whisper_switched(success, err):
-            # See _model_switched: clear the guard synchronously, paint async.
+
             self._model_switching = False
             def _ui():
                 try:
@@ -3225,7 +3249,7 @@ class MoonshineSTTApp:
             except Exception:
                 pass
         def _qwen_switched(success, err):
-            # See _model_switched: clear the guard synchronously, paint async.
+
             self._model_switching = False
             def _ui():
                 try:
@@ -3309,7 +3333,7 @@ class MoonshineSTTApp:
             dual_ok = False
             if action == "confirm":
                 if not self._ask_dual(plan.get("message")):
-                    # Do not apply anything after the user cancels.
+
                     return revert()
                 dual_ok = True
             result = self.apply_tab_change("live", plan["kind"],
@@ -3337,16 +3361,16 @@ class MoonshineSTTApp:
         old = self.config.get("engine", "Moonshine v2")
         if display_label == old:
             return
-        # Snapshot the live object being abandoned: if it is a heavy engine
-        # stuck in a (possibly multi-GB) download, cancel it once the new
-        # pick commits so Live becomes usable immediately. Moonshine is the
-        # shared object (note/import may use it) - never unload it here.
+
+
+
+
         try:
             _old_live_obj = self.engine
             _old_kind = str(old)
         except Exception:
             _old_live_obj, _old_kind = None, ""
-        # Per-tab rule: another live session blocks silent switches.
+
         try:
             if not self._live_engine_pick(display_label):
                 return
@@ -3381,9 +3405,9 @@ class MoonshineSTTApp:
                 except Exception:
                     pass
                 try:
-                    # A Live engine switch must not drive the SRT language
-                    # menus: they follow the SRT tab's own engine (aligned
-                    # whenever its engine state is painted).
+
+
+
                     self.gui._refresh_srt_lang_state()
                 except Exception:
                     pass
@@ -3468,9 +3492,9 @@ class MoonshineSTTApp:
                 else:
                     self.gui.set_status(f"Ready \u2022 Moonshine {self.moonshine_engine.current_arch_name}", SUCCESS)
         try:
-            # Cancel the abandoned heavy load (if any). Ready-state unload
-            # is left to _unload_idle_engines; here we only bump the
-            # generation so a stuck download stops owning Live.
+
+
+
             _new_live_obj = self.engine
             if _old_live_obj is not None and _old_live_obj is not _new_live_obj \
                     and _old_kind in ("Canary-1B", "Whisper", "Qwen3-ASR"):
@@ -3574,7 +3598,7 @@ class MoonshineSTTApp:
                 pass
         self._log(f"Canary task -> {value}")
     def _on_canary_lang_changed(self, value):
-        # Live Src menu shows full names ("Japanese"); engines need codes.
+
         from gui import SRT_LANG_CODE_FROM_DISPLAY, SRT_LANGS
         code = SRT_LANG_CODE_FROM_DISPLAY.get(value, value)
         if self.config.get("engine") == "Qwen3-ASR":
@@ -3707,7 +3731,7 @@ class MoonshineSTTApp:
         code = lang_code_from_display(value, "en")
         try:
             if self.tab_selection("srt").get("kind") == "Qwen3-ASR":
-                # Transcription-only: output mirrors the input language.
+
                 code = str(self.config.get("srt_input_lang", "auto")
                            or "auto")
         except Exception:
@@ -3809,9 +3833,9 @@ class MoonshineSTTApp:
     def _poll_queue(self):
         if not self.gui:
             return
-        # Bounded drain per tick: sustained producer bursts must never
-        # monopolize Tk's event loop. Leftovers run on the next tick
-        # (the re-schedule below is unconditional).
+
+
+
         for _ in range(200):
             try:
                 msg_type, payload = self._gui_queue.get_nowait()
@@ -3886,10 +3910,10 @@ class MoonshineSTTApp:
             try:
                 eng = self.engine
                 if not getattr(eng, "is_ready", False):
-                    # A previous Note swap may have unloaded this engine to
-                    # free RAM: kick a reload instead of dead-ending. An
-                    # identical in-flight load is a no-op; a settled failure
-                    # retries on the next explicit press.
+
+
+
+
                     try:
                         loading = bool(getattr(eng, "_loading", False))
                     except Exception:
@@ -3933,9 +3957,9 @@ class MoonshineSTTApp:
             except Exception as e:
                 print(f"recorder stop error: {e}")
                 audio = None
-            # Snapshot the paste target + engine atomically with the stop:
-            # an engine/menu switch landing between stop and processing
-            # must not retarget a clip that is already recorded.
+
+
+
             try:
                 saved_top = self._target_top_hwnd
                 saved_child = self._target_child_hwnd
@@ -4082,7 +4106,7 @@ class MoonshineSTTApp:
         from moonshine_voice import get_model_for_language, Transcriber
         from moonshine_voice.moonshine_api import ModelArch
         from engine import PORTABLE_CACHE_ROOT, MODEL_ARCH_NAMES
-        # SRT tab's own arch (not Live's): per-tab selections.
+
         try:
             arch = int(self.tab_selection("srt")["arch"])
         except Exception:
@@ -4328,10 +4352,10 @@ class MoonshineSTTApp:
                         self._auto_burn_after_srt(job)
                     if _bmsg:
                         burn_msg = " | " + str(_bmsg)
-                # Explicit full-success flag: every SRT ok AND (no burn
-                # requested OR the burn fully ok). Never infer this from
-                # the message text ("all N saved | Burn failed" must not
-                # count as complete).
+
+
+
+
                 full_ok = (not cancelled and not burn_cancelled
                            and not bad and total > 0 and bool(burn_ok))
                 if cancelled or burn_cancelled:
@@ -4603,8 +4627,8 @@ class MoonshineSTTApp:
                      f"Auto-burn: {kept_existing} existing MP4(s) kept "
                      f"(Convert to MP4 to overwrite)"))
             if not keep_pos:
-                # Nothing to burn (audio-only / already burned): the burn
-                # stage is vacuously complete.
+
+
                 return "", False, True
             self._gui_queue.put(
                 ("srt_log",
@@ -4955,8 +4979,8 @@ class MoonshineSTTApp:
                     pass
             if engine is None:
                 return "[Error: note engine not ready]"
-            # The Note tab has its own language choice. Whisper keeps the
-            # spoken language (transcribe) unless the user picked one.
+
+
             try:
                 _is_whisper = type(engine).__name__ == "WhisperEngine"
             except Exception:
@@ -4985,8 +5009,8 @@ class MoonshineSTTApp:
                               or "auto")
                 except Exception:
                     _ns = "auto"
-            # Qwen3-ASR is transcription-only with its own language list:
-            # reuse the Note language picker and never pass a translate task.
+
+
             try:
                 if (type(engine).__name__ == "QwenEngine"
                         or self.tab_selection("note").get("kind") == "Qwen3-ASR"):
@@ -5003,9 +5027,9 @@ class MoonshineSTTApp:
         except Exception as e:
             return f"[Error: {e}]"
 
-    # ── Import tab file pipeline (drag & drop audio/video -> sentences) ──
-    # v1.4.0: the UI moved from Note to its own Import tab with its own
-    # engine selection. note_file_* names stay as aliases.
+
+
+
     def import_file_request(self):
         """GUI-thread pre-flight for Import Transcribe. Returns
         {"go": True} | {"confirm": msg} | {"wait": msg} | {"abort": True}.
@@ -5026,13 +5050,13 @@ class MoonshineSTTApp:
                         or getattr(self.gui, "_note_file_running", False)) \
                         and not bool(getattr(self, "_import_file_busy", False)
                                      or getattr(self, "_note_file_busy", False)):
-                    # GUI flag set but no worker yet (starting) - treat busy.
+
                     pass
             except Exception:
                 pass
             sel = self.tab_selection("import")
             kind = sel["kind"]
-            # Ready now? -> go (snapshot like mic path).
+
             try:
                 if kind == "Moonshine v2":
                     eng = self.moonshine_engine
@@ -5041,9 +5065,9 @@ class MoonshineSTTApp:
                 else:
                     cache = (self._tab_cache or {}).get("import") or {}
                     slot = self._engine_slot(kind)
-                    # Whisper is the universal shared instance (never in the
-                    # tab cache): resolving it from the cache would keep
-                    # saying "not ready" after a finished load.
+
+
+
                     if slot in ("whisper", "qwen"):
                         eng = (self._get_whisper_engine(False)
                                if slot == "whisper" else cache.get("qwen"))
@@ -5062,7 +5086,7 @@ class MoonshineSTTApp:
                         return {"go": True}
             except Exception:
                 pass
-            # Need a load: dual cost only matters against active others.
+
             others = []
             for t in self.TAB_IDS:
                 if t == "note":
@@ -5087,8 +5111,8 @@ class MoonshineSTTApp:
                                     f"Yes = run both engines (~{ram / 1000:.1f} GB "
                                     f"extra RAM). No = stay as you are.",
                         "ram_mb": ram}
-            # No conflict: kick the load (or re-kick Moonshine) and ask the
-            # GUI to wait - user presses Transcribe File again when ready.
+
+
             try:
                 if kind == "Moonshine v2":
                     try:
@@ -5243,7 +5267,7 @@ class MoonshineSTTApp:
                     if waited > 240:
                         raise RuntimeError("Moonshine load timed out")
             return eng, kind
-        # Heavy tab instance (never the live singleton).
+
         eng = self._tab_heavy("import", kind, sel.get("wmodel"))
         if eng is None:
             raise RuntimeError(f"{kind} engine unavailable")
@@ -5325,8 +5349,8 @@ class MoonshineSTTApp:
             except Exception as e:
                 _done(False, f"Engine error: {e}")
                 return
-            # ffmpeg extract to 16k mono wav (temp, beside source to avoid
-            # cross-drive moves; always cleaned up).
+
+
             try:
                 import srt as _srtmod
                 ffmpeg = _srtmod.get_ffmpeg_exe()
@@ -5336,8 +5360,8 @@ class MoonshineSTTApp:
                 _done(False, "ffmpeg not found - run setup.bat once")
                 return
             src = _P(path)
-            # Unique temp beside the source (same drive, no fixed-name
-            # collisions across reruns/crashes; always cleaned up below).
+
+
             try:
                 import tempfile as _tf2
                 _fd, _tmp = _tf2.mkstemp(prefix=src.stem + ".import_",
@@ -5418,7 +5442,7 @@ class MoonshineSTTApp:
                         0, lambda f=formatted: gui.append_import_file_text(f))
             except Exception:
                 pass
-            # Sentence count for an honest completion line.
+
             try:
                 n_sent = len([l for l in sentences.split("\n") if l.strip()])
             except Exception:
@@ -5465,13 +5489,13 @@ class MoonshineSTTApp:
             except Exception:
                 return True
 
-        # Whisper fast path: single native pass with timestamps.
+
         if kind == "Whisper":
             try:
                 eff_src = "auto"
                 try:
-                    # Import tab has no per-file language picker: follow the
-                    # shared live whisper src lang (translate outputs en).
+
+
                     eff_src = str(self.config.get("whisper_src_lang",
                                                   "auto") or "auto")
                 except Exception:
@@ -5497,14 +5521,14 @@ class MoonshineSTTApp:
                     return [joined]
                 if _is_err(joined) and joined:
                     first_error = joined.strip()
-                # Empty native pass -> fall through to VAD chunks.
+
             except InterruptedError:
                 raise
             except Exception as e:
                 import traceback
                 traceback.print_exc()
                 first_error = first_error or f"[Whisper Error: {e}]"
-        # Chunked path (Moonshine/Canary always; Whisper fallback).
+
         try:
             import srt as _srtmod
             import soundfile as _sf
@@ -5525,7 +5549,7 @@ class MoonshineSTTApp:
                 text = ""
                 try:
                     if kind == "Canary-1B":
-                        # Canary transcribes wav files; write the slice out.
+
                         with _tf.NamedTemporaryFile(suffix=".wav",
                                                      delete=False) as tf:
                             tmp_c = tf.name
@@ -5538,9 +5562,9 @@ class MoonshineSTTApp:
                             except Exception:
                                 pass
                     else:
-                        # Moonshine + Whisper fallback: in-memory array.
-                        # Qwen is transcription-only and has its own source
-                        # language; never feed it the Whisper settings.
+
+
+
                         if kind == "Qwen3-ASR":
                             _ct = "transcribe"
                             try:
@@ -5560,6 +5584,22 @@ class MoonshineSTTApp:
                                                           "auto") or "auto")
                             except Exception:
                                 _cs = "auto"
+
+
+
+                            if _ct == "translate":
+                                try:
+                                    import capabilities as _cap
+                                    _mid = str(self.config.get(
+                                        "whisper_model", "large-v3"))
+                                    if not _cap.model_supports(
+                                            "Whisper", _mid, _cap.TRANSLATE):
+                                        _ct = "transcribe"
+                                        self._log(
+                                            f"Whisper {_mid} cannot translate; "
+                                            "import uses transcribe")
+                                except Exception:
+                                    pass
                         try:
                             text = eng.transcribe(chunk, sr, task=_ct,
                                                   source_lang=_cs)
@@ -5636,8 +5676,8 @@ class MoonshineSTTApp:
         except Exception:
             pass
         try:
-            # Let _run_process's 0.2s cancel poll terminate/kill ffmpeg
-            # before os._exit() removes Python from the picture.
+
+
             _deadline = time.monotonic() + 3.0
             while (time.monotonic() < _deadline
                    and bool(getattr(self, "_srt_busy", False))):
@@ -5645,8 +5685,8 @@ class MoonshineSTTApp:
         except Exception:
             pass
         try:
-            # Drop this run's unsaved Note session audio (kept iff the user
-            # explicitly saved it via Save Audio).
+
+
             if self.gui:
                 self.gui.cleanup_note_audio()
         except Exception:
@@ -5683,7 +5723,7 @@ def _single_instance_guard():
         if not h:
             return
         _SINGLE_INSTANCE_MUTEX = h
-        if _err == 183:  # ERROR_ALREADY_EXISTS
+        if _err == 183:
             try:
                 ctypes.windll.user32.MessageBoxW(
                     None, "PolyglotSTT is already running.",

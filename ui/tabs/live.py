@@ -1,8 +1,8 @@
-# ui/tabs/live.py
-# Live-tab controls: record/output/history rows, engine + model menus, typing settings.
-# (Split verbatim from gui.py in v1.4.0 - no behavior change.)
-# Palette names below are import-time snapshots kept fresh by
-# MoonshineGUI.set_theme, which pushes every toggle into this module.
+
+
+
+
+
 import threading
 from typing import Optional, Callable
 from ui.theme import ACCENT, ACCENT_DARK, WARNING, DANGER, FG_SECONDARY, BTN_DANGER_HOVER
@@ -43,7 +43,7 @@ class LiveTabMixin:
             n = self.history.copy_all() if hasattr(self.history, "copy_all") else 0
         except Exception:
             n = 0
-        # Brief button feedback; never raises.
+
         try:
             btn = getattr(self, "history_copy_all_btn", None)
             if btn is not None:
@@ -132,8 +132,7 @@ class LiveTabMixin:
         is_qwen = value == "Qwen3-ASR"
         try:
             self.model_menu.configure(state=self._model_menu_state(value))
-            self.canary_task_menu.configure(
-                state="normal" if is_canary or is_whisper else "disabled")
+            self._sync_task_menu(value)
             self.canary_lang_menu.configure(
                 state="normal" if is_canary or is_whisper or is_qwen
                 else "disabled")
@@ -145,6 +144,64 @@ class LiveTabMixin:
             self.refresh_lang_options(value)
         except Exception:
             pass
+
+    def _sync_task_menu(self, engine_kind):
+        """Offer only the tasks this engine can actually perform.
+
+        The task menu doubles as the SRT/Import mode selector, so an
+        impossible pick (Qwen translate, Whisper turbo translate) must never
+        be offered. When the stored value is no longer valid, fall back to
+        the first supported task and tell the app so the config follows.
+        """
+        try:
+            import capabilities as _cap
+            values = _cap.task_options(engine_kind)
+        except Exception:
+            values = ["transcribe"]
+        if not values:
+            values = ["transcribe"]
+        try:
+            self.canary_task_menu.configure(
+                values=values,
+                state="normal" if len(values) > 1 else "disabled")
+        except Exception:
+            pass
+        try:
+            current = str(self.canary_task_var.get() or "").strip().lower()
+        except Exception:
+            current = ""
+        if current not in values:
+            pick = values[0]
+            try:
+                self.canary_task_var.set(pick)
+            except Exception:
+                pass
+            if self._canary_task_callback:
+                try:
+                    self._canary_task_callback(pick)
+                except Exception:
+                    pass
+        return values
+
+    def set_task_options(self, values, current=None):
+        """Push a model-specific task list (e.g. turbo: transcribe only)."""
+        vals = [str(v).strip().lower() for v in (values or [])
+                if str(v).strip()]
+        if not vals:
+            vals = ["transcribe"]
+        try:
+            self.canary_task_menu.configure(
+                values=vals, state="normal" if len(vals) > 1 else "disabled")
+        except Exception:
+            pass
+        want = str(current or "").strip().lower()
+        if want not in vals:
+            want = vals[0]
+        try:
+            self.canary_task_var.set(want)
+        except Exception:
+            pass
+        return vals
 
     def _on_canary_task_changed(self, value):
         self._refresh_srt_engine_label()
@@ -250,9 +307,10 @@ class LiveTabMixin:
         is_heavy = (engine in ("Canary-1B", "Whisper", "Qwen3-ASR"))
         try:
             self.model_menu.configure(state=self._model_menu_state(engine))
-            self.canary_task_menu.configure(
-                state="normal" if engine in ("Canary-1B", "Whisper")
-                else "disabled")
+
+
+
+            self._sync_task_menu(engine)
             self.canary_lang_menu.configure(state="normal" if is_heavy else "disabled")
         except Exception:
             pass

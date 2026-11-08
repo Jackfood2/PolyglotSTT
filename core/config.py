@@ -1,11 +1,11 @@
-﻿# core/config.py
-# Single source of truth for app config (moved verbatim from
-# moonshine_stt.py in v1.4.0 - no behavior change).
+﻿
+
+
 import json
 import os
 import threading
 
-APP_VERSION = "1.4.9.2"
+APP_VERSION = "1.4.10"
 
 PROJECT_ROOT = os.path.dirname(os.path.dirname(__file__))
 CONFIG_PATH = os.path.join(PROJECT_ROOT, "moonshine_config.json")
@@ -59,8 +59,8 @@ def load_local_config():
             out = dict(DEFAULT_CONFIG)
             out.update(cfg)
             if any(k not in cfg for k in DEFAULT_CONFIG):
-                # Use the atomic writer (tmp + os.replace) for migration
-                # too: a crash mid-write must not truncate the config.
+
+
                 save_local_config(out)
             return out
     except Exception:

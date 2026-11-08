@@ -347,6 +347,27 @@ requirements*.txt  dependency pins (base / Canary / Whisper)
 
 ## Changelog
 
+### v1.4.10
+
+Menus now follow what each engine and model can actually do, instead of
+offering choices that fail at decode time.
+
+- **Live Task menu** lists only supported tasks: Moonshine v2 and Qwen3-ASR
+  show a single disabled `transcribe`; Canary-1B and Whisper show both. A
+  stored task that the selected model cannot perform falls back to
+  `transcribe` automatically and is saved.
+- **Whisper large-v3-turbo** cannot translate. Picking it while Task is
+  Translate asks before switching, then leaves the Task menu showing a single
+  disabled `transcribe` immediately.
+- **SRT output language** is disabled (and English removed) when the selected
+  Whisper model cannot translate, with the hint *"Whisper large-v3-turbo
+  cannot translate - pick large-v3 in the Live model list, or choose the
+  spoken language as output."* Qwen3-ASR keeps its disabled "Same as input".
+- **Import** coerces `translate` to `transcribe` for non-translating Whisper
+  models instead of failing the batch.
+- New `capabilities.py` holds the single engine/model capability table that
+  all of the above consult.
+
 ### v1.4.9.2
 
 Bug-fix release for SRT cue timing: subtitles that lingered over silence and

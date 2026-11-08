@@ -1,8 +1,8 @@
-# ui/tabs/srt.py
-# SRT File tab: queue, actions, progress, burn controls, languages, compute, preview.
-# (Split verbatim from gui.py in v1.4.0 - no behavior change.)
-# Palette names below are import-time snapshots kept fresh by
-# MoonshineGUI.set_theme, which pushes every toggle into this module.
+
+
+
+
+
 import customtkinter as ctk
 import threading
 from pathlib import Path
@@ -568,10 +568,10 @@ class SrtTabMixin:
                     self.srt_model_var.set(label)
         except Exception:
             pass
-        # The Input/Output language menus belong to THIS tab's engine, not
-        # Live's: re-align them on every engine paint (init, mirror,
-        # adopt, revert, user pick). Without this they stayed frozen on
-        # whatever the Live engine was when the app started.
+
+
+
+
         try:
             self._refresh_srt_lang_state()
         except Exception:
@@ -584,8 +584,22 @@ class SrtTabMixin:
             kind = self.get_srt_engine_kind()
         except Exception:
             kind = "Moonshine v2"
+
+
+
+        can_translate = True
+        if kind == "Whisper":
+            try:
+                from core.config import load_local_config
+                import capabilities as _cap
+                _mid = str(load_local_config().get("whisper_model",
+                                                   "large-v3"))
+                can_translate = _cap.model_supports(
+                    "Whisper", _mid, _cap.TRANSLATE)
+            except Exception:
+                can_translate = True
         try:
-            self.set_srt_lang_state(kind)
+            self.set_srt_lang_state(kind, can_translate)
         except Exception:
             pass
         if kind == "Canary-1B":
@@ -593,8 +607,8 @@ class SrtTabMixin:
             srt_out_codes = list(CANARY_SRT_OUT_CODES)
             out_locked = False
         elif kind == "Qwen3-ASR":
-            # Transcription-only: the output always mirrors the input, so the
-            # output picker is a single disabled row.
+
+
             srt_in_codes = list(QWEN_SRT_IN_CODES)
             srt_out_codes = []
             out_locked = True
@@ -602,8 +616,12 @@ class SrtTabMixin:
             srt_in_codes = list(WHISPER_SRT_IN_CODES)
             srt_out_codes = list(WHISPER_SRT_OUT_CODES)
             out_locked = False
-        # Moonshine v2 has no language selection at all: both pickers stay
-        # disabled (the input one is disabled by set_srt_lang_state above).
+            if not can_translate:
+
+
+                srt_out_codes = [c for c in srt_out_codes if c != "en"]
+
+
         has_lang = kind in ("Canary-1B", "Whisper", "Qwen3-ASR")
         def _disp(c):
             return SRT_LANG_NAMES.get(c) or QWEN_LANG_NAMES.get(c) or c
@@ -628,7 +646,10 @@ class SrtTabMixin:
             if in_code not in srt_in_codes:
                 self.srt_input_lang_var.set(
                     _disp(srt_in_codes[0]))
-            if not out_locked and out_code not in srt_out_codes:
+            if not out_locked and not can_translate:
+
+                self.srt_output_lang_var.set(_disp(in_code))
+            elif not out_locked and out_code not in srt_out_codes:
                 self.srt_output_lang_var.set(
                     _disp(srt_out_codes[0]))
         except Exception:
@@ -1607,8 +1628,8 @@ class SrtTabMixin:
             pass
         for i in order:
             self.set_srt_file_status(i, "queued")
-        # Dual-engine pre-flight (another session may be running): the app
-        # verdict arrives synchronously on this GUI thread.
+
+
         if getattr(self, "_srt_prequest_cb", None) is not None:
             try:
                 _pv = self._srt_prequest_cb() or {"go": True}
@@ -2002,7 +2023,7 @@ class SrtTabMixin:
         except Exception:
             _qwen = False
         if _qwen:
-            # Transcription-only: the output row is the locked mirror.
+
             self.srt_output_lang_var.set("Same as input")
         elif out_display:
             self.srt_output_lang_var.set(out_display)
@@ -2014,16 +2035,16 @@ class SrtTabMixin:
         out_code = lang_code_from_display(out_display, "en")
         try:
             if self.get_srt_engine_kind() == "Qwen3-ASR":
-                # Qwen transcribes only: output mirrors the input language.
+
                 out_code = in_code
         except Exception:
             pass
         return in_code, out_code
 
     def refresh_lang_options(self, engine_kind: str = ""):
-        # engine_kind drives the LIVE Src menu only. The SRT Input/Output
-        # menus follow the SRT tab's own engine (see
-        # _refresh_srt_lang_state) - a Live switch must never rewrite them.
+
+
+
         eng = engine_kind or self.engine_var.get()
         is_canary = (eng == "Canary-1B")
         is_qwen = (eng == "Qwen3-ASR")
@@ -2058,13 +2079,13 @@ class SrtTabMixin:
         except Exception:
             pass
 
-    def set_srt_lang_state(self, engine_kind: str):
+    def set_srt_lang_state(self, engine_kind: str, can_translate: bool = True):
         has_lang = engine_kind in ("Canary-1B", "Whisper", "Qwen3-ASR")
         try:
             state = "normal" if has_lang else "disabled"
             self.srt_input_lang_menu.configure(state=state)
-            if engine_kind == "Qwen3-ASR":
-                # Transcription-only: the output always mirrors the input.
+            if engine_kind == "Qwen3-ASR" or not can_translate:
+
                 self.srt_output_lang_menu.configure(state="disabled")
             else:
                 self.srt_output_lang_menu.configure(state=state)
@@ -2074,6 +2095,9 @@ class SrtTabMixin:
             elif engine_kind == "Qwen3-ASR":
                 hint = ("Qwen3-ASR transcribes 30 languages in the spoken language "
                         "(no translation). Output mirrors the input language.")
+            elif engine_kind == "Whisper" and not can_translate:
+                hint = ("Whisper large-v3-turbo cannot translate - pick large-v3 in "
+                        "the Live model list, or choose the spoken language as output.")
             elif engine_kind == "Whisper":
                 hint = ("Whisper: output English to translate into English, or pick "
                         "the spoken language to transcribe it as-is (Auto = detect).")
