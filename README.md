@@ -347,6 +347,31 @@ requirements*.txt  dependency pins (base / Canary / Whisper)
 
 ## Changelog
 
+### v1.4.9.2
+
+Bug-fix release for SRT cue timing: subtitles that lingered over silence and
+sentences that were split into one-word cues.
+
+- **Cues now end shortly after the speech, not at the next sound.** Whisper
+  reports each word's end as the *next* word's start, and translate-mode
+  segments cover the silence after the speech as well — one segment could be
+  `"Don't do it."` stretched over 19.5 seconds. The cue builder now estimates
+  how long the text actually takes to say (per-character speaking rate) and
+  clamps both segment spans and word ends to it, so a 10-second word followed
+  by silence becomes a 1-second cue.
+- **Sentences stay in one cue.** Because the inflated spans exceeded the
+  seven-second cue limit, the splitter fell back to emitting one word per cue
+  (`Don't` / `do` / `it.`). With the spans corrected the same sentence now
+  produces a single cue.
+- **0.5 s readability tail.** A cue stays on screen for half a second after the
+  last word instead of holding until the next cue begins, then disappears.
+  `_finalize_cues` still prevents overlap and the tail is clamped to the media
+  length.
+
+Note: `Whisper large-v3-turbo` cannot translate. A `ja → en` SRT job needs
+`large-v3` (3 GB); with turbo the job stops with "use large-v3 or switch to
+transcribe".
+
 ### v1.4.9.1
 
 Bug-fix release for SRT jobs whose output language differs from the input.

@@ -68,6 +68,20 @@ CUE_START_LEAD_S = 0.060
 CUE_END_EARLY_S = 0.030
 WORD_PAUSE_BREAK_S = 0.65
 
+# Cue timing sanity. Whisper reports word ends stretched to the next word's
+# start, and translate-mode segments often span long stretches of silence.
+# Left alone, a cue then stays on screen until the next sound ("Don't" for
+# 10 s) and long segments get chopped into one-word cues. These caps keep a
+# cue inside the speech it actually covers, with a short readable tail.
+WORD_SECONDS_PER_CHAR = 0.10
+WORD_TAIL_S = 0.30
+WORD_MIN_DURATION_S = 0.12
+WORD_MAX_DURATION_S = 1.60
+CUE_TAIL_S = 0.50
+APPROX_SECONDS_PER_CHAR = 0.09
+APPROX_TAIL_S = 0.40
+APPROX_MAX_STRETCH = 1.6
+
 # Strict-timing tolerance: fail the job only when MORE than this fraction
 # of segments lack matching word timestamps (systemic alignment failure -
 # wrong engine/language, broken words). A minority of unmatched segments
@@ -1118,7 +1132,31 @@ def _clean_words(words):
             raise SubtitleTimingError("Word timestamps are not in spoken order")
         previous_start, previous_end = start, end
 
-    return cleaned
+    return _clamp_word_ends(cleaned)
+
+
+def _clamp_word_ends(words):
+    """Trim word ends that stretch past the word's own spoken length.
+
+    Whisper reports every word's end as the next word's start, so a word
+    followed by 10 s of silence claims all 10 s. Left alone the cue builder
+    sees a 10 s word: it can never find a pause to split on, and it fails the
+    max-cue-length test (which then falls back to one-word cues). Capping the
+    end by an estimate of how long the word takes to say restores the real
+    silence, so cues end shortly after the speech.
+    """
+    clamped = []
+    for start, end, text in words:
+        try:
+            length = _dlen(str(text).strip()) or 1
+        except Exception:
+            length = 1
+        cap = length * WORD_SECONDS_PER_CHAR + WORD_TAIL_S
+        cap = max(WORD_MIN_DURATION_S, min(WORD_MAX_DURATION_S, cap))
+        if end - start > cap:
+            end = start + cap
+        clamped.append((start, end, text))
+    return clamped
 
 
 def _canonical(text):
@@ -1400,6 +1438,19 @@ def _approximate_units(text, start, end):
     if start is None or end is None or end <= start:
         raise SubtitleTimingError("Cannot estimate timing for an invalid segment")
 
+    # Whisper (especially in translate mode) hands back segments that cover
+    # the silence after the speech too. Spreading the text over that whole
+    # span makes cues linger until the next sound and, past MAX_CUE_SECONDS,
+    # splits a single sentence into one-word cues. Estimate how long the text
+    # takes to say and keep the speech at the start of the segment.
+    try:
+        est = _dlen(text) * APPROX_SECONDS_PER_CHAR + APPROX_TAIL_S
+    except Exception:
+        est = end - start
+    est = max(MIN_CUE_SECONDS, est * APPROX_MAX_STRETCH)
+    if end - start > est:
+        end = start + est
+
     pieces = []
     for token in re.findall(r"\S+\s*", text):
         if _has_cjk(token):
@@ -1587,12 +1638,16 @@ def build_cues(
     strict_timing: bool = True,
     start_lead_s: float = CUE_START_LEAD_S,
     end_early_s: float = CUE_END_EARLY_S,
+    tail_s: float = CUE_TAIL_S,
 ) -> List[Tuple[float, float, str]]:
     lead = _number(start_lead_s)
     early = _number(end_early_s)
+    tail = _number(tail_s)
 
     if lead is None or early is None or lead < 0 or early < 0:
         raise ValueError("Subtitle timing offsets must be finite and nonnegative")
+    if tail is None or tail < 0:
+        raise ValueError("Subtitle tail must be finite and nonnegative")
 
     source = list(segments or [])
     supplied_words = list(seg_words) if seg_words is not None else None
@@ -1623,8 +1678,23 @@ def build_cues(
                 if strict_timing:
                     raise
 
+        fallback_ok = False
+        if units:
+            # Word timings that stretch far past the spoken length mislead the
+            # grouper just as much as missing ones (Whisper reports each word
+            # end as the next word's start, so sparse words can claim many
+            # seconds of silence). Fall back to estimated timing.
+            try:
+                est = (max(1, _dlen(text)) * APPROX_SECONDS_PER_CHAR
+                       + APPROX_TAIL_S) * APPROX_MAX_STRETCH
+                if units[-1][1] - units[0][0] > max(MIN_CUE_SECONDS, est):
+                    units = None
+                    fallback_ok = True
+            except Exception:
+                pass
+
         if not units:
-            if strict_timing:
+            if strict_timing and not fallback_ok:
                 raise SubtitleTimingError(
                     f"Segment {segment_index + 1} has no matching word "
                     "timestamps. Supply a word aligner or explicitly use "
@@ -1643,6 +1713,13 @@ def build_cues(
             last_word_duration = speech_end - last_word_start
             safe_early = min(early, last_word_duration * 0.25)
             cue_end = speech_end - safe_early
+
+            # Keep the line readable for a moment after the speech stops, but
+            # never carry it into the next cue's silence (the user's report:
+            # subtitles that stay up until the next sound). _finalize_cues
+            # trims any tail that would run into the following cue.
+            if tail > 0:
+                cue_end = max(cue_end, speech_end + tail)
 
             if cue_end <= cue_start:
                 raise SubtitleTimingError("Invalid aligned subtitle duration")
@@ -2679,6 +2756,9 @@ def _run_srt_job_inner(
             assigned,
             strict_timing=effective_strict,
         )
+        # The readability tail must never run past the end of the media.
+        cues = [(start, min(end, duration), text)
+                for start, end, text in cues]
 
         if not cues:
             raise RuntimeError("No subtitle cues were generated")
