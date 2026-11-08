@@ -1,4 +1,5 @@
 # recorder.py
+import math
 import re
 import threading
 import time
@@ -105,12 +106,31 @@ def _name_key(name) -> str:
     return text
 
 
+def _hostapi_rank(index) -> int:
+    """Order endpoints the way the picker lists them: DirectSound, then
+    MME, then anything else. One physical mic is exposed twice under the
+    same name, and MME truncates long names and adds latency, so a name
+    lookup must not silently land on the MME twin."""
+    order = ("Windows DirectSound", "MME")
+    try:
+        dev = sd.query_devices(int(index))
+        api = sd.query_hostapis(int(dev.get("hostapi")))
+        name = str(api.get("name") or "")
+    except Exception:
+        return len(order) + 1
+    for position, wanted in enumerate(order):
+        if name == wanted:
+            return position
+    return len(order) + 1
+
+
 def _match_device_name(name, devices=None):
     """Input index whose name matches ``name``, or None.
 
     Prefers an exact normalised match, then a truncated/aliased twin. A
     replugged endpoint keeps its name but gets a new index, so the name is
-    the only stable handle PortAudio gives us.
+    the only stable handle PortAudio gives us. When one name exists on
+    several host APIs, the picker's preference decides (see _hostapi_rank).
     """
     key = _name_key(name)
     if not key:
@@ -119,6 +139,8 @@ def _match_device_name(name, devices=None):
         devs = sd.query_devices() if devices is None else devices
     except Exception:
         return None
+    best = None
+    best_rank = None
     loose = None
     try:
         entries = list(enumerate(devs))
@@ -126,7 +148,7 @@ def _match_device_name(name, devices=None):
         return None
     for idx, dev in entries:
         try:
-            if int(dev.get("max_input_channels") or 0) <= 0:
+            if int(dev.get("max_input_channels", 1) or 0) <= 0:
                 continue
             cand = _name_key(dev.get("name"))
         except Exception:
@@ -134,12 +156,39 @@ def _match_device_name(name, devices=None):
         if not cand:
             continue
         if cand == key:
-            return int(idx)
+            rank = _hostapi_rank(idx)
+            if best is None or best_rank is None or rank < best_rank:
+                best, best_rank = int(idx), rank
+            continue
         if loose is None and len(key) >= 12 and (
                 cand.startswith(key) or key.startswith(cand)
                 or key in cand or cand in key):
             loose = int(idx)
+    if best is not None:
+        return best
     return loose
+
+
+def level_from_rms(rms) -> float:
+    """RMS of 0..1 full-scale samples -> the 0..1 the meters draw.
+
+    A linear scale hides quiet endpoints: a USB mic idling at -55 dBFS
+    reports ~0.002 RMS, i.e. a flat line, so "working but quiet" looks
+    exactly like "dead microphone". Mapping -60 dBFS..0 dBFS onto 0..1
+    keeps the top of the scale for loud speech while still moving the
+    meter for a whisper.
+    """
+    try:
+        value = float(rms)
+    except Exception:
+        return 0.0
+    if not value or value <= 0.0:
+        return 0.0
+    try:
+        db = 20.0 * math.log10(value)
+    except Exception:
+        return 0.0
+    return max(0.0, min(1.0, (db + 60.0) / 60.0))
 
 
 def match_listed_device(name, devices):
@@ -249,22 +298,31 @@ class AudioRecorder:
 
     def _resolved_device(self):
         """The chosen index, or None (system default) when the saved device
-        is gone, disabled, or not a capture endpoint at all. Prefers a name
-        match, because a replugged USB mic comes back on a new index."""
+        is gone, disabled, or not a capture endpoint at all.
+
+        The stored index wins while it still names the stored endpoint, so
+        the host API the user picked from the list is the one that opens
+        (DirectSound and MME expose the same mic with the same name, and
+        jumping between them changes latency and level without saying so).
+        Only when the index is gone -- or now names a different device -- is
+        the endpoint followed by name, which is how a replugged USB mic is
+        found again on its new index.
+        """
         name = (self.device_name or "").strip()
+        if self.device is not None:
+            try:
+                info = sd.query_devices(int(self.device))
+                if int(info.get("max_input_channels") or 0) > 0:
+                    if (not name
+                            or _name_key(info.get("name")) == _name_key(name)):
+                        return int(self.device)
+            except Exception:
+                pass
         if name:
             idx = _match_device_name(name)
             if idx is not None:
                 self.device = int(idx)
                 return int(idx)
-        if self.device is None:
-            return None
-        try:
-            info = sd.query_devices(int(self.device))
-            if int(info.get("max_input_channels") or 0) > 0:
-                return int(self.device)
-        except Exception:
-            pass
         return None
 
     def _candidates(self):
@@ -296,8 +354,7 @@ class AudioRecorder:
             if self._on_level:
                 f = indata.astype(np.float32) / 32768.0
                 rms = float(np.sqrt(np.mean(f ** 2)))
-                level = min(1.0, rms * 5.0)
-                self._on_level(level)
+                self._on_level(level_from_rms(rms))
         except Exception:
             pass
 
@@ -431,7 +488,7 @@ class AudioRecorder:
                 return 0.0
             f = self._frames[-1].astype(np.float32) / 32768.0
             rms = float(np.sqrt(np.mean(f ** 2)))
-            return min(1.0, rms * 10.0)
+            return level_from_rms(rms)
 
     @staticmethod
     def list_devices():

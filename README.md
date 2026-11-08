@@ -355,6 +355,27 @@ requirements*.txt  dependency pins (base / Canary / Whisper)
 
 ## Changelog
 
+### v1.4.13
+
+Two reasons a quiet mic looked dead: the meter was on a linear scale, and
+a saved mic could silently open on a different host API.
+
+- **Level meter and waveform are now dBFS.** The level was `rms × 5`, so
+  speech at 0.02 RMS drew a 0.7-pixel ripple — indistinguishable from a
+  dead microphone. It now maps -60 dBFS…0 dBFS onto the 0…1 the widgets
+  draw, so the same speech reaches ~15 px and a whisper still moves the
+  bar. Measured with the app's own recorder on a real voice: peak level
+  0.409, 14.7 px of 36 (was 0.7 px). Silence still reads 0 and the idle
+  waveform stays a flat line.
+- **The picked endpoint is opened on the host API you picked.** A saved
+  device used to be resolved by name first, and one mic is listed twice
+  (DirectSound *and* MME), so a saved DirectSound pick could reopen as
+  the MME twin — truncated name, extra latency, different level. The
+  saved index now wins while it still names the saved endpoint; the name
+  is followed only when the index is gone or now points at another
+  device, which is still how a replugged mic is found on its new index.
+  When the fallback does run it prefers DirectSound, matching the picker.
+
 ### v1.4.12
 
 A mic that is unplugged, replugged or reset mid-session now recovers on
