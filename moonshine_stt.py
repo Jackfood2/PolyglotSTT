@@ -58,7 +58,7 @@ try:
     )
 except Exception:  # pragma: no cover - fallback if core/ is missing
     import json as _json
-    APP_VERSION = "1.4.14"
+    APP_VERSION = "1.4.16"
     CONFIG_PATH = os.path.join(os.path.dirname(__file__), "moonshine_config.json")
     NOTES_AUDIO_DIR = os.path.join(os.path.dirname(__file__), "notes_audio")
     _CONFIG_LOCK = threading.RLock()
@@ -297,7 +297,8 @@ class MoonshineSTTApp:
             needs_save = True
         for _bk, _bdef in (("srt_norm", False), ("burn_after", False),
                            ("auto_shutdown", False),
-                           ("completion_alert", True)):
+                           ("completion_alert", True),
+                           ("itn_live", True), ("itn_hint", True)):
             _bv = self.config.get(_bk, _bdef)
             if isinstance(_bv, bool):
                 _nb = _bv
@@ -414,6 +415,10 @@ class MoonshineSTTApp:
                     self.config.get("suffix", "none"),
                     self._on_method_changed,
                     self._on_suffix_changed,
+                    self.config.get("itn_live", True),
+                    self.config.get("itn_hint", True),
+                    self._on_itn_live_changed,
+                    self._on_itn_hint_changed,
                 )
                 try:
                     self._refresh_model_row()
@@ -2575,6 +2580,14 @@ class MoonshineSTTApp:
         self.config["suffix"] = value
         save_local_config(self.config)
         self._log(f"Suffix -> {value}")
+    def _on_itn_live_changed(self, value: bool):
+        self.config["itn_live"] = bool(value)
+        save_local_config(self.config)
+        self._log(f"Numbers -> digits (ITN) {'on' if value else 'off'}")
+    def _on_itn_hint_changed(self, value: bool):
+        self.config["itn_hint"] = bool(value)
+        save_local_config(self.config)
+        self._log(f"Qwen digit prompt {'on' if value else 'off'}")
     def _model_status_fn(self):
         try:
             eng = self.config.get("engine", "Moonshine v2")
@@ -4270,6 +4283,8 @@ class MoonshineSTTApp:
                 except Exception:
                     snap_task, snap_lang = None, None
                 snap_suffix = self.config.get("suffix", "none")
+                snap_itn = bool(self.config.get("itn_live", True))
+                snap_itn_hint = bool(self.config.get("itn_hint", True))
                 snap_method = self.config.get("typing_method", "clipboard")
                 snap_delay = int(self.config.get("typing_delay_ms", 0))
                 snap_root = self._our_root_hwnd
@@ -4278,6 +4293,7 @@ class MoonshineSTTApp:
                 snap_engine, snap_engine_name = None, "Moonshine v2"
                 snap_task, snap_lang = None, None
                 snap_suffix, snap_method, snap_delay = "none", "clipboard", 0
+                snap_itn, snap_itn_hint = True, True
                 snap_root = 0
         if self.gui:
             self.gui.after(0, lambda: self.gui.set_recording_state(False))
@@ -4288,6 +4304,8 @@ class MoonshineSTTApp:
             "suffix": snap_suffix,
             "typing_method": snap_method,
             "typing_delay_ms": snap_delay,
+            "itn": snap_itn,
+            "itn_hint": snap_itn_hint,
             "our_root_hwnd": snap_root,
             "engine": snap_engine,
             "engine_name": snap_engine_name,
@@ -4348,12 +4366,29 @@ class MoonshineSTTApp:
                     audio, SAMPLE_RATE,
                     task=settings.get("task"),
                     source_lang=settings.get("source_lang"))
+            elif settings.get("engine_name") == "Qwen3-ASR":
+                hint = None
+                if settings.get("itn_hint", True):
+                    try:
+                        import itn as _itn
+                        hint = _itn.QWEN_HINT
+                    except Exception:
+                        hint = None
+                text = engine.transcribe(audio, SAMPLE_RATE,
+                                         extra_prompt=hint)
             else:
                 text = engine.transcribe(audio, SAMPLE_RATE)
         except TypeError:
             text = engine.transcribe(audio, SAMPLE_RATE)
         clean = text.strip() if text else ""
         if clean and not clean.startswith("["):
+            if settings.get("itn", True):
+                try:
+                    import itn as _itn
+                    clean = _itn.normalize(clean)
+                except Exception as _itn_err:
+                    print(f"ITN failed: {_itn_err}")
+
             final_text = apply_suffix(clean, settings.get("suffix", "none"))
             self._gui_queue.put(("transcription", clean))
             ok = insert_text(

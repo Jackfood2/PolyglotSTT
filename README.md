@@ -245,6 +245,21 @@ downloaded ones individually (or all at once) to save space. Hold `F2`,
 speak, release. Typing method / suffix options are in the Live tab;
 settings persist in `moonshine_config.json`.
 
+**Numbers as digits (Live only)** — two checkboxes sit under the typing
+row in the Live tab:
+
+- *Numbers → digits* runs a local inverse-text-normalisation pass over
+  the live transcript, so spoken forms become written forms: `three` → `3`,
+  `twenty three` → `23`, `three thirty pm` → `3:30 PM`, `five dollars` →
+  `$5`, `twenty five percent` → `25%`, `third` → `3rd`, `three point one
+  four` → `3.14`. It is conservative about ambiguous words (`one of them`,
+  `no one`, `wait a second` and `first of all` are left alone). Pure
+  Python, no NeMo/torch dependency, no network; applies only to Live
+  dictation, not SRT/Note/Import.
+- *Qwen digit prompt* asks Qwen3-ASR itself (via its free-text prompt —
+  "native transcription polishing") to emit digits. Both are on by
+  default and each can be switched off independently.
+
 **SRT subtitles** — open the *SRT File* tab, drop video/audio files
 (mp4/mkv/avi/mov/ts/mp3/wav/m4a/… — multi-select for batch), optionally set
 an output folder (default: next to the source), set *Input/Output
@@ -354,6 +369,25 @@ requirements*.txt  dependency pins (base / Canary / Whisper)
   and reburn to relearn.
 
 ## Changelog
+
+### v1.4.16
+
+Live dictation now writes numbers as digits instead of spelling them out
+(Qwen3-ASR especially emits verbatim text such as "three" and "five
+dollars"). Two independent checkboxes under the typing row in the Live tab
+control it; both are on by default and persist in `moonshine_config.json`.
+
+- **Numbers → digits (ITN)** — a local, dependency-free inverse text
+  normalisation pass after each live decode: `three` → `3`, `twenty three`
+  → `23`, `three thirty pm` → `3:30 PM`, `five dollars` → `$5`, `twenty
+  five percent` → `25%`, `third` → `3rd`, `three point one four` → `3.14`,
+  `a hundred and five` → `105`. Ambiguous words are left alone (`one of
+  them`, `no one`, `wait a second`, `first of all`, `one third`).
+  Live only — SRT, Note and Import output are untouched. No NeMo/torch
+  dependency and no network access.
+- **Qwen digit prompt** — appends a "write numbers as digits" instruction
+  to Qwen3-ASR's free-text prompt (native transcription polishing), so the
+  model itself leans towards digits. Ignored by the other engines.
 
 ### v1.4.14
 

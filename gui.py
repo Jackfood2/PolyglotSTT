@@ -368,6 +368,26 @@ class MoonshineGUI(LiveTabMixin, NoteTabMixin, ImportTabMixin, SrtTabMixin, Dial
         self.suffix_var = ctk.StringVar(value="none")
         self.suffix_menu = ctk.CTkOptionMenu(settings_frame, variable=self.suffix_var, values=["none", "space", "newline", "period_space"], width=100, fg_color=BG_INPUT, button_color=ACCENT, command=self._on_suffix_changed)
         self.suffix_menu.grid(row=0, column=3, sticky="ew", padx=(4, 12), pady=8)
+        self.itn_var = ctk.BooleanVar(value=True)
+        self.itn_check = ctk.CTkCheckBox(
+            settings_frame, text="Numbers \u2192 digits",
+            variable=self.itn_var, font=("Segoe UI", 10),
+            text_color=FG_SECONDARY, fg_color=ACCENT,
+            checkbox_width=18, checkbox_height=18,
+            command=self._on_itn_toggled)
+        self.itn_check.grid(row=1, column=0, columnspan=2, sticky="w",
+                            padx=(12, 4), pady=(0, 8))
+        self.itn_hint_var = ctk.BooleanVar(value=True)
+        self.itn_hint_check = ctk.CTkCheckBox(
+            settings_frame, text="Qwen digit prompt",
+            variable=self.itn_hint_var, font=("Segoe UI", 10),
+            text_color=FG_SECONDARY, fg_color=ACCENT,
+            checkbox_width=18, checkbox_height=18,
+            command=self._on_itn_hint_toggled)
+        self.itn_hint_check.grid(row=1, column=2, columnspan=2, sticky="w",
+                                 padx=(0, 12), pady=(0, 8))
+        self._itn_callback = None
+        self._itn_hint_callback = None
         self._method_callback = None
         self._suffix_callback = None
         model_frame = ctk.CTkFrame(live, fg_color=BG_CARD, corner_radius=10)

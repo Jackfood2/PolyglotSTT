@@ -104,6 +104,28 @@ class LiveTabMixin:
         if self._suffix_callback:
             self._suffix_callback(value)
 
+    def _on_itn_toggled(self):
+        try:
+            value = bool(self.itn_var.get())
+        except Exception:
+            value = True
+        if self._itn_callback:
+            try:
+                self._itn_callback(value)
+            except Exception:
+                pass
+
+    def _on_itn_hint_toggled(self):
+        try:
+            value = bool(self.itn_hint_var.get())
+        except Exception:
+            value = True
+        if self._itn_hint_callback:
+            try:
+                self._itn_hint_callback(value)
+            except Exception:
+                pass
+
     def _on_model_changed(self, value):
         try:
             self._refresh_srt_engine_label()
@@ -213,11 +235,21 @@ class LiveTabMixin:
         if self._canary_lang_callback:
             self._canary_lang_callback(value)
 
-    def set_settings(self, method: str, suffix: str, method_cb: Callable, suffix_cb: Callable):
+    def set_settings(self, method: str, suffix: str, method_cb: Callable, suffix_cb: Callable,
+                     itn: bool = True, hint: bool = True,
+                     itn_cb: Optional[Callable] = None,
+                     hint_cb: Optional[Callable] = None):
         self._method_callback = method_cb if callable(method_cb) else None
         self._suffix_callback = suffix_cb if callable(suffix_cb) else None
+        self._itn_callback = itn_cb if callable(itn_cb) else None
+        self._itn_hint_callback = hint_cb if callable(hint_cb) else None
         self.method_var.set(method if method in ["clipboard", "unicode"] else "clipboard")
         self.suffix_var.set(suffix if suffix in ["none", "space", "newline", "period_space"] else "none")
+        try:
+            self.itn_var.set(bool(itn))
+            self.itn_hint_var.set(bool(hint))
+        except Exception:
+            pass
 
     def set_model(self, arch: int, callback: Callable):
         self.set_model_options(

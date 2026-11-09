@@ -525,7 +525,8 @@ class QwenEngine:
             (src, ", ".join(sorted(supported)))
         )
 
-    def _run_pcm(self, pcm: np.ndarray, language: Optional[str]) -> str:
+    def _run_pcm(self, pcm: np.ndarray, language: Optional[str],
+                 extra_prompt: Optional[str] = None) -> str:
         with self._infer_lock:
             with self._lock:
                 session = self._session
@@ -538,6 +539,8 @@ class QwenEngine:
             # Both are advertised as supported by Qwen3-ASR (probed via
             # model.supports()), but degrade gracefully on other providers.
             vocab, prompt = self.dictionary_payload()
+            if extra_prompt:
+                prompt = (prompt + "\n" + extra_prompt).strip() if prompt else extra_prompt
             if vocab:
                 kwargs["vocabulary"] = vocab
             if prompt:
@@ -617,6 +620,7 @@ class QwenEngine:
         sample_rate: int = 16000,
         task: Optional[str] = None,
         source_lang: Optional[str] = None,
+        extra_prompt: Optional[str] = None,
     ) -> str:
         if not self.is_ready:
             return ""
@@ -629,7 +633,7 @@ class QwenEngine:
             error = self._check_lang_support(lang)
             if error:
                 return f"[Qwen Error: {error}]"
-            return self._run_pcm(pcm, lang)
+            return self._run_pcm(pcm, lang, extra_prompt)
         except Exception as error:
             import traceback
 
