@@ -355,6 +355,38 @@ requirements*.txt  dependency pins (base / Canary / Whisper)
 
 ## Changelog
 
+### v1.4.14
+
+A USB mic that "cannot catch the sound" was usually the wrong Windows
+host API, and picking the right microphone is now automatic.
+
+- **The app now chooses the microphone for you.** An external USB mic
+  wins whenever it is plugged in and enabled in Windows; with none
+  listed, capture falls back to the system default, i.e. the laptop's
+  own microphone. Unplug or disable the USB mic and the built-in one
+  takes over within a few seconds, with the USB mic's name remembered so
+  it is re-selected the moment it returns. It never switches mid
+  recording. Opt out with `"auto_input": false` in
+  `moonshine_config.json`.
+- **Host API order is now MME → WASAPI → DirectSound.** Measured on a
+  laptop where every DirectSound capture endpoint returned digital
+  zeros, or the same mic 45 dB quieter than MME (peak -76 dBFS against
+  -28 dBFS). The picker and name resolution now lead with MME, which
+  resamples inside Windows and therefore always accepts the 16 kHz the
+  engines want; WASAPI refuses anything but the endpoint's native rate
+  and is only a second try. Labels still use the untruncated name.
+- **A stream that opens is no longer assumed to work.** Opening a dead
+  or disabled endpoint succeeds and then delivers nothing. Each open
+  candidate must now hand over a non-silent block within 2 s, otherwise
+  it is closed at once and the same microphone's twin on another host
+  API is tried before the system default. The twin that worked is
+  remembered, so the next F2 press does not pay for the probe again.
+- **New `mic_check.py` diagnostic.** It opens every capture endpoint
+  under every host API, reads a second of audio with a hard timeout and
+  reports OK / TOO QUIET / SILENT / NO DATA, so a "mic error" can be
+  pinned on the app, on Windows, or on the hardware in one run:
+  `venv\Scripts\python.exe mic_check.py`.
+
 ### v1.4.13
 
 Two reasons a quiet mic looked dead: the meter was on a linear scale, and

@@ -1,8 +1,9 @@
 @echo off
-rem Windowless launcher: no console window stays open (a brief one may
-rem flash on double-click - use run_windowless.vbs for zero flash).
+rem Windowless launcher: no console window ever appears.
+rem run_windowless.vbs is flash-free; this .bat hides its own console after
+rem the checks so a double-click shows nothing beyond a possible brief flash.
 cd /d "%~dp0"
-rem Put this project's venv and portable Python first, then keep the user's PATH.
+set "POLYGLOTSTT_WINDOWLESS=1"
 set "PATH=%~dp0venv\Scripts;%~dp0python;%PATH%"
 set "PYTHONPATH="
 set "PYTHONHOME="
@@ -11,4 +12,5 @@ if not exist "venv\Scripts\pythonw.exe" (
     pause
     exit /b 1
 )
-start "PolyglotSTT" "%~dp0venv\Scripts\pythonw.exe" moonshine_stt.py
+start "" "%~dp0venv\Scripts\pythonw.exe" moonshine_stt.py %*
+exit /b 0

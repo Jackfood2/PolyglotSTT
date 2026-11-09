@@ -107,21 +107,77 @@ def _name_key(name) -> str:
 
 
 def _hostapi_rank(index) -> int:
-    """Order endpoints the way the picker lists them: DirectSound, then
-    MME, then anything else. One physical mic is exposed twice under the
-    same name, and MME truncates long names and adds latency, so a name
-    lookup must not silently land on the MME twin."""
-    order = ("Windows DirectSound", "MME")
+    """Order endpoints the way the picker lists them (see
+    _HOSTAPI_PREFERENCE): MME first, then WASAPI, then DirectSound.
+
+    One physical microphone is exposed once per host API under the same
+    name, so a lookup by name has to choose one twin. MME is the twin that
+    reliably carries 16 kHz audio; DirectSound is last because on some
+    machines it opens the endpoint and then delivers near-silence, which
+    is what makes a working USB mic look "too quiet to catch the sound".
+    """
     try:
         dev = sd.query_devices(int(index))
         api = sd.query_hostapis(int(dev.get("hostapi")))
         name = str(api.get("name") or "")
     except Exception:
-        return len(order) + 1
-    for position, wanted in enumerate(order):
-        if name == wanted:
-            return position
-    return len(order) + 1
+        return 9
+    return _HOSTAPI_PREFERENCE.get(name, 9)
+
+
+#: Host APIs that can actually carry 16 kHz capture, best first. MME
+#: resamples inside Windows so it accepts the rate the engines want;
+#: WASAPI refuses anything but the endpoint's native rate (-9997) and is
+#: only useful as a second try; DirectSound is last because on some
+#: machines it opens the endpoint and then hands back digital zeros.
+_HOSTAPI_PREFERENCE = {"MME": 0, "Windows WASAPI": 1,
+                       "Windows DirectSound": 2}
+
+
+def _hostapi_name(index) -> str:
+    """Host API name behind a device index, or "" when it cannot be read."""
+    try:
+        dev = sd.query_devices(int(index))
+        return str(sd.query_hostapis(int(dev.get("hostapi"))).get("name") or "")
+    except Exception:
+        return ""
+
+
+def _indexes_for_name(name):
+    """Every capture index exposing one endpoint name, best host API first.
+
+    Windows lists one physical mic once per host API (DirectSound, MME,
+    WASAPI) and on a given machine only some of those twins actually carry
+    audio: DirectSound here hands back digital zeros while MME and WASAPI
+    stream the same microphone correctly. Sorting twins by host API lets a
+    silent twin be abandoned for a working one.
+    """
+    key = _name_key(name)
+    if not key:
+        return []
+    try:
+        devs = sd.query_devices()
+    except Exception:
+        return []
+    out = []
+    for idx, dev in enumerate(devs):
+        try:
+            if int(dev.get("max_input_channels") or 0) <= 0:
+                continue
+        except Exception:
+            continue
+        cand = _name_key(dev.get("name"))
+        if not cand:
+            continue
+        # MME truncates long names, so the twin of "Microphone Array (3-
+        # Intel(R) Smart Sound Technology ...)" reads "Microphone Array (3-
+        # Intel(R) Sma". A truncated twin is still the same microphone.
+        if cand == key or (
+                len(key) >= 12 and len(cand) >= 12 and
+                (cand.startswith(key) or key.startswith(cand))):
+            out.append(int(idx))
+    out.sort(key=lambda i: _HOSTAPI_PREFERENCE.get(_hostapi_name(i), 9))
+    return out
 
 
 def _match_device_name(name, devices=None):
@@ -262,6 +318,11 @@ class AudioRecorder:
         self._on_level: Optional[Callable[[float], None]] = None
         self._last_block_t = time.monotonic()
         self._zero_since: Optional[float] = None
+        # Feed a block of live audio into a candidate probe. A dead host API
+        # path (DirectSound on some machines) opens cleanly and then hands
+        # back only exact zeros, so arrival alone does not prove it works.
+        self._block_count = 0
+        self._nonzero_seen = False
 
     @property
     def is_recording(self) -> bool:
@@ -300,13 +361,15 @@ class AudioRecorder:
         """The chosen index, or None (system default) when the saved device
         is gone, disabled, or not a capture endpoint at all.
 
-        The stored index wins while it still names the stored endpoint, so
-        the host API the user picked from the list is the one that opens
-        (DirectSound and MME expose the same mic with the same name, and
-        jumping between them changes latency and level without saying so).
-        Only when the index is gone -- or now names a different device -- is
-        the endpoint followed by name, which is how a replugged USB mic is
-        found again on its new index.
+        The stored endpoint wins while it still names the stored microphone,
+        so a replug that shuffles Windows' index does not silently move the
+        recording to a different mic. Which *twin* of that microphone is
+        opened is decided by host API, not by the stale saved index: a
+        config saved before the picker started preferring MME can point at
+        the DirectSound twin, which opens and then delivers near-silence.
+        Only when the endpoint is gone -- or its index now names a different
+        device -- is it followed by name, which is how a replugged USB mic
+        is found again on its new index.
         """
         name = (self.device_name or "").strip()
         if self.device is not None:
@@ -315,6 +378,9 @@ class AudioRecorder:
                 if int(info.get("max_input_channels") or 0) > 0:
                     if (not name
                             or _name_key(info.get("name")) == _name_key(name)):
+                        twins = _indexes_for_name(name) if name else []
+                        if twins:
+                            self.device = int(twins[0])
                         return int(self.device)
             except Exception:
                 pass
@@ -339,6 +405,12 @@ class AudioRecorder:
         try:
             now = time.monotonic()
             self._last_block_t = now
+            self._block_count += 1
+            try:
+                if indata.size and indata.any():
+                    self._nonzero_seen = True
+            except Exception:
+                pass
             try:
                 if indata.size and not indata.any():
                     if self._zero_since is None:
@@ -368,6 +440,31 @@ class AudioRecorder:
             device=device,
         )
 
+    #: How long a freshly opened stream may take to hand over its first
+    #: block before the endpoint is treated as dead. A live mic at 16 kHz
+    #: delivers its first 64 ms block within a few hundred milliseconds.
+    PROBE_SECONDS = 2.0
+
+    def _first_block_within(self, stream, seconds=None):
+        """True once the stream has really delivered audio. Opening a dead
+        endpoint (disabled in Windows, unplugged, or a host API that cannot
+        pull from this driver) succeeds and then yields nothing -- no blocks
+        at all, or blocks of exact zeros -- so the first non-silent block is
+        the only cheap proof that a candidate works."""
+        wait = self.PROBE_SECONDS if seconds is None else float(seconds)
+        mark = time.monotonic()
+        self._last_block_t = mark
+        self._nonzero_seen = False
+        deadline = mark + max(0.05, wait)
+        while time.monotonic() < deadline:
+            try:
+                if self._nonzero_seen and float(self._last_block_t) >= mark:
+                    return True
+            except Exception:
+                return True
+            time.sleep(0.02)
+        return False
+
     def _open_with_recovery(self):
         """Open the stream, surviving a mic that was unplugged or replugged
         while the app was running.
@@ -379,34 +476,89 @@ class AudioRecorder:
         then fall back to the system default and finally to any capture
         endpoint -- holding F2 always records something rather than
         reporting "Mic error" until the app is restarted.
+
+        A stream that opens but never delivers is not success: DirectSound
+        returns digital zeros on some machines for a microphone that MME
+        streams perfectly. Such a candidate is closed at once and its twin
+        on another host API is tried before any other microphone.
         """
         with _DEV_LOCK:
-            first = None
-            for cand in self._candidates():
+            tried = set()
+            silent_names = []
+            errors = []
+
+            def attempt(cand):
+                if cand in tried:
+                    return None
+                tried.add(cand)
                 try:
-                    return self._open_stream(cand)
+                    stream = self._open_stream(cand)
                 except Exception as e:
-                    first = first or e
+                    errors.append(e)
+                    return None
+                if self._first_block_within(stream):
+                    if cand is not None:
+                        # Remember the host API that really works, so the
+                        # next F2 press does not pay the probe again.
+                        self.device = int(cand)
+                    return stream
+                try:
+                    name = str(sd.query_devices(int(cand)).get("name") or "")
+                except Exception:
+                    name = ""
+                if name:
+                    silent_names.append(name)
+                errors.append(RuntimeError(
+                    "microphone opened but delivered no audio"))
+                close_input_stream(stream)
+                return None
+
+            def attempt_all(cands):
+                for cand in cands:
+                    stream = attempt(cand)
+                    if stream is not None:
+                        return stream
+                return None
+
+            def twins():
+                """The chosen mic and any mic that opened but stayed silent,
+                on every host API Windows lists them under. A twin of the
+                chosen endpoint beats the system default: the user asked
+                for that microphone, not for whatever Windows likes best."""
+                names = [n for n in silent_names]
+                if self.device_name:
+                    names.append(self.device_name)
+                for name in names:
+                    for cand in _indexes_for_name(name):
+                        yield cand
+
+            saved = [c for c in self._candidates() if c is not None]
+            stream = attempt_all(saved)
+            if stream is not None:
+                return stream
+            stream = attempt_all(twins())
+            if stream is not None:
+                return stream
+            stream = attempt_all([None])
+            if stream is not None:
+                return stream
             reenumerated = False
             try:
                 reenumerated = bool(refresh_devices())
             except Exception:
                 reenumerated = False
             if reenumerated:
-                for cand in self._candidates():
-                    try:
-                        return self._open_stream(cand)
-                    except Exception as e:
-                        first = first or e
-            tried = self._candidates()
-            for cand in _input_indexes():
-                if cand in tried:
-                    continue
-                try:
-                    return self._open_stream(cand)
-                except Exception as e:
-                    first = first or e
-            raise first or RuntimeError("no microphone available")
+                stream = attempt_all(self._candidates())
+                if stream is not None:
+                    return stream
+                stream = attempt_all(twins())
+                if stream is not None:
+                    return stream
+            stream = attempt_all(_input_indexes())
+            if stream is not None:
+                return stream
+            raise (errors[0] if errors
+                   else RuntimeError("no microphone available"))
 
     def start(self):
         with self._open_lock:
@@ -511,12 +663,16 @@ class AudioRecorder:
 def list_input_devices(refresh: bool = False):
     """Capture endpoints the app can actually open at 16 kHz, best first.
 
-    Only DirectSound and MME are listed: both resample inside Windows, so
-    they accept the 16 kHz the engines expect. WASAPI refuses anything but
-    the endpoint's native rate and WDM-KS fails on most drivers. Entries
-    that just alias "whatever Windows defaults to" are skipped, and the
-    same endpoint exposed by both host APIs is listed once (DirectSound
-    first, because its names are not truncated).
+    Only MME, WASAPI and DirectSound are listed. MME resamples inside
+    Windows, so it accepts the 16 kHz the engines expect, and it is listed
+    first: on machines where DirectSound opens an endpoint and then hands
+    back near-silence, MME is the only twin that carries real audio. WASAPI
+    is next (it only accepts the endpoint's native rate, so the recorder's
+    own fallback usually has to skip it) and DirectSound last. WDM-KS fails
+    on most drivers and is never listed. Entries that just alias "whatever
+    Windows defaults to" are skipped, and one physical microphone shown by
+    several host APIs is listed once, under the longest (untruncated) name
+    while pointing at the best-ordered twin.
 
     Pass ``refresh=True`` to ask for a re-enumeration first, which is what
     makes a replugged USB mic visible without an app restart. The re-scan
@@ -533,9 +689,9 @@ def list_input_devices(refresh: bool = False):
         hostapis = sd.query_hostapis()
     except Exception:
         return []
-    order = ("Windows DirectSound", "MME")
+    order = ("MME", "Windows WASAPI", "Windows DirectSound")
     out = []
-    seen = set()
+    by_key = {}
     for wanted in order:
         for ha in hostapis:
             try:
@@ -556,14 +712,30 @@ def list_input_devices(refresh: bool = False):
                 if (not name or low.startswith("microsoft sound mapper")
                         or low.startswith("primary sound")):
                     continue
-                if low in seen:
+                key = _name_key(name)
+                if not key:
                     continue
-                # MME truncates long names; skip the clipped twin.
-                if wanted == "MME" and any(
-                        s.startswith(low) for s in seen):
-                    continue
-                seen.add(low)
-                out.append({"index": int(idx), "name": name})
+                entry = by_key.get(key)
+                if entry is None:
+                    # MME truncates long names, so its twin of "Microphone
+                    # Array (3- Intel(R) Smart Sound ...)" reads "Microphone
+                    # Array (3- Intel(R) Sma". Match a clipped twin to the
+                    # entry it belongs to instead of listing the mic twice.
+                    for other_key, other in by_key.items():
+                        if len(other_key) >= 12 and len(key) >= 12 and (
+                                other_key.startswith(key)
+                                or key.startswith(other_key)):
+                            entry = other
+                            break
+                if entry is None:
+                    entry = {"index": int(idx), "name": name}
+                    by_key[key] = entry
+                    out.append(entry)
+                elif len(name) > len(entry["name"]):
+                    # Keep the readable full name; the index stays with the
+                    # best host API so the stream opens on the twin that
+                    # actually carries audio.
+                    entry["name"] = name
     return out
 
 
@@ -573,3 +745,100 @@ def default_input_index():
         return int(sd.default.device[0])
     except Exception:
         return -1
+
+
+#: Words Windows puts in the name of an external USB microphone
+#: ("Microphone (USB2.0 Device)", "Microphone (USB PnP Sound Device)",
+#: "Microphone (2- USB Audio Device)") but never in the laptop's own array.
+_USB_HINTS = ("usb",)
+#: Words that mark a built-in microphone, so a laptop whose internal array
+#: is exposed through a USB-attached codec is not mistaken for a USB mic.
+_BUILTIN_HINTS = ("array", "realtek", "smart sound", "digital microphones")
+
+
+def is_usb_mic(name) -> bool:
+    """True when an endpoint name looks like an external USB microphone."""
+    low = str(name or "").lower()
+    if not low or not any(h in low for h in _USB_HINTS):
+        return False
+    return not any(h in low for h in _BUILTIN_HINTS)
+
+
+def auto_input_choice(devices, prefer_usb: bool = True):
+    """Which listed endpoint should be used without being asked.
+
+    A plugged-in and enabled USB microphone wins over the laptop's own
+    microphone; with no USB endpoint listed the answer is ``None``, which
+    means "system default" - the built-in mic Windows already uses. A USB
+    mic that is unplugged or disabled in Windows is simply absent from the
+    list, so it cannot win, which is exactly the behaviour wanted.
+
+    Returns ``(index, name)`` or ``None``.
+    """
+    if not prefer_usb:
+        return None
+    best = None
+    for d in devices or []:
+        try:
+            index = int(d.get("index", -1))
+            name = str(d.get("name") or "").strip()
+        except Exception:
+            continue
+        if index < 0 or not is_usb_mic(name):
+            continue
+        rank = _hostapi_rank(index)
+        if best is None or rank < best[0]:
+            best = (rank, index, name)
+    if best is None:
+        return None
+    return best[1], best[2]
+
+
+def choose_input(devices, current=-1, current_name="", auto=True):
+    """Which listed endpoint the app should use right now -> (index, name).
+
+    ``current`` and ``current_name`` are the saved choice; ``index`` -1
+    means "system default" (the laptop's own microphone).
+
+    Order of precedence:
+
+    1. the saved microphone, followed by name -- a replug hands it a new
+       index, and its old index may now belong to a different device;
+    2. an external USB microphone that is plugged in and enabled (only
+       when ``auto`` is on);
+    3. the system default, so capture never stops while the saved mic is
+       away. The saved name is kept so the same mic is chosen again the
+       moment it returns.
+    """
+    listed = set()
+    for d in devices or []:
+        try:
+            listed.add(int(d.get("index", -1)))
+        except Exception:
+            continue
+    name = str(current_name or "").strip()
+    try:
+        want = int(current)
+    except Exception:
+        want = -1
+    if name:
+        hit = match_listed_device(name, devices)
+        if hit is not None:
+            want = int(hit)
+        elif want >= 0 and want not in listed:
+            want = -1
+    elif want >= 0 and want not in listed:
+        want = -1
+    if auto:
+        usb = auto_input_choice(devices)
+        if usb is not None:
+            return int(usb[0]), str(usb[1])
+        if name and is_usb_mic(name):
+            # The USB mic that was in use is gone: record from the built-in
+            # microphone now, keeping the name so it returns on replug.
+            return -1, name
+    if want >= 0:
+        return want, name or str(
+            next((d.get("name") for d in devices
+                  if int(d.get("index", -1)) == want), "") or "")
+    return -1, name

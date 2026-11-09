@@ -3,6 +3,11 @@ import shutil
 import subprocess
 import threading
 import time
+
+try:
+    from core.no_window import QUIET_FLAGS as _QUIET_FLAGS
+except Exception:  # pragma: no cover - helper optional
+    _QUIET_FLAGS = 0
 _SMI_TIMEOUT = 8
 _cache = {}
 _cache_lock = threading.Lock()
@@ -23,7 +28,8 @@ def _smi_gpus():
              "driver_version",
              "--format=csv,noheader,nounits"],
             stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
-            text=True, errors="replace", timeout=_SMI_TIMEOUT)
+            text=True, errors="replace", timeout=_SMI_TIMEOUT,
+            creationflags=_QUIET_FLAGS)
     except Exception:
         return []
     out = []
@@ -180,7 +186,8 @@ def nvenc_available(ffmpeg=None, encoder: str = "h264_nvenc") -> bool:
         proc = subprocess.run(
             [exe, "-hide_banner", "-encoders"],
             stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
-            text=True, errors="replace", timeout=30)
+            text=True, errors="replace", timeout=30,
+            creationflags=_QUIET_FLAGS)
         out = proc.stdout or ""
         ok = bool(_re.search(r"\b" + _re.escape(enc) + r"\b", out))
     except Exception:

@@ -116,12 +116,22 @@ if not errorlevel 1 (
 echo Note: NVIDIA GPU found but torch is CPU-only. Run setup.bat once for GPU support.
 :RUN_APP
 if not exist "models_cache\download.moonshine.ai" echo Warning: models_cache not found. Will try APPDATA cache.
-rem GUI switch "Windowless next launch" (moonshine_config.json holds "windowless": true).
-findstr /r /c:"windowless.: *true" "moonshine_config.json" >nul 2>&1
-if not errorlevel 1 (
-    start "PolyglotSTT" "%~dp0venv\Scripts\pythonw.exe" moonshine_stt.py %*
-    goto END_APP
-)
+rem Windowless by default: the app is started under pythonw.exe, which has no
+rem console at all, so no cmd window stays open and no child (ffmpeg,
+rem nvidia-smi) can open one. Nothing in the app hides or detaches a console -
+rem that pattern is flagged by EDR products such as CrowdStrike.
+rem Set POLYGLOTSTT_CONSOLE=1 in the environment (or pass --console) to get
+rem the old window-with-logs behaviour for debugging.
+set "WANT_CONSOLE="
+if defined POLYGLOTSTT_CONSOLE set "WANT_CONSOLE=%POLYGLOTSTT_CONSOLE%"
+for %%a in (%*) do if /i "%%~a"=="--console" set "WANT_CONSOLE=1"
+if /i "%WANT_CONSOLE%"=="1" goto RUN_CONSOLE
+if /i "%WANT_CONSOLE%"=="true" goto RUN_CONSOLE
+if not exist "venv\Scripts\pythonw.exe" goto RUN_CONSOLE
+set "POLYGLOTSTT_WINDOWLESS=1"
+start "PolyglotSTT" "%~dp0venv\Scripts\pythonw.exe" moonshine_stt.py %*
+goto END_APP
+:RUN_CONSOLE
 "%~dp0venv\Scripts\python.exe" moonshine_stt.py %*
 if errorlevel 1 (
     echo.

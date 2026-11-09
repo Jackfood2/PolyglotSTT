@@ -16,6 +16,11 @@ from typing import Callable, Dict, List, Optional, Tuple
 
 import numpy as np
 
+try:
+    from core.no_window import QUIET_FLAGS as _QUIET_FLAGS
+except Exception:  # pragma: no cover - helper optional
+    _QUIET_FLAGS = 0
+
 
 _LOG = logging.getLogger(__name__)
 
@@ -755,6 +760,7 @@ def _run_process(command, cancel_event=None, timeout=None):
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.DEVNULL,
                 stderr=errors,
+                creationflags=_QUIET_FLAGS,
             )
         except FileNotFoundError as exc:
             raise RuntimeError(
@@ -3285,6 +3291,7 @@ def probe_media(path, ffmpeg: str) -> dict:
             text=True,
             errors="replace",
             timeout=60,
+            creationflags=_QUIET_FLAGS,
         )
     except subprocess.TimeoutExpired as exc:
         raise TimeoutError(f"media probe timed out: {path}") from exc
@@ -3480,7 +3487,8 @@ def extract_clip(src_path, dst_wav, ffmpeg: str, start_s: float,
            "-ac", "1", "-ar", "16000", "-vn", str(dst_wav)]
     try:
         proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL,
-                                stderr=subprocess.PIPE)
+                                stderr=subprocess.PIPE,
+                                creationflags=_QUIET_FLAGS)
     except FileNotFoundError:
         raise RuntimeError(f"ffmpeg not executable: {ffmpeg}")
     try:
@@ -3780,7 +3788,8 @@ def burn_subtitles(src_path: str, srt_path: str, out_path: str, ffmpeg: str,
                 except Exception:
                     pass
             p = subprocess.Popen(base + multi + [str(out)],
-                                 stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+                                 stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
+                                 creationflags=_QUIET_FLAGS)
             _st: dict = {}
             _burn_popen_wait(p, total_frames, 0.0, 1.0, _bprog,
                              cancel_event, label="", stats=_st)
@@ -3793,7 +3802,8 @@ def burn_subtitles(src_path: str, srt_path: str, out_path: str, ffmpeg: str,
                     pass
             p1 = subprocess.Popen(base + ["-pass", "1", "-passlogfile", passlog,
                                           "-f", "mp4", os.devnull],
-                                  stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+                                  stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
+                                  creationflags=_QUIET_FLAGS)
             _st1: dict = {}
             _burn_popen_wait(p1, total_frames, 0.0, 0.45, _bprog,
                              cancel_event, label="pass 1/2 ", stats=_st1)
@@ -3805,7 +3815,8 @@ def burn_subtitles(src_path: str, srt_path: str, out_path: str, ffmpeg: str,
                     pass
             p2 = subprocess.Popen(base + ["-pass", "2", "-passlogfile", passlog,
                                           str(out)],
-                                  stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+                                  stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
+                                  creationflags=_QUIET_FLAGS)
             _st2: dict = {}
             _burn_popen_wait(p2, total_frames, 0.45, 0.55, _bprog,
                              cancel_event, label="pass 2/2 ", stats=_st2)
@@ -3817,7 +3828,8 @@ def burn_subtitles(src_path: str, srt_path: str, out_path: str, ffmpeg: str,
                 except Exception:
                     pass
             p = subprocess.Popen(base + [str(out)],
-                                 stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+                                 stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
+                                 creationflags=_QUIET_FLAGS)
             _st0: dict = {}
             _burn_popen_wait(p, total_frames, 0.0, 1.0, _bprog,
                              cancel_event, label="", stats=_st0)

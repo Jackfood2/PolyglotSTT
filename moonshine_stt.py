@@ -41,6 +41,7 @@ except Exception as e:
     FG_SECONDARY = "#B2BEC3"
 RECORD_KEY = keyboard.Key.f2
 SAMPLE_RATE = 16000
+
 _SINGLE_INSTANCE_MUTEX = None
 
 
@@ -57,7 +58,7 @@ try:
     )
 except Exception:  # pragma: no cover - fallback if core/ is missing
     import json as _json
-    APP_VERSION = "1.4.13"
+    APP_VERSION = "1.4.14"
     CONFIG_PATH = os.path.join(os.path.dirname(__file__), "moonshine_config.json")
     NOTES_AUDIO_DIR = os.path.join(os.path.dirname(__file__), "notes_audio")
     _CONFIG_LOCK = threading.RLock()
@@ -102,6 +103,7 @@ except Exception:  # pragma: no cover - fallback if core/ is missing
         "windowless": False,
         "input_device": -1,
         "input_device_name": "",
+        "auto_input": True,
     }
 
     def load_local_config():
@@ -3759,7 +3761,7 @@ class MoonshineSTTApp:
         """
         try:
             devices = AudioRecorder.list_input_devices(refresh=refresh)
-        except Exception:
+        except Exception as _e:
             devices = []
         by_index = {}
         for d in devices:
@@ -3773,26 +3775,22 @@ class MoonshineSTTApp:
         except Exception:
             old = -1
         want_name = str(self.config.get("input_device_name", "") or "").strip()
-        want = old
-        if want_name:
-            # The name is the stable handle. A replugged USB mic comes back
-            # on a new index, and its old index can be handed to a different
-            # device, so the name wins over the stored index either way.
-            try:
-                from recorder import match_listed_device
-                hit = match_listed_device(want_name, devices)
-            except Exception:
-                hit = None
-            if hit is not None:
-                want = int(hit)
-            elif want >= 0 and want not in by_index:
-                # Away: keep the name, fall back to the system default so
-                # holding F2 still records from something.
-                want = -1
-        elif want >= 0 and want not in by_index:
-            want = -1
+        # One function decides, so the rule can be tested without a GUI (see
+        # recorder.choose_input): saved mic by name, then a plugged-in USB
+        # mic, then the system default (the laptop's own microphone).
+        try:
+            from recorder import choose_input
+            want, chosen_name = choose_input(
+                devices, old, want_name,
+                auto=bool(self.config.get("auto_input", True)))
+        except Exception:
+            want, chosen_name = old, want_name
+        if chosen_name:
+            want_name = str(chosen_name).strip()
         if want != old:
             self.config["input_device"] = want
+            if want_name:
+                self.config["input_device_name"] = want_name
             try:
                 save_local_config(self.config)
             except Exception:
@@ -3800,6 +3798,8 @@ class MoonshineSTTApp:
             try:
                 if want >= 0:
                     self._log(f"Mic -> {by_index.get(want, want_name)}")
+                else:
+                    self._log("Mic -> system default")
             except Exception:
                 pass
         try:
@@ -6059,6 +6059,34 @@ def _single_instance_guard():
             os._exit(0)
     except Exception:
         pass
+def _want_windowless_launch():
+    """True when this launch should not keep a console window.
+
+    Purely informational here: the app itself never hides or detaches a
+    console (EDR products flag that as defense evasion). Windowless launches
+    are done by running the app under pythonw.exe, which has no console at
+    all - see run.bat / the desktop shortcut.
+    """
+    if "--windowless" in sys.argv:
+        return True
+    try:
+        exe = os.path.basename(sys.executable or "").lower()
+        if exe == "pythonw.exe":
+            return True
+    except Exception:
+        pass
+    try:
+        if os.environ.get("POLYGLOTSTT_WINDOWLESS", "").strip() in ("1", "true", "yes"):
+            return True
+    except Exception:
+        pass
+    try:
+        with open(CONFIG_PATH, "r", encoding="utf-8") as f:
+            return bool(json.load(f).get("windowless", False))
+    except Exception:
+        return False
+
+
 def main():
     try:
         from core.applog import setup_logging
