@@ -31,6 +31,9 @@ CASES = [
     ("9 9 5 0", "9950"),
     ("my code is 9 9 5 0", "my code is 9950"),
     ("2 4 6 8", "2468"),
+    # digit strings keep their unit suffix
+    ("nine nine five zero dollars", "$9950"),
+    ("nine nine five zero percent", "9950%"),
     ("3 30", "3 30"),
     # --- clock times ----------------------------------------------------
     ("three thirty pm", "3:30 PM"),

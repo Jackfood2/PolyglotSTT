@@ -499,9 +499,17 @@ def _try_at(matches, words, text, i):
             return "-" + replacement, j
         return None
 
+    # A digit string keeps its unit suffix: "nine nine five zero dollars".
+    run = _digit_run(matches, words, text, i)
+    if run is not None:
+        run_text, run_end = run
+        suffix, after = _suffix_after(matches, words, text, run_end)
+        if suffix is not None:
+            return _format_number(run_text, suffix), after
+        run = (run_text, run_end)
+
     # A number cue in front ("pin", "room", "order number") always means a
     # digit string: "room two oh four" is 204, not 2:04.
-    run = _digit_run(matches, words, text, i)
     if run is not None and _cue_before(words, i, _NUMBER_CUES):
         return run
 

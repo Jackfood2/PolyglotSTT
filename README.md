@@ -378,8 +378,9 @@ zero" used to produce "9:09 5:00"; it now produces `9950`.
 - **Digit sequences are read left to right as one number** —
   `nine nine five zero` → `9950`, `five nine five nine` → `5959`,
   `zero five nine` → `059`, `nine nine five oh` → `9950`,
-  `double seven` → `77`, `triple five` → `555`, and `9 9 5 0` → `9950`
-  when the model already emits spaced digits. The pass runs before the
+  `double seven` → `77`, `triple five` → `555`, `nine nine five zero
+  dollars` → `$9950`, and `9 9 5 0` → `9950` when the model already emits
+  spaced digits. The pass runs before the
   clock-time rule and stops that rule fires on purpose: a clock reading
   now needs evidence (a meridian, `o'clock`, a time preposition such as
   `at`/`around`, or a minute part of at least ten).
@@ -393,7 +394,7 @@ zero" used to produce "9:09 5:00"; it now produces `9950`.
 - **Small extras** — `three o'clock` → `3:00`, `point five` → `0.5`,
   and `a.m.`/`p.m.` supplied as two tokens are joined to `AM`/`PM`.
 - `test_itn.py` is a dependency-free regression check for all of the
-  above: `python test_itn.py`.
+  above: `python test_itn.py` (55 cases).
 
 ### v1.4.16
 
