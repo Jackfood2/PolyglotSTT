@@ -370,6 +370,31 @@ requirements*.txt  dependency pins (base / Canary / Whisper)
 
 ## Changelog
 
+### v1.4.17
+
+Digit strings are no longer mistaken for clock times. Saying "nine nine five
+zero" used to produce "9:09 5:00"; it now produces `9950`.
+
+- **Digit sequences are read left to right as one number** —
+  `nine nine five zero` → `9950`, `five nine five nine` → `5959`,
+  `zero five nine` → `059`, `nine nine five oh` → `9950`,
+  `double seven` → `77`, `triple five` → `555`, and `9 9 5 0` → `9950`
+  when the model already emits spaced digits. The pass runs before the
+  clock-time rule and stops that rule fires on purpose: a clock reading
+  now needs evidence (a meridian, `o'clock`, a time preposition such as
+  `at`/`around`, or a minute part of at least ten).
+- **Number cues win** — `pin`, `code`, `order number`, `room`,
+  `extension`, `flight`, `zip`, `serial` … put in front of spoken digits
+  force a number even when a time reading is possible
+  (`room two oh four` → `room 204`).
+- **Years** — `in twenty twenty four` → `in 2024`,
+  `since nineteen ninety` → `since 1990`, `in nineteen eighty four` →
+  `in 1984`. A bare pair such as `seventeen ninety` is still left alone.
+- **Small extras** — `three o'clock` → `3:00`, `point five` → `0.5`,
+  and `a.m.`/`p.m.` supplied as two tokens are joined to `AM`/`PM`.
+- `test_itn.py` is a dependency-free regression check for all of the
+  above: `python test_itn.py`.
+
 ### v1.4.16
 
 Live dictation now writes numbers as digits instead of spelling them out

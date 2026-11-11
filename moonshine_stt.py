@@ -58,7 +58,7 @@ try:
     )
 except Exception:  # pragma: no cover - fallback if core/ is missing
     import json as _json
-    APP_VERSION = "1.4.16"
+    APP_VERSION = "1.4.17"
     CONFIG_PATH = os.path.join(os.path.dirname(__file__), "moonshine_config.json")
     NOTES_AUDIO_DIR = os.path.join(os.path.dirname(__file__), "notes_audio")
     _CONFIG_LOCK = threading.RLock()

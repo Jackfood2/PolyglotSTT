@@ -1,4 +1,4 @@
-"""Inverse Text Normalization (ITN) for the Live tab.
+"""Inverse Text Normalisation (ITN) for the Live tab.
 
 Speech recognisers emit verbatim (spoken-form) text: Qwen3-ASR in
 particular writes "meet me at three thirty" and "five dollars" instead of
@@ -9,6 +9,21 @@ Pure Python, no dependencies (no NeMo / torch download, no network).
 Deliberately conservative about ambiguous words: "one of them", "no one",
 "a second", "first of all" and "one third" are left alone, while clear
 numeric uses are converted.
+
+Rewrite passes, first match at a token wins
+-------------------------------------------
+1. digits spoken one by one - "nine nine five zero" -> "9950",
+   "double seven" -> "77", "oh five nine" -> "059". A bare pair of
+   single-digit words ("nine nine") is only joined when a number cue
+   ("code", "order", "pin", ...) sits in front of it, which is what keeps
+   a clock-time guess from mangling digit strings.
+2. clock times, but only when there is evidence - a meridian
+   ("three thirty pm" -> "3:30 PM"), "o'clock", a time preposition
+   ("at three thirty" -> "at 3:30"), or a minute part of at least ten
+   ("seven forty" -> "7:40").
+3. years with a cue - "in twenty twenty four" -> "in 2024",
+   "since nineteen ninety" -> "since 1990".
+4. cardinals, decimals, money, percent, degrees and ordinals.
 
 Public API
 ----------
@@ -66,7 +81,46 @@ _CURRENCY = {
     "yen": "\u00a5", "jpy": "\u00a5",
 }
 _DEGREES = {"degree", "degrees"}
-_MERIDIEM = {"am": "AM", "pm": "PM", "a.m.": "AM", "p.m.": "PM"}
+_MERIDIEM = {"am": "AM", "pm": "PM"}
+_OCLOCK = {"o'clock", "oclock", "o\u2019clock"}
+
+# Words that can be read digit by digit.
+_DIGIT_WORDS = dict(_UNITS)
+_DIGIT_WORDS.update({"oh": 0, "o": 0})
+# "double seven" -> 77, "triple five" -> 555.
+_GROUP_WORDS = {"double": 2, "triple": 3, "quadruple": 4, "quintuple": 5}
+
+# "at three thirty" is a time; "three thirty" alone is judged by its minutes.
+_TIME_CUES = {
+    "at", "around", "about", "by", "until", "till", "til", "after",
+    "before", "from", "near", "sharp", "past",
+}
+# A number cue in front of two spoken digits makes them a number:
+# "pin one two" -> "pin 12", "my order number is nine nine five zero".
+_NUMBER_CUES = {
+    "number", "numbers", "no", "code", "pin", "password", "id",
+    "order", "room", "extension", "ext", "phone", "telephone",
+    "mobile", "cell", "zip", "postal", "serial", "flight", "account",
+    "invoice", "ticket", "passport", "licence", "license", "plate",
+    "ssn", "isbn", "imei", "model", "version", "tracking", "reference",
+    "ref", "part", "sku", "batch", "lot", "digit", "digits", "gate",
+    "door", "seat", "unit", "apartment", "suite", "floor", "channel",
+}
+_STOPWORDS = {
+    "is", "are", "was", "were", "be", "been", "being", "equals",
+    "equal", "to", "the", "a", "an", "my", "our", "your", "his", "her",
+    "their", "its", "it's", "so", "then", "and", "now", "here", "there",
+}
+# "in twenty twenty four" is a year; "twenty twenty five minutes" is not.
+_YEAR_CUES = {
+    "year", "years", "in", "since", "until", "till", "by", "circa",
+    "from", "of", "back", "dated",
+}
+_DURATION_NEXT = {
+    "minute", "minutes", "second", "seconds", "hour", "hours", "day",
+    "days", "week", "weeks", "month", "months", "year", "years",
+    "dollars", "bucks", "percent", "am", "pm", "degrees", "times",
+}
 
 # Single "one" is often a pronoun, not a quantity.
 _ONE_NEXT_GUARD = {
@@ -80,10 +134,14 @@ _ONE_PREV_GUARD = {
 }
 
 _TOKEN_RE = re.compile(r"[A-Za-z]+(?:'[A-Za-z]+)?")
+# "9 9 5 0" and "9-9-5-0" are one number, not four.
+_SPACED_DIGITS_RE = re.compile(r"(?<![0-9A-Za-z])([0-9])(?:[ 	-]+([0-9])){2,}(?![0-9A-Za-z])")
 
 QWEN_HINT = (
     "Write numbers, times, dates, money and percentages as digits, not as "
-    "words, e.g. 3, 3:30 PM, 2024-05-01, $5, 25%."
+    "words. Digits spoken one by one become a single number: "
+    "'nine nine five zero' -> 9950, 'double seven' -> 77. "
+    "Times -> 3:30 PM, money -> $5, percent -> 25%."
 )
 
 
@@ -176,7 +234,36 @@ def _collect_phrase(matches, i, text):
     return None, i
 
 
-def _suffix_after(matches, words, j, text):
+def _cue_before(words, i, cues) -> bool:
+    """True when a cue word sits up to two words before i (skipping copulas)."""
+    k = i - 1
+    for _ in range(2):
+        if k < 0:
+            return False
+        word = words[k]
+        if word in cues:
+            return True
+        if word not in _STOPWORDS:
+            return False
+        k -= 1
+    return False
+
+
+def _meridiem_at(matches, words, text, j):
+    """Read "pm", "a.m." or spaced "a m" at j as (label, next_index)."""
+    if j >= len(words):
+        return None, j
+    word = words[j]
+    if word in _MERIDIEM:
+        return _MERIDIEM[word], j + 1
+    if word in ("a", "p") and j + 1 < len(words) and words[j + 1] == "m":
+        sep = text[matches[j].end():matches[j + 1].start()]
+        if sep in ("", ".", "\u2026"):
+            return word.upper() + "M", j + 2
+    return None, j
+
+
+def _suffix_after(matches, words, text, j):
     """Read a unit word right after a number (percent/currency/degrees)."""
     if j >= len(matches):
         return None, j
@@ -208,6 +295,144 @@ def _format_number(value, suffix):
 
 
 # --------------------------------------------------------------------------
+# Pass 1: digits spoken one by one
+# --------------------------------------------------------------------------
+def _digit_run(matches, words, text, i):
+    """Join "nine nine five zero" -> "9950", "double seven" -> "77"."""
+    if words[i] not in _DIGIT_WORDS and words[i] not in _GROUP_WORDS:
+        return None
+    digits = []
+    j = i
+    grouped = False
+    while j < len(words):
+        word = words[j]
+        if j > i and not _joinable(text, matches[j - 1].end(),
+                                   matches[j].start()):
+            break
+        if word in _GROUP_WORDS:
+            if j + 1 >= len(words) or words[j + 1] not in _DIGIT_WORDS:
+                break
+            if not _joinable(text, matches[j].end(), matches[j + 1].start()):
+                break
+            digits.append(str(_DIGIT_WORDS[words[j + 1]]) * _GROUP_WORDS[word])
+            grouped = True
+            j += 2
+            continue
+        if word not in _DIGIT_WORDS:
+            break
+        digits.append(str(_DIGIT_WORDS[word]))
+        j += 1
+    if not digits:
+        return None
+    joined = "".join(digits)
+    if len(joined) < 2:
+        return None
+    # Two digits ("nine nine") are a number only with a cue in front, so a
+    # clock-time reading is still possible for "three thirty".
+    if len(joined) >= 3 or grouped or _cue_before(words, i, _NUMBER_CUES):
+        return joined, j
+    return None
+
+
+# --------------------------------------------------------------------------
+# Pass 2: clock times
+# --------------------------------------------------------------------------
+def _time_at(matches, words, text, i):
+    """Return (replacement, end_index, evidence) or None.
+
+    ``evidence`` is True when something other than the bare number pair says
+    this is a clock time: a meridian, "o'clock", a time preposition, or an
+    "oh five" minute group.
+    """
+    phrase, j = _collect_phrase(matches, i, text)
+    if not phrase or len(phrase) > 3:
+        return None
+    if any(word in _SCALES for word in phrase):
+        return None
+    value = _phrase_value(phrase)
+    if not (0 <= value <= 24):
+        return None
+    if j >= len(words) or not _joinable(text, matches[j - 1].end(),
+                                        matches[j].start()):
+        return None
+    prev_cue = _cue_before(words, i, _TIME_CUES)
+    nxt = words[j]
+
+    # "three o'clock", "three o'clock pm"
+    if nxt in _OCLOCK:
+        meridiem, end = _meridiem_at(matches, words, text, j + 1)
+        tail = " " + meridiem if meridiem else ""
+        return f"{value}:00{tail}", end, True
+
+    # "... three pm" / "three a m"
+    meridiem, end = _meridiem_at(matches, words, text, j)
+    if meridiem is not None:
+        return f"{value}:00 {meridiem}", end, True
+
+    # "... three oh five" -> 3:05
+    if nxt in ("oh", "o") and j + 1 < len(words) \
+            and words[j + 1] in _UNITS:
+        if not _joinable(text, matches[j].end(), matches[j + 1].start()):
+            return None
+        minute = _UNITS[words[j + 1]]
+        end = j + 2
+        meridiem, after = _meridiem_at(matches, words, text, end)
+        tail = ""
+        if meridiem is not None:
+            tail = " " + meridiem
+            end = after
+        return f"{value}:{minute:02d}{tail}", end, True
+
+    # "... three thirty" -> 3:30
+    minute_phrase, k = _collect_phrase(matches, j, text)
+    if not minute_phrase or any(w in _SCALES for w in minute_phrase):
+        return None
+    minute = _phrase_value(minute_phrase)
+    # A lone minute of nine ("nine nine") is not a clock time.
+    if not (10 <= minute <= 59):
+        return None
+    end = k
+    meridiem, after = _meridiem_at(matches, words, text, end)
+    tail = ""
+    if meridiem is not None:
+        tail = " " + meridiem
+        end = after
+    evidence = bool(meridiem) or prev_cue
+    return f"{value}:{minute:02d}{tail}", end, evidence
+
+
+# --------------------------------------------------------------------------
+# Pass 3: years
+# --------------------------------------------------------------------------
+def _year_at(matches, words, text, i):
+    """"in twenty twenty four" -> 2024, "since nineteen ninety" -> 1990."""
+    first, j = _collect_phrase(matches, i, text)
+    if not first or len(first) > 2:
+        return None
+    high = _phrase_value(first)
+    if not (10 <= high <= 99):
+        return None
+    if j >= len(words) or not _joinable(text, matches[j - 1].end(),
+                                        matches[j].start()):
+        return None
+    second, k = _collect_phrase(matches, j, text)
+    if not second or len(second) > 2:
+        return None
+    low = _phrase_value(second)
+    if not (10 <= low <= 99):
+        return None
+    year = high * 100 + low
+    if not (1000 <= year <= 2099):
+        return None
+    after = words[k] if k < len(words) else ""
+    if after in _DURATION_NEXT and after not in ("year", "years"):
+        return None
+    if not (_cue_before(words, i, _YEAR_CUES) or after in ("year", "years")):
+        return None
+    return str(year), k
+
+
+# --------------------------------------------------------------------------
 # Main scan
 # --------------------------------------------------------------------------
 def normalize(text):
@@ -220,7 +445,16 @@ def normalize(text):
         return text
 
 
+def _collapse_spaced_digits(text: str) -> str:
+    """'9 9 5 0' -> '9950' (ASR sometimes splits spoken digits itself)."""
+    if not text or not _SPACED_DIGITS_RE.search(text):
+        return text
+    return _SPACED_DIGITS_RE.sub(
+        lambda m: re.sub(r"[ 	-]+", "", m.group(0)), text)
+
+
 def _normalize(text: str) -> str:
+    text = _collapse_spaced_digits(text)
     matches = list(_TOKEN_RE.finditer(text))
     if not matches:
         return text
@@ -256,7 +490,6 @@ def _try_at(matches, words, text, i):
             return nxt
 
     # minus / negative prefix
-    negative = False
     if word in ("minus", "negative"):
         nxt = _try_at(matches, words, text, i + 1)
         if nxt is None:
@@ -266,10 +499,42 @@ def _try_at(matches, words, text, i):
             return "-" + replacement, j
         return None
 
+    # A number cue in front ("pin", "room", "order number") always means a
+    # digit string: "room two oh four" is 204, not 2:04.
+    run = _digit_run(matches, words, text, i)
+    if run is not None and _cue_before(words, i, _NUMBER_CUES):
+        return run
+
+    # Times with real evidence win over the plain digit-string reading, so
+    # that "three thirty pm" stays a time. Digit strings win otherwise,
+    # which is what stops "nine nine five zero" becoming "9:09 5:00".
+    clock = _time_at(matches, words, text, i)
+    if clock is not None and clock[2]:
+        return clock[0], clock[1]
+
+    if run is not None:
+        return run
+
+    # Years before the unevidenced clock reading: "in twenty twenty four"
+    # is a year, not 20:24.
+    year = _year_at(matches, words, text, i)
+    if year is not None:
+        return year
+
+    if clock is not None:
+        return clock[0], clock[1]
+
     # ordinal words ("first", "twentieth", ...)
     result = _ordinal_at(matches, words, text, i)
     if result is not None:
         return result
+
+    # bare decimal: "point five" -> 0.5
+    if word == "point":
+        decimal = _decimal_at(matches, words, text, i, 0)
+        if decimal is not None:
+            value, j = decimal
+            return _format_number(value, None), j
 
     # cardinal phrase
     phrase, j = _collect_phrase(matches, i, text)
@@ -283,18 +548,12 @@ def _try_at(matches, words, text, i):
         nxt = words[j] if j < len(words) else ""
         if prev in _ONE_PREV_GUARD or nxt in _ONE_NEXT_GUARD:
             return None
-
     # decimal: "three point five" -> 3.5
     decimal = _decimal_at(matches, words, text, j, value)
     if decimal is not None:
         value, j = decimal
 
-    # time: "three thirty pm" -> 3:30 PM
-    clock = _time_at(matches, words, text, j, value)
-    if clock is not None:
-        value, j = clock
-
-    suffix, j2 = _suffix_after(matches, words, j, text)
+    suffix, j2 = _suffix_after(matches, words, text, j)
     if suffix is not None:
         j = j2
 
@@ -335,7 +594,9 @@ def _ordinal_at(matches, words, text, i):
 
 
 def _decimal_at(matches, words, text, j, value):
-    if j >= len(words) or words[j] not in ("point",):
+    if j >= len(words) or words[j] != "point":
+        return None
+    if j and not _joinable(text, matches[j - 1].end(), matches[j].start()):
         return None
     # digits after the point are spoken one by one
     k = j + 1
@@ -348,59 +609,4 @@ def _decimal_at(matches, words, text, j, value):
         k += 1
     if not digits:
         return None
-    if not _joinable(text, matches[j - 1].end(), matches[j].start()):
-        return None
     return float(f"{value}." + "".join(digits)), k
-
-
-def _time_at(matches, words, text, j, value):
-    """Recognise "three thirty", "three oh five", "three pm" as times."""
-    if not isinstance(value, int) or not (0 <= value <= 24):
-        return None
-    if j >= len(words):
-        return None
-    nxt = words[j]
-
-    # "... three pm" / "three am"
-    if nxt in _MERIDIEM:
-        if not _joinable(text, matches[j - 1].end(), matches[j].start()):
-            return None
-        return f"{value}:00 {_MERIDIEM[nxt]}", j + 1
-
-    # "... three oh five" -> 3:05
-    if nxt in ("oh", "o") and j + 1 < len(words) and words[j + 1] in _UNITS:
-        if not _joinable(text, matches[j - 1].end(), matches[j].start()):
-            return None
-        if not _joinable(text, matches[j].end(), matches[j + 1].start()):
-            return None
-        minute = _UNITS[words[j + 1]]
-        if minute > 9:
-            return None
-        end = j + 2
-        meridiem = ""
-        if end < len(words) and words[end] in _MERIDIEM:
-            if _joinable(text, matches[end - 1].end(), matches[end].start()):
-                meridiem = " " + _MERIDIEM[words[end]]
-                end += 1
-        return f"{value}:{minute:02d}{meridiem}", end
-
-    # "... three thirty" -> 3:30
-    phrase, k = _collect_phrase(matches, j, text)
-    if not phrase or any(w in _SCALES for w in phrase):
-        return None
-    minute = _phrase_value(phrase)
-    if minute > 59:
-        return None
-    # Only treat it as a time when the minute part is not itself a lone
-    # ambiguous "one" (e.g. "three one" is not a time).
-    if len(phrase) == 1 and phrase[0] == "one":
-        return None
-    if not _joinable(text, matches[j - 1].end(), matches[j].start()):
-        return None
-    meridiem = ""
-    end = k
-    if end < len(words) and words[end] in _MERIDIEM:
-        if _joinable(text, matches[end - 1].end(), matches[end].start()):
-            meridiem = " " + _MERIDIEM[words[end]]
-            end += 1
-    return f"{value}:{minute:02d}{meridiem}", end
