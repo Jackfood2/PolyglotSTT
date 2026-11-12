@@ -142,7 +142,7 @@ if not "%SETUP_RC%"=="0" goto SETUP_FAIL
 rem ---------------------------------------------------------- verify
 echo.
 echo [6/6] Verifying the dependency folder and the imports...
-"%TARGET%\venv\Scripts\python.exe" -c "import importlib.util as u; m=[('moonshine_voice','Moonshine'),('customtkinter','GUI'),('sounddevice','audio in'),('faster_whisper','Whisper'),('torch','Granite 2B torch'),('torchaudio','Granite 2B torchaudio'),('transformers','Granite 2B transformers'),('transcribe_cpp','Qwen3-ASR')]; [print(('       OK    ' if u.find_spec(k) else '       MISS  ')+v) for k,v in m]" 
+"%TARGET%\venv\Scripts\python.exe" -c "import importlib.util as u; m=[('moonshine_voice','Moonshine'),('customtkinter','GUI'),('sounddevice','audio in'),('soundcard','desktop audio'),('faster_whisper','Whisper'),('torch','Granite 2B torch'),('torchaudio','Granite 2B torchaudio'),('transformers','Granite 2B transformers'),('transcribe_cpp','Qwen3-ASR')]; [print(('       OK    ' if u.find_spec(k) else '       MISS  ')+v) for k,v in m]" 
 if errorlevel 1 goto VERIFY_FAIL
 
 rem Offline resolution audit: proves wheels\ alone satisfies every group.
