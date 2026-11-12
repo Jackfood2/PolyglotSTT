@@ -1,13 +1,13 @@
 # PolyglotSTT
 
 Offline, on-device speech-to-text for Windows: hold-to-talk live dictation
-plus video/audio-to-SRT subtitle generation. Four engines, multilingual
+plus video/audio-to-SRT subtitle generation. Five engines, multilingual
 transcription — and **translation to English** on Whisper and Canary-1B.
 No API keys, no cloud, no admin rights needed once set up.
 
 > Windows 10/11 only. The app window is titled "MoonshineSTT" (original
 > project name); the repository is named PolyglotSTT because it now covers
-> Moonshine v2, NVIDIA Canary-1B, Whisper, and Qwen3-ASR.
+> Moonshine v2, NVIDIA Canary-1B, Whisper, Qwen3-ASR and Granite Speech.
 
 ## Engines
 
@@ -17,6 +17,7 @@ No API keys, no cloud, no admin rights needed once set up.
 | Canary-1B | Accurate ASR + translation to English | Source: German, English, Spanish, French (`auto` → English) |
 | Whisper | Full-size Whisper, native timestamps, word-level alignment | ~100 source languages; `transcribe` keeps source, `translate` outputs English |
 | Qwen3-ASR | 1.7B GGUF ASR (Q8_0 → Q4_K_M), 30 languages, transcription only | 30 languages incl. zh/yue/ja/ko/ar/hi/th/vi/tr/… ; keeps the spoken language |
+| Granite 5.0 TurboCTC | 470M GGUF CTC ASR (Q8_0 → Q4_K_M), English only, transcription only | English |
 
 **Turbo is transcription-only.** OpenAI trained `large-v3-turbo` on
 transcription data only, explicitly excluding translation data — its
@@ -27,7 +28,14 @@ large-v3 for English output. Canary-1B likewise only carries `de/en/es/fr`
 language tokens — anything else fails fast with a message pointing at
 Whisper. **Qwen3-ASR is transcription-only**: it has no translate task and
 emits no timestamps, so SRT runs it over VAD chunks (like Canary) and takes
-cue timing from the chunk boundaries. The GUI only offers each engine the
+cue timing from the chunk boundaries. **Granite 5.0 TurboCTC** is the speed
+engine: a 470M encoder-only CTC model that runs roughly 9x faster than
+Qwen3-ASR here (measured 24x realtime on Vulkan) and costs 700 MB of RAM,
+which makes it the best choice for Live dictation. It is English-only,
+cannot translate, emits no timestamps, and — being CTC — produces no
+punctuation or capitalisation, so prefer Qwen3-ASR or Whisper for subtitles
+and notes you intend to read. It also has no vocabulary or prompt input, so
+the Dictionary does not apply to it. The GUI only offers each engine the
 languages it can actually do.
 
 ## GPU acceleration (automatic)
@@ -47,6 +55,8 @@ Moonshine stay on CPU.
   automatically (Vulkan on Intel/AMD/NVIDIA iGPUs and GPUs, CPU otherwise).
   Set `"compute": "cpu"` to force CPU; the chosen backend is logged at load
   (`qwen3_asr: using vulkan backend: Vulkan0`).
+- **Granite** → same `transcribe.cpp` backend choice as Qwen3-ASR
+  (`granite5_ctc: using vulkan backend: Vulkan0`).
 - The SRT log states the chosen device per job, e.g.
   `Transcribing … (translate ja->en, cuda float16, native timestamps)`.
 - `setup.bat` installs a CUDA torch build automatically when an NVIDIA
@@ -65,8 +75,10 @@ Moonshine stay on CPU.
   history, and per-engine Task / source-language selectors. The *Model* row
    follows the engine: Moonshine sizes, downloadable Whisper sizes (Tiny
    75MB → Large v3 3GB; Large v3 Turbo 1.6GB, fetched once on first pick),
-   the fixed Canary-1B, or Qwen3-ASR 1.7B in Q8_0 (2.2GB, default) →
-   Q6_K (1.7GB) → Q5_K_M (1.5GB) → Q4_K_M (1.3GB). Whisper generations: v1
+   the fixed Canary-1B, Qwen3-ASR 1.7B in Q8_0 (2.2GB, default) →
+   Q6_K (1.7GB) → Q5_K_M (1.5GB) → Q4_K_M (1.3GB), or Granite 5.0
+   TurboCTC 470M in Q8_0 (506MB, default) → Q6_K (392MB) → Q5_K_M (336MB)
+   → Q4_K_M (279MB). Whisper generations: v1
    oldest, v2 middle, v3
    newest and best. Large v3 is ~3GB; Large v3 Turbo is ~1.6GB and
    transcription-only. The bare Large entry is gone: the installed
@@ -182,7 +194,8 @@ Moonshine stay on CPU.
   otherwise fall back to system Python 3.11).
 - Disk for models (see below) and patience on first run (large downloads).
 - ~16 GB RAM if you use Canary-1B; ~4 GB free for Qwen3-ASR (2.8 GB
-  resident for the default Q8_0 model). Whisper runs on CPU:
+  resident for the default Q8_0 model), ~1 GB free for Granite (700 MB
+  resident). Whisper runs on CPU:
   large-v3-turbo is the fast default for transcription; large-v3 is slower
   but supports translation.
 
@@ -237,6 +250,7 @@ connection — grab them manually:
 | `Systran/faster-whisper-large-v3` | ~3 GB | <https://huggingface.co/Systran/faster-whisper-large-v3> — auto-downloaded by Faster-Whisper; pick size in the Live tab *Model* row; each size downloads once on first selection | `models_cache\whisper-models\` |
 | `mobiuslabsgmbh/faster-whisper-large-v3-turbo` | ~1.6 GB | <https://huggingface.co/mobiuslabsgmbh/faster-whisper-large-v3-turbo> — fast default for `transcribe`; **cannot translate by design**, so the app blocks it in `translate` mode | `models_cache\whisper-models\` |
 | `handy-computer/Qwen3-ASR-1.7B-gguf` | 2.2 GB (Q8_0) / 1.7 / 1.5 / 1.3 GB | <https://huggingface.co/handy-computer/Qwen3-ASR-1.7B-gguf> — single `.gguf` files, auto-downloaded on first pick; drop `Qwen3-ASR-1.7B-Q8_0.gguf` (or any quant) at `models_cache\qwen3-asr\` for fully-offline use | `models_cache\qwen3-asr\` |
+| `handy-computer/granite-speech-5.0-470m-turboctc-gguf` | 506 MB (Q8_0) / 392 / 336 / 279 MB | <https://huggingface.co/handy-computer/granite-speech-5.0-470m-turboctc-gguf> — single `.gguf` files, auto-downloaded on first pick; drop `granite-speech-5.0-470m-turboctc-Q8_0.gguf` at `models_cache\granite\` for fully-offline use. Apache-2.0, English only. | `models_cache\granite\` |
 
 `ffmpeg` ships via the `imageio-ffmpeg` wheel (no system install needed).
 Everything the app needs lives inside the project folder (except the
@@ -332,6 +346,9 @@ srt.py             SRT backend: ffmpeg extract, VAD, word-anchored cue packing,
                  timing refine, batch queue, size-matched burn-in, ETA tracking
 canary_engine.py   Canary-1B wrapper (NeMo, offline, language-validated)
 whisper_engine.py  Faster-Whisper wrapper (large-v3 / turbo, per-call task/lang overrides)
+qwen_engine.py     Qwen3-ASR wrapper (transcribe.cpp GGUF, 30 languages, no timestamps)
+granite_engine.py  Granite Speech 5.0 TurboCTC wrapper (transcribe.cpp GGUF,
+                 English only, fastest, no punctuation/timestamps)
 gpu.py             dGPU/VRAM/NVENC detection, device recommendation
 setup.bat          one-click setup (venv, deps, wheels cache, Moonshine model)
 run.bat            one-click launch (dependency self-check)
@@ -378,6 +395,36 @@ requirements*.txt  dependency pins (base / Canary / Whisper)
   and reburn to relearn.
 
 ## Changelog
+
+### v1.5
+
+New fifth engine: **Granite Speech 5.0 470M TurboCTC** (IBM, Apache-2.0),
+added as a first-class engine in the Live, SRT, Note and Import tabs, and
+built on top of the v1.4.18 clipboard-restore fix.
+
+- **Granite is the Live-dictation engine.** It is a 470M encoder-only CTC
+  model shipped as a single `.gguf`, so it loads in under a second and runs
+  at roughly 24x realtime on Vulkan here — about 9x faster than Qwen3-ASR on
+  the same machine, for 700 MB of RAM instead of 2.8 GB. It also replaces
+  Qwen3-ASR for long files, where that model's Vulkan path can fail outright.
+- **Trade-offs are surfaced, not hidden.** Granite is English-only, cannot
+  translate, emits no timestamps, and being CTC it produces no punctuation
+  or capitalisation. The GUI pins its language picker to English and disables
+  the ones it cannot do, and SRT derives cue timing from VAD chunk boundaries
+  exactly as it already does for Canary-1B and Qwen3-ASR. For subtitles and
+  notes you intend to read, Qwen3-ASR or Whisper still win on readability.
+- **Silence guard.** The CTC head invents short words on non-speech ("the",
+  "thank you"). Input below -78 dBFS RMS is now skipped instead of decoded,
+  on top of the recorder's existing Silero gate.
+- **Model row and manager.** The Live model row lists the four Granite quants
+  (Q8_0 506 MB default, Q6_K 392 MB, Q5_K_M 336 MB, Q4_K_M 279 MB) with the
+  usual download badges, fetched from
+  `handy-computer/granite-speech-5.0-470m-turboctc-gguf` on first pick into
+  `models_cache\granite\`. The Model manager lists, totals and deletes them,
+  and refuses to delete the one in use.
+- **No dictionary.** TurboCTC takes no vocabulary or prompt, so
+  `dictionary.build()` reports it as ineligible and the per-engine enable
+  flags stay Whisper/Qwen-only.
 
 ### v1.4.18
 

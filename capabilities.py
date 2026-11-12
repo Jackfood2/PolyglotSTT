@@ -19,11 +19,12 @@ LANGUAGE = "language"
 SRT = "srt"
 
 ENGINES: Tuple[str, ...] = (
-    "Moonshine v2", "Canary-1B", "Whisper", "Qwen3-ASR",
+    "Moonshine v2", "Canary-1B", "Whisper", "Qwen3-ASR", "Granite",
 )
 
 
-_PREFERENCE = ("Whisper", "Canary-1B", "Qwen3-ASR", "Moonshine v2")
+_PREFERENCE = ("Whisper", "Canary-1B", "Qwen3-ASR", "Moonshine v2",
+               "Granite")
 
 _ENGINE_FEATURES: Dict[str, frozenset] = {
 
@@ -34,6 +35,11 @@ _ENGINE_FEATURES: Dict[str, frozenset] = {
     "Whisper": frozenset({TRANSCRIBE, TRANSLATE, LANGUAGE, TIMESTAMPS, SRT}),
 
     "Qwen3-ASR": frozenset({TRANSCRIBE, LANGUAGE, SRT}),
+
+    # Granite TurboCTC: English only (no LANGUAGE feature, so the picker stays
+    # off), transcribe only, no timestamps. Great for Live, fine for SRT via
+    # VAD chunking, but punctuation-free output makes it a poor Notes engine.
+    "Granite": frozenset({TRANSCRIBE, SRT}),
 }
 
 
@@ -150,6 +156,12 @@ def languages(engine: Optional[str]) -> Tuple[str, ...]:
             return tuple(QWEN_LANGUAGES)
         except Exception:
             return ("auto",)
+    if kind == "Granite":
+        try:
+            from granite_engine import GRANITE_LANGUAGES
+            return tuple(GRANITE_LANGUAGES)
+        except Exception:
+            return ("auto", "en")
     if kind == "Whisper":
         try:
             from whisper_engine import WHISPER_SOURCE_LANGS
@@ -210,4 +222,7 @@ def describe_engine(engine: Optional[str]) -> str:
         return "Whisper: 99 languages, translate always targets English."
     if kind == "Qwen3-ASR":
         return "Qwen3-ASR transcribes 30 languages; no translation."
+    if kind == "Granite":
+        return ("Granite TurboCTC: English only, very fast, no punctuation, "
+                "no timestamps. Best for Live dictation.")
     return ""

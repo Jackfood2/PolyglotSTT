@@ -58,7 +58,7 @@ try:
     )
 except Exception:  # pragma: no cover - fallback if core/ is missing
     import json as _json
-    APP_VERSION = "1.4.18"
+    APP_VERSION = "1.5"
     CONFIG_PATH = os.path.join(os.path.dirname(__file__), "moonshine_config.json")
     NOTES_AUDIO_DIR = os.path.join(os.path.dirname(__file__), "notes_audio")
     _CONFIG_LOCK = threading.RLock()
@@ -74,6 +74,7 @@ except Exception:  # pragma: no cover - fallback if core/ is missing
         "whisper_src_lang": "auto",
         "qwen_model": "qwen3-asr-1.7b-q8_0",
         "qwen_src_lang": "auto",
+        "granite_model": "granite-5.0-470m-q8_0",
         "dict_terms": [],
         "dict_context": "",
         "dict_engines": {"Whisper": False, "Qwen3-ASR": False},
@@ -169,7 +170,7 @@ class MoonshineSTTApp:
         if self.config.get("engine") in ("Whisper Turbo v3", "Whisper Large v3"):
             self.config["engine"] = "Whisper"
             needs_save = True
-        if self.config.get("engine") not in ("Moonshine v2", "Canary-1B", "Whisper", "Qwen3-ASR"):
+        if self.config.get("engine") not in ("Moonshine v2", "Canary-1B", "Whisper", "Qwen3-ASR", "Granite"):
             self.config["engine"] = "Moonshine v2"
             needs_save = True
         if self.config.get("canary_task") not in ("transcribe", "translate"):
@@ -221,6 +222,14 @@ class MoonshineSTTApp:
             needs_save = True
         if self.config.get("qwen_model") not in _qmodels:
             self.config["qwen_model"] = "qwen3-asr-1.7b-q8_0"
+            needs_save = True
+        try:
+            from granite_engine import GRANITE_MODEL_FILES as _gfiles
+            _gmodels = tuple(_gfiles)
+        except Exception:
+            _gmodels = ("granite-5.0-470m-q8_0",)
+        if self.config.get("granite_model") not in _gmodels:
+            self.config["granite_model"] = "granite-5.0-470m-q8_0"
             needs_save = True
         try:
             import dictionary as _dictmod
@@ -351,6 +360,7 @@ class MoonshineSTTApp:
         self.canary_engine = None
         self.whisper_engine = None
         self.qwen_engine = None
+        self.granite_engine = None
         self._tab_sel = {}
         self._shared_sel = {"kind": "Moonshine v2", "arch": 5, "wmodel": "large-v3"}
         self._tab_cache = {
@@ -369,6 +379,8 @@ class MoonshineSTTApp:
             self.engine = self._get_whisper_engine()
         elif self.config.get("engine") == "Qwen3-ASR":
             self.engine = self._get_qwen_engine()
+        elif self.config.get("engine") == "Granite":
+            self.engine = self._get_granite_engine()
         else:
             self.engine = self.moonshine_engine
         self.recorder = AudioRecorder(sample_rate=SAMPLE_RATE)
@@ -701,6 +713,18 @@ class MoonshineSTTApp:
         except Exception:
             return None
 
+    def _tab_granite(self, tab):
+        """Dedicated tab instance for jobs (see _tab_canary)."""
+        try:
+            if tab == "live":
+                return self._get_granite_engine(False)
+            sel = self.tab_selection(tab)
+            if sel["kind"] != "Granite":
+                return None
+            return self._tab_heavy(tab, "Granite", sel["wmodel"])
+        except Exception:
+            return None
+
     def _tab_qwen(self, tab):
         """Dedicated tab instance for jobs (see _tab_canary)."""
         try:
@@ -859,6 +883,48 @@ class MoonshineSTTApp:
         self._apply_dictionary(self.qwen_engine)
         return self.qwen_engine
 
+    def _get_granite_engine(self, apply_live_options: bool = True):
+        if self.granite_engine is None:
+            with self._eng_lock:
+                if self.granite_engine is None:
+                    try:
+                        from granite_engine import GraniteEngine
+                        self.granite_engine = GraniteEngine(
+                            task="transcribe",
+                            source_lang="auto",
+                            target_lang="en",
+                            model_id=self.config.get("granite_model",
+                                                     "granite-5.0-470m-q8_0"),
+                            device=self.config.get("compute", "auto"),
+                            on_ready=self._model_ready,
+                        )
+                    except Exception as e:
+                        print(f"Granite engine failed to create: {e}")
+                        import traceback; traceback.print_exc()
+
+                        try:
+                            self._gui_queue.put(
+                                ("status", ("Granite unavailable - using Moonshine",
+                                            WARNING)))
+                        except Exception:
+                            pass
+                        return self.moonshine_engine
+        if apply_live_options:
+            try:
+                self.granite_engine.switch_options(source_lang="auto")
+            except Exception:
+                pass
+            try:
+                _dev = self.config.get("compute", "auto")
+                if (_dev in ("auto", "cpu", "cuda", "gpu")
+                        and self.granite_engine is not None
+                        and getattr(self.granite_engine, "device", "auto") != _dev):
+                    self.granite_engine.device = _dev
+            except Exception:
+                pass
+        self._apply_dictionary(self.granite_engine)
+        return self.granite_engine
+
 
 
 
@@ -869,17 +935,20 @@ class MoonshineSTTApp:
 
 
     TAB_IDS = ("live", "srt", "note", "import")
-    ENGINE_KINDS = ("Moonshine v2", "Canary-1B", "Whisper", "Qwen3-ASR")
+    ENGINE_KINDS = ("Moonshine v2", "Canary-1B", "Whisper", "Qwen3-ASR",
+                    "Granite")
     _WHISPER_IDS = ("tiny", "base", "small", "medium", "large",
                     "large-v1", "large-v2", "large-v3", "large-v3-turbo")
     _QWEN_IDS = ("qwen3-asr-1.7b-q8_0", "qwen3-asr-1.7b-q6_k",
                  "qwen3-asr-1.7b-q5_k_m", "qwen3-asr-1.7b-q4_k_m")
+    _GRANITE_IDS = ("granite-5.0-470m-q8_0", "granite-5.0-470m-q6_k",
+                    "granite-5.0-470m-q5_k_m", "granite-5.0-470m-q4_k_m")
     _ARCHES = (0, 1, 2, 3, 4, 5)
 
 
 
     _ENGINE_RAM_MB = {"Moonshine v2": 300, "Canary-1B": 5500,
-                      "Qwen3-ASR": 2800}
+                      "Qwen3-ASR": 2800, "Granite": 700}
     _WHISPER_RAM_MB = {"tiny": 900, "base": 950, "small": 1250,
                        "medium": 1900, "large": 3400, "large-v1": 3400,
                        "large-v2": 3400, "large-v3": 3400,
@@ -892,6 +961,7 @@ class MoonshineSTTApp:
             "Canary-1B": "canary",
             "Whisper": "whisper",
             "Qwen3-ASR": "qwen",
+            "Granite": "granite",
         }.get(str(kind or ""))
 
     @staticmethod
@@ -915,6 +985,9 @@ class MoonshineSTTApp:
         if k == "Qwen3-ASR":
             if w not in MoonshineSTTApp._QWEN_IDS:
                 w = "qwen3-asr-1.7b-q8_0"
+        elif k == "Granite":
+            if w not in MoonshineSTTApp._GRANITE_IDS:
+                w = "granite-5.0-470m-q8_0"
         elif w not in MoonshineSTTApp._WHISPER_IDS:
             w = "large-v3"
         return {"kind": k, "arch": a, "wmodel": w}
@@ -941,6 +1014,14 @@ class MoonshineSTTApp:
                         wmodel or "qwen3-asr-1.7b-q8_0"))
                 except Exception:
                     return 2800
+            if kind == "Granite":
+                try:
+                    import granite_engine
+
+                    return int(granite_engine._resident_model_mb(
+                        wmodel or "granite-5.0-470m-q8_0"))
+                except Exception:
+                    return 700
             return int(MoonshineSTTApp._ENGINE_RAM_MB.get(kind, 300))
         except Exception:
             return 3400
@@ -1176,6 +1257,8 @@ class MoonshineSTTApp:
                 return f"Whisper {sel['wmodel']}"
             if k == "Qwen3-ASR":
                 return f"Qwen3-ASR {sel['wmodel']}"
+            if k == "Granite":
+                return f"Granite {sel['wmodel']}"
             return "Canary-1B"
         except Exception:
             return "?"
@@ -1195,7 +1278,9 @@ class MoonshineSTTApp:
                 return True
             for e in (getattr(self, "moonshine_engine", None),
                       getattr(self, "canary_engine", None),
-                      getattr(self, "whisper_engine", None)):
+                      getattr(self, "whisper_engine", None),
+                      getattr(self, "qwen_engine", None),
+                      getattr(self, "granite_engine", None)):
                 try:
                     if e is not None and getattr(e, "is_ready", True) is False \
                             and getattr(e, "_loading", False):
@@ -1320,7 +1405,8 @@ class MoonshineSTTApp:
             if wmid is not None:
                 want_wmid = str(wmid)
                 if want_wmid not in self._WHISPER_IDS \
-                        and want_wmid not in self._QWEN_IDS:
+                        and want_wmid not in self._QWEN_IDS \
+                        and want_wmid not in self._GRANITE_IDS:
                     return {"action": "revert", "reason": "bad model"}
             if want_kind == cur["kind"] and want_arch == cur["arch"] \
                     and want_wmid == cur["wmodel"]:
@@ -1364,6 +1450,8 @@ class MoonshineSTTApp:
                     what = f"Canary-1B (~{ram / 1000:.1f} GB extra RAM)"
                 elif want_kind == "Qwen3-ASR":
                     what = f"Qwen3-ASR {want_wmid} (~{ram / 1000:.1f} GB extra RAM)"
+                elif want_kind == "Granite":
+                    what = f"Granite {want_wmid} (~{ram} MB extra RAM)"
                 else:
                     what = f"Whisper {want_wmid} (~{ram / 1000:.1f} GB extra RAM)"
                 return {"action": "confirm", "kind": want_kind,
@@ -1457,6 +1545,7 @@ class MoonshineSTTApp:
                             ("whisper", getattr(self, "whisper_engine", None)),
                             ("canary", getattr(self, "canary_engine", None)),
                             ("qwen", getattr(self, "qwen_engine", None)),
+                            ("granite", getattr(self, "granite_engine", None)),
                         )
                     else:
                         cache = (self._tab_cache or {}).get(tab) or {}
@@ -1464,6 +1553,7 @@ class MoonshineSTTApp:
                             ("whisper", cache.get("whisper")),
                             ("canary", cache.get("canary")),
                             ("qwen", cache.get("qwen")),
+                            ("granite", cache.get("granite")),
                         )
                     for slot, eng in candidates:
                         try:
@@ -1483,6 +1573,12 @@ class MoonshineSTTApp:
                                 ram = self._engine_ram_mb("Qwen3-ASR", None, mid)
                                 desc = (f"Live Qwen3-ASR {mid}" if tab == "live"
                                         else f"{tab} Qwen3-ASR {mid}")
+                            elif slot == "granite":
+                                mid = str(getattr(eng, "model_id", "")
+                                          or "granite-5.0-470m-q8_0")
+                                ram = self._engine_ram_mb("Granite", None, mid)
+                                desc = (f"Live Granite {mid}" if tab == "live"
+                                        else f"{tab} Granite {mid}")
                             else:
                                 ram = self._engine_ram_mb("Canary-1B")
                                 desc = ("Live Canary-1B" if tab == "live"
@@ -1516,6 +1612,7 @@ class MoonshineSTTApp:
                     ("whisper_engine", "Whisper"),
                     ("canary_engine", "Canary-1B"),
                     ("qwen_engine", "Qwen3-ASR"),
+                    ("granite_engine", "Granite"),
                 )
                 for attr, kind in targets:
                     try:
@@ -1557,6 +1654,12 @@ class MoonshineSTTApp:
                                           or cache.get("wmodel")
                                           or "qwen3-asr-1.7b-q8_0")
                                 freed += self._engine_ram_mb("Qwen3-ASR", None,
+                                                             mid)
+                            elif slot == "granite":
+                                mid = str(getattr(eng, "model_id", "")
+                                          or cache.get("wmodel")
+                                          or "granite-5.0-470m-q8_0")
+                                freed += self._engine_ram_mb("Granite", None,
                                                              mid)
                             else:
                                 freed += self._engine_ram_mb("Canary-1B")
@@ -1686,6 +1789,17 @@ class MoonshineSTTApp:
                     device=self.config.get("compute", "auto"),
                     on_ready=None,
                 )
+            if kind == "Granite":
+                from granite_engine import GraniteEngine
+                return GraniteEngine(
+                    task="transcribe",
+                    source_lang="auto",
+                    target_lang="en",
+                    model_id=wmid or self.config.get("granite_model",
+                                                     "granite-5.0-470m-q8_0"),
+                    device=self.config.get("compute", "auto"),
+                    on_ready=None,
+                )
         except Exception as e:
             print(f"tab engine build failed: {e}")
         return None
@@ -1733,6 +1847,8 @@ class MoonshineSTTApp:
                 slot = "whisper"
             elif kind == "Qwen3-ASR":
                 slot = "qwen"
+            elif kind == "Granite":
+                slot = "granite"
             else:
                 return None
             cache = (self._tab_cache or {}).get(tab)
@@ -1752,15 +1868,17 @@ class MoonshineSTTApp:
                     eng = self._make_engine(kind, wmid=wmid)
                     try:
                         cache[slot] = eng
-                        if slot == "qwen":
+                        if slot in ("qwen", "granite"):
                             cache["wmodel"] = wmid
                     except Exception:
                         pass
-                elif slot == "qwen":
+                elif slot in ("qwen", "granite"):
 
                     try:
                         want = str(wmid or self.config.get(
-                            "qwen_model", "qwen3-asr-1.7b-q8_0"))
+                            "granite_model" if slot == "granite" else "qwen_model",
+                            "granite-5.0-470m-q8_0" if slot == "granite"
+                            else "qwen3-asr-1.7b-q8_0"))
                         if str(getattr(eng, "model_id", "") or "") != want:
                             eng.switch_model(want)
                             cache["wmodel"] = want
@@ -1831,6 +1949,8 @@ class MoonshineSTTApp:
                             self.config["whisper_model"] = str(wmid)
                         elif kind == "Qwen3-ASR":
                             self.config["qwen_model"] = str(wmid)
+                        elif kind == "Granite":
+                            self.config["granite_model"] = str(wmid)
                         save_local_config(self.config)
                 node = (self._tab_sel or {}).get(tab)
                 if isinstance(node, dict):
@@ -1890,13 +2010,14 @@ class MoonshineSTTApp:
 
             try:
                 if tab in ("live", "note") and kind in ("Canary-1B", "Whisper",
-                                                        "Qwen3-ASR"):
+                                                        "Qwen3-ASR", "Granite"):
                     if tab == "live":
                         pass
                     else:
                         eng = self._tab_heavy(tab, kind, wmid)
                         try:
-                            if eng is not None and kind in ("Whisper", "Qwen3-ASR"):
+                            if eng is not None and kind in ("Whisper", "Qwen3-ASR",
+                                                            "Granite"):
                                 if not self._whisper_cache_ok(eng, wmid):
                                     eng.switch_model(wmid)
                                 elif not eng.is_ready:
@@ -1999,6 +2120,8 @@ class MoonshineSTTApp:
                 what = "Canary-1B"
             elif sel["kind"] == "Qwen3-ASR":
                 what = f"Qwen3-ASR {sel['wmodel']}"
+            elif sel["kind"] == "Granite":
+                what = f"Granite {sel['wmodel']}"
             else:
                 what = f"Whisper {sel['wmodel']}"
             return {"confirm": f"{'; '.join(others)} still active.\n"
@@ -2075,6 +2198,8 @@ class MoonshineSTTApp:
                     what = "Canary-1B"
                 elif kind == "Qwen3-ASR":
                     what = f"Qwen3-ASR {sel['wmodel']}"
+                elif kind == "Granite":
+                    what = f"Granite {sel['wmodel']}"
                 else:
                     what = f"Whisper {sel['wmodel']}"
                 try:
@@ -2122,7 +2247,7 @@ class MoonshineSTTApp:
             eng = self._tab_heavy("note", kind, wmid)
             if eng is None:
                 return
-            if kind in ("Whisper", "Qwen3-ASR"):
+            if kind in ("Whisper", "Qwen3-ASR", "Granite"):
                 if self._whisper_cache_ok(eng, wmid):
                     if (not bool(getattr(eng, "is_ready", False))
                             and not bool(getattr(eng, "_loading", False))):
@@ -2490,6 +2615,12 @@ class MoonshineSTTApp:
             except Exception:
                 pass
             target = self.qwen_engine
+        elif active == "Granite" and self.granite_engine is not None:
+            try:
+                self.granite_engine.device = code
+            except Exception:
+                pass
+            target = self.granite_engine
         else:
             if self.gui:
                 self.gui.set_status(f"Compute: {display} (Moonshine is CPU-only)", SUCCESS)
@@ -2623,6 +2754,22 @@ class MoonshineSTTApp:
                     except Exception:
                         return ""
                 return _fnq
+            if eng == "Granite":
+                from granite_engine import (GRANITE_MODEL_CHOICES,
+                                            granite_downloaded_map)
+                try:
+                    dl = granite_downloaded_map()
+                except Exception:
+                    dl = {}
+                def _fng(base_label, _table=GRANITE_MODEL_CHOICES, _dl=dl):
+                    try:
+                        mid = _table.get(base_label)
+                        if not mid:
+                            return ""
+                        return "✓" if _dl.get(mid) else "↓"
+                    except Exception:
+                        return ""
+                return _fng
             if eng == "Canary-1B":
                 return None
             from gui import MODEL_CHOICES
@@ -2689,6 +2836,15 @@ class MoonshineSTTApp:
                     self.config.get("qwen_model", QWEN_DEFAULT_MODEL),
                     QWEN_MODEL_CHOICES_REV[QWEN_DEFAULT_MODEL])
                 self.gui.set_model_options(list(QWEN_MODEL_CHOICES.keys()),
+                                           cur, self._on_model_changed, fn)
+            elif eng == "Granite":
+                from granite_engine import (GRANITE_MODEL_CHOICES,
+                                            GRANITE_MODEL_CHOICES_REV,
+                                            GRANITE_DEFAULT_MODEL)
+                cur = GRANITE_MODEL_CHOICES_REV.get(
+                    self.config.get("granite_model", GRANITE_DEFAULT_MODEL),
+                    GRANITE_MODEL_CHOICES_REV[GRANITE_DEFAULT_MODEL])
+                self.gui.set_model_options(list(GRANITE_MODEL_CHOICES.keys()),
                                            cur, self._on_model_changed, fn)
             else:
                 from gui import MODEL_CHOICES, MODEL_CHOICES_REV
@@ -2782,6 +2938,9 @@ class MoonshineSTTApp:
             elif engine is getattr(self, "qwen_engine", None) or \
                     type(engine).__name__ == "QwenEngine":
                 kind = "Qwen3-ASR"
+            elif engine is getattr(self, "granite_engine", None) or \
+                    type(engine).__name__ == "GraniteEngine":
+                kind = "Granite"
             if kind is None:
                 return
             enabled = bool(_dict.enabled_map(
@@ -2796,7 +2955,7 @@ class MoonshineSTTApp:
         """Re-apply the saved dictionary to every engine that is alive."""
         seen = set()
         for attr in ("moonshine_engine", "whisper_engine", "canary_engine",
-                     "qwen_engine", "_note_engine_obj"):
+                     "qwen_engine", "granite_engine", "_note_engine_obj"):
             try:
                 eng = getattr(self, attr, None)
             except Exception:
@@ -2808,7 +2967,7 @@ class MoonshineSTTApp:
         for tab, cache in (self._tab_cache or {}).items():
             if not isinstance(cache, dict):
                 continue
-            for slot in ("whisper", "qwen"):
+            for slot in ("whisper", "qwen", "granite"):
                 try:
                     eng = cache.get(slot)
                 except Exception:
@@ -2899,6 +3058,26 @@ class MoonshineSTTApp:
         except Exception:
             pass
         try:
+            from granite_engine import (granite_cache_info,
+                                        granite_downloaded_map,
+                                        GRANITE_MODEL_CHOICES_REV)
+            ginfo = granite_cache_info()
+            gdl = granite_downloaded_map()
+            gmid = self.config.get("granite_model", "granite-5.0-470m-q8_0")
+            for gid, gsize in ginfo.items():
+                downloaded = bool(gdl.get(gid))
+                if downloaded:
+                    total += int(gsize)
+                items.append({
+                    "engine": "Granite", "kind": "granite", "id": gid,
+                    "label": GRANITE_MODEL_CHOICES_REV.get(gid, gid),
+                    "size": int(gsize) if downloaded else None,
+                    "downloaded": downloaded,
+                    "in_use": active == "Granite" and gmid == gid,
+                })
+        except Exception:
+            pass
+        try:
             for it in items:
                 if not it.get("in_use") and self._model_in_use(
                         it.get("kind"), it.get("id")):
@@ -2981,6 +3160,24 @@ class MoonshineSTTApp:
                     except Exception:
                         pass
                 return False
+            if kind == "granite":
+                try:
+                    if (self.config.get("engine") == "Granite"
+                            and str(self.config.get("granite_model",
+                                                    "granite-5.0-470m-q8_0"))
+                            == str(ident)):
+                        return True
+                except Exception:
+                    pass
+                for t in ("srt", "note", "import"):
+                    try:
+                        sel = self.tab_selection(t)
+                        if sel.get("kind") == "Granite" \
+                                and str(sel.get("wmodel", "")) == str(ident):
+                            return True
+                    except Exception:
+                        pass
+                return False
         except Exception:
             pass
         return False
@@ -3023,6 +3220,12 @@ class MoonshineSTTApp:
                     return False, "Switch to another model first."
                 from qwen_engine import delete_qwen_model
                 freed = delete_qwen_model(ident)
+            elif kind == "granite":
+                if (self.config.get("engine") == "Granite"
+                        and self.config.get("granite_model") == ident):
+                    return False, "Switch to another model first."
+                from granite_engine import delete_granite_model
+                freed = delete_granite_model(ident)
             else:
                 return False, "Unknown model kind."
             if refresh:
@@ -3077,6 +3280,9 @@ class MoonshineSTTApp:
             return
         if self.config.get("engine") == "Qwen3-ASR":
             self._on_qwen_model_changed(display_label)
+            return
+        if self.config.get("engine") == "Granite":
+            self._on_granite_model_changed(display_label)
             return
         if self.config.get("engine") not in ("Moonshine v2",):
             return
@@ -3323,6 +3529,79 @@ class MoonshineSTTApp:
                     self.gui.set_status(f"Model error: {e}", DANGER)
             except Exception:
                 pass
+    def _on_granite_model_changed(self, display_label: str):
+        """Live tab model pick while Granite is the active engine."""
+        try:
+            from granite_engine import GRANITE_MODEL_CHOICES
+        except Exception:
+            return
+        new_id = GRANITE_MODEL_CHOICES.get(display_label)
+        if not new_id:
+            return
+        old_id = self.config.get("granite_model", "granite-5.0-470m-q8_0")
+        if new_id == old_id:
+            return
+        if self._srt_busy:
+            self._log("Stop the SRT/burn job before switching Granite model")
+            try:
+                self._refresh_model_row()
+            except Exception:
+                pass
+            return
+        try:
+            if not self._live_engine_pick("Granite", None, new_id):
+                return
+        except Exception:
+            pass
+        self.config["granite_model"] = new_id
+        save_local_config(self.config)
+        self._log(f"Granite model -> {display_label} ({new_id}), reloading...")
+        if self.gui:
+            self.gui.set_model_status(f"Switching to {display_label}...",
+                                      WARNING)
+            try:
+                self.gui.record_btn.configure(state="disabled")
+            except Exception:
+                pass
+
+        def _granite_switched(success, err):
+            self._model_switching = False
+            def _ui():
+                try:
+                    self.gui.record_btn.configure(state="normal")
+                except Exception:
+                    pass
+                if success:
+                    self.gui.set_status(f"Ready \u2022 Granite {new_id}",
+                                        SUCCESS)
+                else:
+                    self.gui.set_status(f"Model error: {err}", DANGER)
+            if self.gui:
+                try:
+                    self.gui.after(0, _ui)
+                except Exception:
+                    pass
+
+        eng = self._get_granite_engine()
+        try:
+            self._prepare_heavy_load(except_tabs=("live",))
+        except Exception:
+            pass
+        try:
+            self._model_switching = True
+            eng.switch_model(new_id, on_ready=_granite_switched)
+        except AttributeError:
+            self._model_switching = False
+            _granite_switched(False, "engine unavailable")
+        except Exception as e:
+            self._model_switching = False
+            try:
+                if self.gui:
+                    self.gui.record_btn.configure(state="normal")
+                    self.gui.set_status(f"Model error: {e}", DANGER)
+            except Exception:
+                pass
+
     def _ask_dual(self, message):
         """GUI-thread Yes/No dialog for dual-engine loads. False on any
         failure or headless run (safe direction: don't load)."""
@@ -3521,6 +3800,28 @@ class MoonshineSTTApp:
                         self.gui.after(0, lambda: self.gui.record_btn.configure(state="normal"))
                     except Exception:
                         pass
+        elif display_label == "Granite":
+            new_engine = self._get_granite_engine()
+            self.engine = new_engine
+            if self.gui:
+                self.gui.set_status("Loading Granite...", WARNING)
+                try:
+                    self.gui.record_btn.configure(state="disabled")
+                except Exception:
+                    pass
+            try:
+                self._prepare_heavy_load(except_tabs=("live",))
+            except Exception:
+                pass
+            if not new_engine.is_ready:
+                new_engine.load()
+            else:
+                if self.gui:
+                    try:
+                        self.gui.after(0, lambda e=new_engine: self.gui.set_status(f"Ready \u2022 Granite ({e.model_id})", SUCCESS))
+                        self.gui.after(0, lambda: self.gui.record_btn.configure(state="normal"))
+                    except Exception:
+                        pass
         else:
             self.engine = self.moonshine_engine
             if self.gui:
@@ -3574,7 +3875,7 @@ class MoonshineSTTApp:
                 pass
             active = self.config.get("engine", "Moonshine v2")
             for name in ("canary_engine", "whisper_engine", "qwen_engine",
-                         "moonshine_engine"):
+                         "granite_engine", "moonshine_engine"):
                 try:
                     eng = getattr(self, name, None)
                     if eng is None or eng is self.engine:
@@ -3584,6 +3885,8 @@ class MoonshineSTTApp:
                     if active == "Whisper" and name == "whisper_engine":
                         continue
                     if active == "Qwen3-ASR" and name == "qwen_engine":
+                        continue
+                    if active == "Granite" and name == "granite_engine":
                         continue
                     if active == "Moonshine v2" and name == "moonshine_engine":
                         continue
@@ -3699,6 +4002,8 @@ class MoonshineSTTApp:
                 langs = tuple(QWEN_LANGUAGES)
             except Exception:
                 langs = ("auto",)
+        elif _kind == "Granite":
+            langs = ("en",)
         else:
             try:
                 from whisper_engine import WHISPER_SOURCE_LANGS
@@ -3895,6 +4200,8 @@ class MoonshineSTTApp:
                 return tuple(QWEN_LANGUAGES)
             except Exception:
                 return ("auto",)
+        if kind == "Granite":
+            return ("en",)
         try:
             from ui.choices import WHISPER_SRT_IN_CODES
             return tuple(WHISPER_SRT_IN_CODES)
@@ -3914,7 +4221,7 @@ class MoonshineSTTApp:
         from ui.choices import lang_code_from_display
         code = lang_code_from_display(value, "en")
         try:
-            if self.tab_selection("srt").get("kind") == "Qwen3-ASR":
+            if self.tab_selection("srt").get("kind") in ("Qwen3-ASR", "Granite"):
 
                 code = str(self.config.get("srt_input_lang", "auto")
                            or "auto")
@@ -4376,6 +4683,8 @@ class MoonshineSTTApp:
                         hint = None
                 text = engine.transcribe(audio, SAMPLE_RATE,
                                          extra_prompt=hint)
+            elif settings.get("engine_name") == "Granite":
+                text = engine.transcribe(audio, SAMPLE_RATE)
             else:
                 text = engine.transcribe(audio, SAMPLE_RATE)
         except TypeError:
@@ -4571,7 +4880,7 @@ class MoonshineSTTApp:
                 "burn_vbr_kbps": _bkbps,
                 "burn_codec": _bcode,
             }
-            if job["engine_kind"] not in ("Moonshine v2", "Canary-1B", "Whisper", "Qwen3-ASR"):
+            if job["engine_kind"] not in ("Moonshine v2", "Canary-1B", "Whisper", "Qwen3-ASR", "Granite"):
                 job["engine_kind"] = "Moonshine v2"
             try:
                 if _st["kind"] == "Whisper":
@@ -4637,6 +4946,7 @@ class MoonshineSTTApp:
                         live_cb=lambda m: self._gui_queue.put(("srt_live", m)),
                         get_qwen_engine=lambda: self._tab_qwen("srt"),
                         qwen_src=job.get("qwen_src", "auto"),
+                        get_granite_engine=lambda: self._tab_granite("srt"),
                     )
                 def _file_cb(kind, path, info):
                     try:
@@ -5186,7 +5496,7 @@ class MoonshineSTTApp:
                     "cpu_workers": int(self.config.get("srt_cpu", 0) or 0),
                     "normalize_audio": bool(self.config.get("srt_norm", False)),
                 }
-                if snap["engine_kind"] not in ("Moonshine v2", "Canary-1B", "Whisper", "Qwen3-ASR"):
+                if snap["engine_kind"] not in ("Moonshine v2", "Canary-1B", "Whisper", "Qwen3-ASR", "Granite"):
                     snap["engine_kind"] = "Moonshine v2"
                 ffmpeg = srtmod.get_ffmpeg_exe()
                 if not ffmpeg:
@@ -5241,6 +5551,7 @@ class MoonshineSTTApp:
                         normalize_audio=snap["normalize_audio"],
                         get_qwen_engine=lambda: self._tab_qwen("srt"),
                         qwen_src=snap.get("qwen_src", "auto"),
+                        get_granite_engine=lambda: self._tab_granite("srt"),
                     )
                     shifted = tmpd / "sample_shifted.srt"
                     srtmod.offset_srt_file(sample_srt, sample_origin, shifted)
@@ -5352,11 +5663,13 @@ class MoonshineSTTApp:
 
 
             try:
-                if (type(engine).__name__ == "QwenEngine"
-                        or self.tab_selection("note").get("kind") == "Qwen3-ASR"):
+                if (type(engine).__name__ in ("QwenEngine", "GraniteEngine")
+                        or self.tab_selection("note").get("kind")
+                        in ("Qwen3-ASR", "Granite")):
                     _nt = "transcribe"
-                    _ns = str(self.config.get("note_whisper_lang", "auto")
-                              or "auto")
+                    _ns = ("en" if type(engine).__name__ == "GraniteEngine"
+                           else str(self.config.get("note_whisper_lang",
+                                                    "auto") or "auto"))
             except Exception:
                 pass
             try:
@@ -5444,8 +5757,11 @@ class MoonshineSTTApp:
                 what = ("Canary-1B" if kind == "Canary-1B"
                         else (f"Qwen3-ASR {sel['wmodel']}"
                               if kind == "Qwen3-ASR"
-                              else (f"Whisper {sel['wmodel']}" if kind == "Whisper"
-                                    else "Moonshine (shared)")))
+                              else (f"Granite {sel['wmodel']}"
+                                    if kind == "Granite"
+                                    else (f"Whisper {sel['wmodel']}"
+                                          if kind == "Whisper"
+                                          else "Moonshine (shared)"))))
                 return {"confirm": f"{'; '.join(others)} still active.\n"
                                     f"Transcribe this file with {what} too?\n"
                                     f"Yes = run both engines (~{ram / 1000:.1f} GB "
@@ -5611,7 +5927,7 @@ class MoonshineSTTApp:
         eng = self._tab_heavy("import", kind, sel.get("wmodel"))
         if eng is None:
             raise RuntimeError(f"{kind} engine unavailable")
-        if kind in ("Whisper", "Qwen3-ASR"):
+        if kind in ("Whisper", "Qwen3-ASR", "Granite"):
             want = sel.get("wmodel")
             try:
                 got = str(getattr(eng, "model_id", "") or "")
@@ -5630,6 +5946,8 @@ class MoonshineSTTApp:
             label = "Canary-1B"
         elif kind == "Qwen3-ASR":
             label = f"Qwen3-ASR {sel.get('wmodel', '')}"
+        elif kind == "Granite":
+            label = f"Granite {sel.get('wmodel', '')}"
         else:
             label = f"Whisper {sel.get('wmodel', '')}"
         while not eng.is_ready:
@@ -5644,7 +5962,7 @@ class MoonshineSTTApp:
             waited += 1
             if waited > 1200:
                 raise RuntimeError(f"{label} load timed out")
-        if kind in ("Whisper", "Qwen3-ASR"):
+        if kind in ("Whisper", "Qwen3-ASR", "Granite"):
             try:
                 if not self._whisper_cache_ok(eng, sel.get("wmodel")):
                     raise RuntimeError(f"{label} model mismatch - retry")
@@ -5839,7 +6157,7 @@ class MoonshineSTTApp:
                 s = str(t or "").strip()
                 return (not s) or s.startswith(
                     ("[Error:", "[Whisper Error:", "[Canary Error:",
-                     "[Qwen Error:"))
+                     "[Qwen Error:", "[Granite Error:"))
             except Exception:
                 return True
 
@@ -5919,13 +6237,16 @@ class MoonshineSTTApp:
 
 
 
-                        if kind == "Qwen3-ASR":
+                        if kind in ("Qwen3-ASR", "Granite"):
                             _ct = "transcribe"
-                            try:
-                                _cs = str(self.config.get("qwen_src_lang",
-                                                          "auto") or "auto")
-                            except Exception:
-                                _cs = "auto"
+                            if kind == "Granite":
+                                _cs = "en"
+                            else:
+                                try:
+                                    _cs = str(self.config.get("qwen_src_lang",
+                                                              "auto") or "auto")
+                                except Exception:
+                                    _cs = "auto"
                         else:
                             try:
                                 _ct = str(self.config.get("whisper_task",

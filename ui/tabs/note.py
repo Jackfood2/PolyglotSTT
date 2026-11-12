@@ -8,7 +8,7 @@ import time
 from pathlib import Path
 from ui.theme import ACCENT, ACCENT_DARK, SUCCESS, WARNING, DANGER, BG_CARD, BG_INPUT, FG_PRIMARY, FG_SECONDARY, FG_DIM, BTN_DIM, BTN_DIM_HOVER, BTN_GO_HOVER, BTN_DANGER_HOVER, BTN_TEXT
 from ui.widgets import LevelMeter, WaveformDisplay
-from ui.choices import MODEL_CHOICES, MODEL_CHOICES_REV, WHISPER_MODEL_CHOICES, WHISPER_MODEL_CHOICES_REV, CANARY_MODEL_LABEL, ENGINE_CHOICES, WHISPER_LANGS, SRT_LANG_NAMES, SRT_LANG_CODE_FROM_DISPLAY, QWEN_MODEL_CHOICES, QWEN_MODEL_CHOICES_REV, QWEN_LANG_NAMES, QWEN_SRT_IN_CODES
+from ui.choices import MODEL_CHOICES, MODEL_CHOICES_REV, WHISPER_MODEL_CHOICES, WHISPER_MODEL_CHOICES_REV, CANARY_MODEL_LABEL, ENGINE_CHOICES, WHISPER_LANGS, SRT_LANG_NAMES, SRT_LANG_CODE_FROM_DISPLAY, QWEN_MODEL_CHOICES, QWEN_MODEL_CHOICES_REV, QWEN_LANG_NAMES, QWEN_SRT_IN_CODES, GRANITE_MODEL_CHOICES, GRANITE_MODEL_CHOICES_REV
 try:
     from core.config import NOTES_AUDIO_DIR
 except Exception:  # pragma: no cover - keep the tab usable standalone
@@ -1584,6 +1584,8 @@ class NoteTabMixin:
                 return list(WHISPER_MODEL_CHOICES.keys())
             if kind == "Qwen3-ASR":
                 return list(QWEN_MODEL_CHOICES.keys())
+            if kind == "Granite":
+                return list(GRANITE_MODEL_CHOICES.keys())
             if kind == "Canary-1B":
                 return [CANARY_MODEL_LABEL]
             return list(MODEL_CHOICES.keys())
@@ -1638,6 +1640,9 @@ class NoteTabMixin:
             if kind == "Qwen3-ASR":
                 return QWEN_MODEL_CHOICES_REV.get(
                     str(wmid or "qwen3-asr-1.7b-q8_0"))
+            if kind == "Granite":
+                return GRANITE_MODEL_CHOICES_REV.get(
+                    str(wmid or "granite-5.0-470m-q8_0"))
             if kind == "Canary-1B":
                 return CANARY_MODEL_LABEL
             return MODEL_CHOICES_REV.get(int(arch if arch is not None else 5))

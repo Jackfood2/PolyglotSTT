@@ -5,7 +5,7 @@ import json
 import os
 import threading
 
-APP_VERSION = "1.4.18"
+APP_VERSION = "1.5"
 
 PROJECT_ROOT = os.path.dirname(os.path.dirname(__file__))
 CONFIG_PATH = os.path.join(PROJECT_ROOT, "moonshine_config.json")
@@ -24,6 +24,7 @@ DEFAULT_CONFIG = {
     "whisper_src_lang": "auto",
     "qwen_model": "qwen3-asr-1.7b-q8_0",
     "qwen_src_lang": "auto",
+    "granite_model": "granite-5.0-470m-q8_0",
     "dict_terms": [],
     "dict_context": "",
     "dict_engines": {"Whisper": False, "Qwen3-ASR": False},

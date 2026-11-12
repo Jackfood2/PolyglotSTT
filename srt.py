@@ -32,6 +32,7 @@ ETA_DEFAULTS = {
     "whisper": 1.0,
     "canary": 3.0,
     "qwen": 2.0,
+    "granite": 0.05,
     "moonshine": 0.3,
     "burn": 1.5,
     "whisper:tiny": 0.08,
@@ -436,6 +437,8 @@ def _eta_key_for(engine_kind, arch=0) -> str:
         return "canary"
     if "qwen" in kind:
         return "qwen"
+    if "granite" in kind:
+        return "granite"
     if "moonshine" in kind:
         return f"moonshine:{int(_number(arch, 0))}"
     return _eta_safe_key(kind, "job")
@@ -1969,6 +1972,7 @@ def run_srt_job(
     live_cb: Optional[Callable[[str], None]] = None,
     get_qwen_engine: Optional[Callable] = None,
     qwen_src: str = "auto",
+    get_granite_engine: Optional[Callable] = None,
 ) -> str:
     """Run one subtitle job with a live heartbeat (stage, elapsed, CPU%)."""
     heartbeat = SrtHeartbeat(live_cb)
@@ -2001,6 +2005,7 @@ def run_srt_job(
             status=heartbeat,
             get_qwen_engine=get_qwen_engine,
             qwen_src=qwen_src,
+            get_granite_engine=get_granite_engine,
         )
     finally:
         heartbeat.stop()
@@ -2034,6 +2039,7 @@ def _run_srt_job_inner(
     status: Optional["SrtHeartbeat"] = None,
     get_qwen_engine: Optional[Callable] = None,
     qwen_src: str = "auto",
+    get_granite_engine: Optional[Callable] = None,
 ) -> str:
     import soundfile as sf
 
@@ -2068,6 +2074,8 @@ def _run_srt_job_inner(
         family = "canary"
     elif "qwen" in kind:
         family = "qwen"
+    elif "granite" in kind:
+        family = "granite"
     elif "moonshine" in kind:
         family = "moonshine"
     else:
@@ -2582,29 +2590,35 @@ def _run_srt_job_inner(
                     f"Canary chunk {index + 1}/{len(spans)} complete",
                 )
 
-        elif family == "qwen":
+        elif family in ("qwen", "granite"):
+            _label = "Granite" if family == "granite" else "Qwen3-ASR"
+            if family == "granite":
+                # Granite TurboCTC is English-only and has no separate src
+                # knob of its own; the SRT input picker is pinned to English.
+                get_qwen_engine = get_granite_engine
+                qwen_src = "en"
             if not callable(get_qwen_engine):
-                raise RuntimeError("Qwen3-ASR engine is not configured")
+                raise RuntimeError(f"{_label} engine is not configured")
 
-            # Qwen3-ASR is transcription-only: it preserves the spoken
+            # Both engines are transcription-only: they preserve the spoken
             # language and cannot translate. Cue timing comes from the VAD
-            # chunk boundaries (the model emits no timestamps).
+            # chunk boundaries (neither model emits timestamps).
             source_language = (
                 input_language
                 if input_language != "auto"
                 else str(qwen_src or "auto").strip().lower()
             )
 
-            # The output picker is disabled for Qwen, but a stale config can
-            # still carry a different language here. Coerce instead of
-            # failing: transcription output always mirrors the input.
+            # The output picker is disabled for these engines, but a stale
+            # config can still carry a different language here. Coerce instead
+            # of failing: transcription output always mirrors the input.
             if output_language not in {source_language, "same", "source"}:
-                log("Qwen3-ASR cannot translate; output follows the input "
+                log(f"{_label} cannot translate; output follows the input "
                     f"({source_language if source_language != 'auto' else 'auto-detected'})")
                 output_language = source_language
 
             engine = get_qwen_engine()
-            wait_for_model(engine, "Qwen3-ASR")
+            wait_for_model(engine, _label)
 
             checker = getattr(engine, "_check_lang_support", None)
             supported = getattr(engine, "supported_source_langs", None)
@@ -2615,14 +2629,15 @@ def _run_srt_job_inner(
                     raise RuntimeError(str(error))
 
             ensure_chunks()
-            log(f"Qwen3-ASR language={source_language} (transcribe)")
+            log(f"{_label} language={source_language} (transcribe)")
+            _eta_floor = 0.5 if family == "granite" else 2.0
 
             for index, (start, end) in enumerate(spans):
                 _check_cancel(cancel_event)
-                status.set_stage(f"Qwen3-ASR chunk {index + 1}/{len(spans)}")
+                status.set_stage(f"{_label} chunk {index + 1}/{len(spans)}")
                 first = round(start * sample_rate)
                 last = min(len(audio), round(end * sample_rate))
-                chunk_path = work_dir / f"qwen_{index:06d}.wav"
+                chunk_path = work_dir / f"{family}_{index:06d}.wav"
 
                 sf.write(
                     str(chunk_path),
@@ -2639,8 +2654,8 @@ def _run_srt_job_inner(
                         prog,
                         base,
                         span,
-                        max(2.0, (end - start) * eta.factor),
-                        f"Qwen3-ASR chunk {index + 1}/{len(spans)}",
+                        max(_eta_floor, (end - start) * eta.factor),
+                        f"{_label} chunk {index + 1}/{len(spans)}",
                     ):
                         text = _engine_text(
                             engine.transcribe_file(
@@ -2660,7 +2675,7 @@ def _run_srt_job_inner(
 
                 prog(
                     base + span,
-                    f"Qwen3-ASR chunk {index + 1}/{len(spans)} complete",
+                    f"{_label} chunk {index + 1}/{len(spans)} complete",
                 )
 
         else:

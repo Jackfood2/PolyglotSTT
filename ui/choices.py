@@ -98,7 +98,8 @@ def apply_badge_map(values, status_fn=None):
     return displays, mapping
 
 
-ENGINE_CHOICES = ["Moonshine v2", "Canary-1B", "Whisper", "Qwen3-ASR"]
+ENGINE_CHOICES = ["Moonshine v2", "Canary-1B", "Whisper", "Qwen3-ASR",
+                  "Granite"]
 
 
 try:
@@ -117,6 +118,26 @@ except Exception:
 
 
 QWEN_MODEL_LABEL = "Qwen3-ASR 1.7B (2.2GB, 30 languages)"
+
+
+try:
+    from granite_engine import (GRANITE_MODEL_CHOICES as _GMC,
+                                GRANITE_MODEL_CHOICES_REV as _GMCR)
+    GRANITE_MODEL_CHOICES = dict(_GMC)
+    GRANITE_MODEL_CHOICES_REV = dict(_GMCR)
+except Exception:
+    GRANITE_MODEL_CHOICES = {
+        "Granite 5.0 470M Q8_0 (506MB, best)": "granite-5.0-470m-q8_0",
+        "Granite 5.0 470M Q6_K (392MB)": "granite-5.0-470m-q6_k",
+        "Granite 5.0 470M Q5_K_M (336MB)": "granite-5.0-470m-q5_k_m",
+        "Granite 5.0 470M Q4_K_M (279MB, smallest)": "granite-5.0-470m-q4_k_m",
+    }
+    GRANITE_MODEL_CHOICES_REV = {v: k for k, v in GRANITE_MODEL_CHOICES.items()}
+
+
+GRANITE_MODEL_LABEL = "Granite 5.0 TurboCTC 470M (506MB, English, fastest)"
+
+GRANITE_SRT_IN_CODES = ["en"]
 
 
 CANARY_TASKS = ["transcribe", "translate"]

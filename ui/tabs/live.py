@@ -260,7 +260,7 @@ class LiveTabMixin:
     @staticmethod
     def _model_menu_state(engine_kind: str) -> str:
         return ("normal" if engine_kind in ("Moonshine v2", "Whisper",
-                                           "Qwen3-ASR")
+                                           "Qwen3-ASR", "Granite")
                 else "disabled")
 
     def set_model_options(self, values, current: str, callback: Callable,
