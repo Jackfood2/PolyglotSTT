@@ -671,29 +671,30 @@ def _create_clipboard_owner():
     )
 
 
-def get_clipboard_text():
+def _read_clipboard_text():
+    """Return (read_ok, text). text is None when the clipboard has no text."""
     with _CLIPBOARD_LOCK:
         if not _open_clipboard():
-            return None
+            return False, None
 
         try:
             if not user32.IsClipboardFormatAvailable(CF_UNICODETEXT):
-                return None
+                return True, None
 
             handle = user32.GetClipboardData(CF_UNICODETEXT)
 
             if not handle:
-                return None
+                return True, None
 
             size = kernel32.GlobalSize(handle)
 
             if size < 2:
-                return None
+                return True, None
 
             pointer = kernel32.GlobalLock(handle)
 
             if not pointer:
-                return None
+                return True, None
 
             try:
                 raw = ctypes.string_at(pointer, size - size % 2)
@@ -705,10 +706,14 @@ def get_clipboard_text():
                     raw = raw[:index]
                     break
 
-            return raw.decode("utf-16-le", errors="replace")
+            return True, raw.decode("utf-16-le", errors="replace")
 
         finally:
             user32.CloseClipboard()
+
+
+def get_clipboard_text():
+    return _read_clipboard_text()[1]
 
 
 def set_clipboard_text(text):
@@ -775,6 +780,45 @@ def set_clipboard_text(text):
 
             if handle:
                 kernel32.GlobalFree(handle)
+
+
+def clear_clipboard():
+    with _CLIPBOARD_LOCK:
+        owner = _create_clipboard_owner()
+
+        if not owner:
+            return False
+
+        opened = False
+
+        try:
+            opened = _open_clipboard(owner)
+
+            if not opened:
+                return False
+
+            return bool(user32.EmptyClipboard())
+
+        finally:
+            if opened:
+                user32.CloseClipboard()
+
+            user32.DestroyWindow(owner)
+
+
+def _restore_clipboard(previous_text, pasted_text):
+    """Put the pre-paste clipboard back once the target has read it.
+
+    The clipboard is only touched while it still holds ``pasted_text``,
+    so a copy made by the user during the paste settle time survives.
+    """
+    if get_clipboard_text() != pasted_text:
+        return False
+
+    if previous_text:
+        return set_clipboard_text(previous_text)
+
+    return clear_clipboard()
 
 
 def send_ctrl_v(log_func=None):
@@ -970,7 +1014,8 @@ def prepare_insertion_focus(
 
 def insert_text(text, target_top_hwnd, target_child_hwnd, hotkey_name,
                 our_root_hwnd=0, method="clipboard", allow_self=False,
-                wake=False, delay_ms=0, log_func=None):
+                wake=False, delay_ms=0, log_func=None,
+                restore_clipboard=True):
     if not text:
         return True
 
@@ -997,10 +1042,16 @@ def insert_text(text, target_top_hwnd, target_child_hwnd, hotkey_name,
         return False
 
     if method == "clipboard":
+        snapshot_ok, previous_text = _read_clipboard_text()
+
         if set_clipboard_text(text):
             force_release_modifier_keys()
             paste_ok = send_ctrl_v(log_func=log_func)
             time.sleep(1.0)
+
+            if paste_ok and restore_clipboard and snapshot_ok:
+                _restore_clipboard(previous_text, text)
+
             return paste_ok
 
     return send_unicode_string(

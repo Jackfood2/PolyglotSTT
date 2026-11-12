@@ -22,6 +22,12 @@ Quick start
    into models_cache\.
 3. Hold F2 to record; release to transcribe.
 
+Portable copy (target PC has no Python installed)
+-------------------------------------------------
+  make_portable_zip.bat    builds ..\PolyglotSTT-portable.zip
+  other PC: extract anywhere, run setup_offline.bat, then run.bat
+  Models are not in the zip - copy models_cache\ or download on first use.
+
 Fresh-install defaults
 ----------------------
 - Engine: Moonshine v2 (English)

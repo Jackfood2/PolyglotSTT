@@ -6,6 +6,8 @@ python/
 venv/
 # Downloaded dependency wheels (torch wheel alone exceeds GitHub limits).
 wheels/
+# pip download cache (kept local so the folder stays portable).
+cache/
 # Bytecode caches.
 __pycache__/
 *.pyc

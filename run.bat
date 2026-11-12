@@ -2,10 +2,17 @@
 setlocal DisableDelayedExpansion
 cd /d "%~dp0"
 rem Put this project's venv and portable Python first, then keep the user's PATH.
+set "POLYSTT_USER_PATH=%PATH%"
 set "PATH=%~dp0venv\Scripts;%~dp0python;%PATH%"
+rem pip 26 resolves every PATH entry while installing, so one locked or
+rem vanished drive aborts venv/dep installs. Do that work with a minimal
+rem PATH and restore the user's PATH before launching the app.
+set "POLYSTT_MIN_PATH=%~dp0venv\Scripts;%~dp0python;%SystemRoot%\System32;%SystemRoot%;%SystemRoot%\System32\Wbem"
 set "PYTHONPATH="
 set "PYTHONHOME="
 set "PIP_FIND_LINKS="
+rem Keep pip's download cache inside this folder (portable / offline copies).
+set "PIP_CACHE_DIR=%~dp0cache\pip"
 rem Portable Python preferred; fall back to system Python 3.11 (source checkouts)
 set "PYTHON_EXE="%~dp0python\python.exe""
 if exist "%~dp0python\python.exe" goto PY_OK
@@ -27,6 +34,8 @@ if not defined PYTHON_EXE (
     exit /b 1
 )
 :PY_OK
+rem From here on only the project's venv/python and System32 are needed.
+set "PATH=%POLYSTT_MIN_PATH%"
 if not exist "venv\Scripts\python.exe" goto CREATE_VENV
 "%~dp0venv\Scripts\python.exe" -c "import sys" >nul 2>&1
 if not errorlevel 1 goto CHECK_DEPS
@@ -101,6 +110,7 @@ echo Online Qwen install failed, trying offline wheels...
 "%~dp0venv\Scripts\python.exe" -m pip install --no-index --find-links="%~dp0wheels" -r requirements-qwen.txt
 if errorlevel 1 echo Warning: Qwen3-ASR deps failed. Other engines still work.
 :GPU_NOTE
+set "PATH=%~dp0venv\Scripts;%~dp0python;%POLYSTT_USER_PATH%"
 rem Warning only here (never a surprise 2.5GB download on launch).
 rem The torch import (~2s) runs once: marker lives inside venv, so a
 rem recreated venv re-checks automatically. Missing marker + failing

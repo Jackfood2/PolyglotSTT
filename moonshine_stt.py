@@ -58,7 +58,7 @@ try:
     )
 except Exception:  # pragma: no cover - fallback if core/ is missing
     import json as _json
-    APP_VERSION = "1.4.17"
+    APP_VERSION = "1.4.18"
     CONFIG_PATH = os.path.join(os.path.dirname(__file__), "moonshine_config.json")
     NOTES_AUDIO_DIR = os.path.join(os.path.dirname(__file__), "notes_audio")
     _CONFIG_LOCK = threading.RLock()
@@ -4404,7 +4404,7 @@ class MoonshineSTTApp:
                 log_func=lambda m: print(f"[insert] {m}"),
             )
             if ok:
-                self._gui_queue.put(("status", ("Pasted ✓  (clipboard also)", SUCCESS)))
+                self._gui_queue.put(("status", ("Pasted ✓", SUCCESS)))
             else:
                 self._gui_queue.put(("status", ("Copied to clipboard — press Ctrl+V", WARNING)))
         else:

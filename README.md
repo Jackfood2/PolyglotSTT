@@ -204,6 +204,15 @@ installed. Qwen3-ASR needs `transcribe-cpp` + `transcribe-cpp-native`
 (`requirements-qwen.txt`), whose native wheel bundles the CPU and Vulkan
 backends — no CUDA toolkit required.
 
+**Portable / offline copy:** `make_portable_zip.bat` builds
+`..\PolyglotSTT-portable.zip` with the source, the bundled `python\`
+runtime, and a complete `wheels\` wheelhouse (plus `wheels\freeze.txt`
+pinning the exact tested versions). Extract the zip anywhere on another
+PC and run `setup_offline.bat` once — it rebuilds `venv\` from those
+wheels with no network access, because a venv stores absolute paths and
+does not survive being moved. `models_cache\` is not included; copy it
+across, or let the engines download on first use where there is internet.
+
 **Fresh-install defaults:** the app starts with Moonshine v2 (English).
 When you switch to Whisper, the default is `large-v3-turbo` in
 `transcribe` mode — the fastest CPU option. To translate, select
@@ -369,6 +378,36 @@ requirements*.txt  dependency pins (base / Canary / Whisper)
   and reburn to relearn.
 
 ## Changelog
+
+### v1.4.18
+
+Live dictation no longer leaves the transcript sitting on the clipboard after
+it has been pasted into the target field.
+
+- **The previous clipboard comes back after a successful paste.** The app
+  snapshots the clipboard text before putting the transcript there, sends
+  Ctrl+V, then restores the snapshot once the target has had time to read it.
+  If the clipboard was empty, it is cleared again. Your copied text is no
+  longer replaced by the last thing you dictated.
+- **A copy made during the paste settles untouched.** The restore only runs
+  while the clipboard still holds the transcript, so copying something else
+  in that moment is never clobbered.
+- **The no-target fallback still copies on purpose.** With no external input
+  field focused, the transcript goes to the clipboard and the status bar says
+  `Copied to clipboard - press Ctrl+V`.
+- **Manual Copy buttons are unchanged.** Copy last / Copy All still put text
+  on the clipboard on purpose.
+
+Portable / offline build tooling is now part of the source tree:
+
+- `make_portable_zip.bat` builds `..\PolyglotSTT-portable.zip` from the
+  source, the bundled `python\` runtime and the `wheels\` wheelhouse (plus
+  `wheels\freeze.txt` with the exact tested versions).
+- `setup_offline.bat` rebuilds `venv\` on the target PC with no network,
+  because a venv stores absolute paths and does not survive being moved.
+- `run.bat` and `setup.bat` use a minimal PATH while pip runs, so a locked
+  or vanished drive on the user PATH can no longer abort an install. The pip
+  cache is kept inside the project folder for portable copies.
 
 ### v1.4.17
 
