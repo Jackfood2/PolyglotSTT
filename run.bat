@@ -57,7 +57,7 @@ rem Corrupt-but-present installs are left to the app, whose per-engine
 rem fallbacks log clearly. If the probe itself fails, assume present.
 set "DEPFLAGS=%TEMP%\polyglotstt_deps.txt"
 del "%DEPFLAGS%" >nul 2>&1
-"%~dp0venv\Scripts\python.exe" -c "import importlib.util as _u; _m={'moonshine_voice':'base','faster_whisper':'whisper','torch':'canary','nemo':'canary','transcribe_cpp':'qwen','transformers':'granite2b','torchaudio':'granite2b'}; open(r'%TEMP%\polyglotstt_deps.txt','w').write(' '.join(_v for _m2,_v in _m.items() if _u.find_spec(_m2) is None))" >nul 2>&1
+"%~dp0venv\Scripts\python.exe" -c "import importlib.util as _u; _m={'moonshine_voice':'base','soundcard':'base','customtkinter':'base','sounddevice':'base','faster_whisper':'whisper','torch':'canary','nemo':'canary','transcribe_cpp':'qwen','transformers':'granite2b','torchaudio':'granite2b'}; open(r'%TEMP%\polyglotstt_deps.txt','w').write(' '.join(_v for _m2,_v in _m.items() if _u.find_spec(_m2) is None))" >nul 2>&1
 set "NEED_BASE=" & set "NEED_WHISPER=" & set "NEED_CANARY=" & set "NEED_QWEN=" & set "NEED_GRANITE2B="
 if exist "%DEPFLAGS%" (
     findstr /c:"base" "%DEPFLAGS%" >nul 2>&1

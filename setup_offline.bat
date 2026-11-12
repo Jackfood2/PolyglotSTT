@@ -84,7 +84,7 @@ call :PIP requirements-qwen.txt "Qwen3-ASR"
 
 echo.
 echo [4/4] Verifying imports...
-"%~dp0venv\Scripts\python.exe" -c "import importlib.util as u; m=[('moonshine_voice','Moonshine'),('customtkinter','GUI toolkit'),('sounddevice','audio input'),('faster_whisper','Whisper'),('torch','Canary torch'),('nemo','Canary NeMo'),('transformers','Granite 2B transformers'),('torchaudio','Granite 2B torchaudio'),('transcribe_cpp','Qwen3-ASR')]; [print(('  OK    ' if u.find_spec(k) else '  MISS  ')+v) for k,v in m]"
+"%~dp0venv\Scripts\python.exe" -c "import importlib.util as u; m=[('moonshine_voice','Moonshine'),('customtkinter','GUI toolkit'),('sounddevice','audio input'),('soundcard','desktop audio'),('faster_whisper','Whisper'),('torch','Canary torch'),('nemo','Canary NeMo'),('transformers','Granite 2B transformers'),('torchaudio','Granite 2B torchaudio'),('transcribe_cpp','Qwen3-ASR')]; [print(('  OK    ' if u.find_spec(k) else '  MISS  ')+v) for k,v in m]"
 if errorlevel 1 goto VERIFY_FAIL
 
 echo.

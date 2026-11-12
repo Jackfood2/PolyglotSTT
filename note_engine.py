@@ -549,6 +549,15 @@ class NoteRecorder:
             except Exception:
                 pass
             self.session_wav = None
+            # Missing packages surface as a bare module name here, which is
+            # not something a user can act on. Name the fix instead.
+            if isinstance(e, ModuleNotFoundError) and "soundcard" in str(e):
+                raise RuntimeError(
+                    "Desktop audio needs the 'soundcard' package, which is "
+                    "missing from this venv. Run run.bat (it reinstalls "
+                    "missing dependencies), or install it with: "
+                    "venv\\Scripts\\python -m pip install soundcard"
+                )
             raise RuntimeError(f"Audio input error: {e}")
 
     def stop(self) -> Optional[np.ndarray]:
