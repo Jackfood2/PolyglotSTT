@@ -248,12 +248,34 @@ engine fetches on first use.
 
 **Portable / offline copy:** `make_portable_zip.bat` builds
 `..\PolyglotSTT-portable.zip` with the source, the bundled `python\`
-runtime, and a complete `wheels\` wheelhouse (plus `wheels\freeze.txt`
-pinning the exact tested versions). Extract the zip anywhere on another
-PC and run `setup_offline.bat` once — it rebuilds `venv\` from those
-wheels with no network access, because a venv stores absolute paths and
-does not survive being moved. `models_cache\` is not included; copy it
+runtime, and a complete `wheels\` wheelhouse. Extract the zip anywhere on
+another PC and run `setup_offline.bat` once — it rebuilds `venv\` from
+those wheels with no network access, because a venv stores absolute paths
+and does not survive being moved. `models_cache\` is not included; copy it
 across, or let the engines download on first use where there is internet.
+
+**Updating an existing install with no internet:** `make_offline_update.bat`
+upgrades a 1.4.16 / 1.4.17 / 1.4.18 / 1.5 install to 1.6. Run it on a machine
+that has PolyglotSTT working and has internet: it audits `wheels\` against
+every requirements file, re-downloads whatever cannot resolve offline,
+rebuilds a portable `python\` runtime, stages the source, wheels and the
+Granite 470M / 2B GGUF weights, then writes split WinRAR volumes (990 MB
+each) to your Desktop. Carry those volumes to the offline machine, extract
+them, and run the bundled script with the target folder:
+
+```bat
+apply_offline_update.bat "D:\Apps\PolyglotSTT"
+```
+
+It backs up `moonshine_config.json`, keeps `models_cache\`, rebuilds `venv\`
+from the bundled wheels only, and re-checks every dependency group with no
+network access. These offline packages are **not** hosted on GitHub — they
+contain the model weights and are several GB, so they are always built
+locally.
+
+Since `pip --no-index --find-links=wheels` can only pick from the wheelhouse,
+the bundled wheel set *is* the version pin; there is no separate freeze file
+for `setup_offline.bat` to read.
 
 **Fresh-install defaults:** the app starts with Moonshine v2 (English).
 When you switch to Whisper, the default is `large-v3-turbo` in
