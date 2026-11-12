@@ -60,13 +60,21 @@ if errorlevel 1 (
 )
 echo Dependencies installed via offline wheels.
 :INSTALL_CANARY
-if not exist "requirements-canary.txt" goto INSTALL_WHISPER
+if not exist "requirements-canary.txt" goto INSTALL_GRANITE2B
 echo Installing Canary dependencies (torch+nemo, large)...
 "%~dp0venv\Scripts\python.exe" -m pip install -r requirements-canary.txt --extra-index-url https://download.pytorch.org/whl/cpu
-if not errorlevel 1 goto INSTALL_WHISPER
+if not errorlevel 1 goto INSTALL_GRANITE2B
 echo Online Canary install failed, trying offline wheels...
 "%~dp0venv\Scripts\python.exe" -m pip install --no-index --find-links="%~dp0wheels" -r requirements-canary.txt
 if errorlevel 1 echo Warning: Canary deps failed. Moonshine still works.
+:INSTALL_GRANITE2B
+if not exist "requirements-granite2b.txt" goto INSTALL_WHISPER
+echo Installing Granite 2B dependencies (torch+transformers)...
+"%~dp0venv\Scripts\python.exe" -m pip install -r requirements-granite2b.txt --extra-index-url https://download.pytorch.org/whl/cpu
+if not errorlevel 1 goto INSTALL_WHISPER
+echo Online Granite 2B install failed, trying offline wheels...
+"%~dp0venv\Scripts\python.exe" -m pip install --no-index --find-links="%~dp0wheels" -r requirements-granite2b.txt
+if errorlevel 1 echo Warning: Granite 2B deps failed. Other engines still work.
 :INSTALL_WHISPER
 if not exist "requirements-whisper.txt" goto INSTALL_QWEN
 echo Installing Whisper dependencies (faster-whisper, CPU)...
@@ -93,7 +101,7 @@ if errorlevel 1 goto CACHE_WHEELS
 "%~dp0venv\Scripts\python.exe" -c "import torch,sys; sys.exit(0 if torch.cuda.is_available() else 1)" >nul 2>&1
 if not errorlevel 1 goto CACHE_WHEELS
 echo NVIDIA GPU found but torch is CPU-only - installing CUDA build (~2.5GB)...
-"%~dp0venv\Scripts\python.exe" -m pip install -U torch --index-url https://download.pytorch.org/whl/cu126
+"%~dp0venv\Scripts\python.exe" -m pip install -U torch torchaudio --index-url https://download.pytorch.org/whl/cu126
 if errorlevel 1 (
     echo Online CUDA torch failed, trying default index...
     "%~dp0venv\Scripts\python.exe" -m pip install -U torch
@@ -107,6 +115,7 @@ echo Caching wheels for offline use...
 if not exist "wheels" mkdir "wheels"
 "%~dp0venv\Scripts\python.exe" -m pip download -r requirements.txt -d wheels --quiet
 if exist "requirements-canary.txt" "%~dp0venv\Scripts\python.exe" -m pip download -r requirements-canary.txt -d wheels --extra-index-url https://download.pytorch.org/whl/cpu --quiet
+if exist "requirements-granite2b.txt" "%~dp0venv\Scripts\python.exe" -m pip download -r requirements-granite2b.txt -d wheels --extra-index-url https://download.pytorch.org/whl/cpu --quiet
 if exist "requirements-whisper.txt" "%~dp0venv\Scripts\python.exe" -m pip download -r requirements-whisper.txt -d wheels --quiet
 if exist "requirements-qwen.txt" "%~dp0venv\Scripts\python.exe" -m pip download -r requirements-qwen.txt -d wheels --quiet
 echo Wheels cached.

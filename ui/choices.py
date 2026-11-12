@@ -99,7 +99,7 @@ def apply_badge_map(values, status_fn=None):
 
 
 ENGINE_CHOICES = ["Moonshine v2", "Canary-1B", "Whisper", "Qwen3-ASR",
-                  "Granite"]
+                  "Granite", "Granite 2B"]
 
 
 try:
@@ -138,6 +138,36 @@ except Exception:
 GRANITE_MODEL_LABEL = "Granite 5.0 TurboCTC 470M (506MB, English, fastest)"
 
 GRANITE_SRT_IN_CODES = ["en"]
+
+
+try:
+    from granite2b_engine import (GRANITE2B_MODEL_CHOICES as _G2MC,
+                                  GRANITE2B_MODEL_CHOICES_REV as _G2MCR)
+    GRANITE2B_MODEL_CHOICES = dict(_G2MC)
+    GRANITE2B_MODEL_CHOICES_REV = dict(_G2MCR)
+except Exception:
+    GRANITE2B_MODEL_CHOICES = {
+        "Granite Speech 5.0 2B (4.8GB, 6 languages)":
+            "granite-speech-5.0-2b",
+        "Granite 2B Q8_0 GGUF (3.0GB, llama.cpp, fastest)":
+            "granite-speech-5.0-2b-q8_0",
+        "Granite 2B Q6_K GGUF (2.6GB, llama.cpp)":
+            "granite-speech-5.0-2b-q6_k",
+    }
+    GRANITE2B_MODEL_CHOICES_REV = {
+        v: k for k, v in GRANITE2B_MODEL_CHOICES.items()
+    }
+
+
+GRANITE2B_MODEL_LABEL = "Granite Speech 5.0 2B (4.8GB, 6 languages)"
+
+# Six spoken languages, auto first. Translation only ever targets English.
+GRANITE2B_SRT_IN_CODES = ["auto", "en", "fr", "de", "es", "pt", "ja"]
+
+# Granite 2B transcribes in the source language and can translate into
+# English only, so the output picker offers English plus the spoken
+# languages (picking the input language means "keep it as-is").
+GRANITE2B_SRT_OUT_CODES = ["en", "fr", "de", "es", "pt", "ja"]
 
 
 CANARY_TASKS = ["transcribe", "translate"]

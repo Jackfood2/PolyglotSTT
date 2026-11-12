@@ -19,7 +19,9 @@ from ui.choices import (MODEL_CHOICES, MODEL_CHOICES_REV,
                          BURN_SPEED_HELP, BURN_COMPARE_ROWS,
                          BURN_COMPARE_CODEC_NOTE, apply_badge_map,
                          QWEN_MODEL_CHOICES, QWEN_MODEL_CHOICES_REV,
-                         GRANITE_MODEL_CHOICES, GRANITE_MODEL_CHOICES_REV)
+                         GRANITE_MODEL_CHOICES, GRANITE_MODEL_CHOICES_REV,
+                         GRANITE2B_MODEL_CHOICES,
+                         GRANITE2B_MODEL_CHOICES_REV)
 ACCENT = "#6C5CE7"
 ACCENT_DARK = "#5A4BD1"
 ACCENT_GLOW = "#A29BFE"
@@ -422,7 +424,7 @@ class MoonshineGUI(LiveTabMixin, NoteTabMixin, ImportTabMixin, SrtTabMixin, Dial
         footer = ctk.CTkFrame(self, fg_color="transparent")
         footer.grid(row=3, column=0, sticky="ew", padx=20, pady=(0, 12))
         self._footer_label = ctk.CTkLabel(
-            footer, text="Moonshine v2 + Canary-1B + Whisper + Qwen3-ASR + Granite \u2022 On-device \u2022 No API keys",
+            footer, text="Moonshine v2 + Canary-1B + Whisper + Qwen3-ASR + Granite + Granite 2B \u2022 On-device \u2022 No API keys",
             font=("Segoe UI", 10), text_color=FG_DIM)
         self._footer_label.pack(side="left")
         self.windowless_var = ctk.BooleanVar(value=False)
@@ -446,7 +448,7 @@ class MoonshineGUI(LiveTabMixin, NoteTabMixin, ImportTabMixin, SrtTabMixin, Dial
             pass
     def set_footer_version(self, version: str):
         try:
-            base = "Moonshine v2 + Canary-1B + Whisper + Qwen3-ASR + Granite \u2022 On-device \u2022 No API keys"
+            base = "Moonshine v2 + Canary-1B + Whisper + Qwen3-ASR + Granite + Granite 2B \u2022 On-device \u2022 No API keys"
             v = str(version or "").strip()
             self._footer_label.configure(
                 text=f"{base} \u2022 v{v}" if v else base)
@@ -895,6 +897,8 @@ class MoonshineGUI(LiveTabMixin, NoteTabMixin, ImportTabMixin, SrtTabMixin, Dial
                 wmid = QWEN_MODEL_CHOICES.get(label)
             elif kind == "Granite":
                 wmid = GRANITE_MODEL_CHOICES.get(label)
+            elif kind == "Granite 2B":
+                wmid = GRANITE2B_MODEL_CHOICES.get(label)
             elif kind == "Moonshine v2":
                 arch = MODEL_CHOICES.get(label)
         except Exception:
@@ -955,6 +959,8 @@ class MoonshineGUI(LiveTabMixin, NoteTabMixin, ImportTabMixin, SrtTabMixin, Dial
                     wmid = QWEN_MODEL_CHOICES.get(label)
                 elif kind == "Granite":
                     wmid = GRANITE_MODEL_CHOICES.get(label)
+                elif kind == "Granite 2B":
+                    wmid = GRANITE2B_MODEL_CHOICES.get(label)
                 elif kind == "Moonshine v2":
                     arch = MODEL_CHOICES.get(label)
             except Exception:

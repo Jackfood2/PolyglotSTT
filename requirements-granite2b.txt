@@ -1,0 +1,11 @@
+# Granite Speech 5.0 2B - Transformers backend.
+# The optional GGUF builds run on llama.cpp and need no Python packages
+# beyond huggingface_hub (already in requirements.txt).
+#
+# The model card quotes transformers>=4.52.1, but this snapshot's config.json
+# was serialized by 4.57.0; pinning to that avoids loading 5.0-2B processor
+# code that an older transformers does not have yet.
+--extra-index-url https://download.pytorch.org/whl/cpu
+torch>=2.2.0
+torchaudio>=2.2.0
+transformers>=4.57.0

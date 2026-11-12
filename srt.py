@@ -33,6 +33,7 @@ ETA_DEFAULTS = {
     "canary": 3.0,
     "qwen": 2.0,
     "granite": 0.05,
+    "granite2b": 1.5,
     "moonshine": 0.3,
     "burn": 1.5,
     "whisper:tiny": 0.08,
@@ -127,6 +128,8 @@ _ERROR_PREFIXES = (
     "[whisper error:",
     "[canary error:",
     "[qwen error:",
+    "[granite error:",
+    "[granite 2b error:",
     "[moonshine error:",
 )
 
@@ -437,6 +440,9 @@ def _eta_key_for(engine_kind, arch=0) -> str:
         return "canary"
     if "qwen" in kind:
         return "qwen"
+    # Granite Speech 5.0 2B first: "granite 2b" also contains "granite".
+    if "granite 2b" in kind or "granite2b" in kind:
+        return "granite2b"
     if "granite" in kind:
         return "granite"
     if "moonshine" in kind:
@@ -1973,6 +1979,9 @@ def run_srt_job(
     get_qwen_engine: Optional[Callable] = None,
     qwen_src: str = "auto",
     get_granite_engine: Optional[Callable] = None,
+    get_granite2b_engine: Optional[Callable] = None,
+    granite2b_src: str = "auto",
+    granite2b_task: str = "transcribe",
 ) -> str:
     """Run one subtitle job with a live heartbeat (stage, elapsed, CPU%)."""
     heartbeat = SrtHeartbeat(live_cb)
@@ -2006,6 +2015,9 @@ def run_srt_job(
             get_qwen_engine=get_qwen_engine,
             qwen_src=qwen_src,
             get_granite_engine=get_granite_engine,
+            get_granite2b_engine=get_granite2b_engine,
+            granite2b_src=granite2b_src,
+            granite2b_task=granite2b_task,
         )
     finally:
         heartbeat.stop()
@@ -2040,6 +2052,9 @@ def _run_srt_job_inner(
     get_qwen_engine: Optional[Callable] = None,
     qwen_src: str = "auto",
     get_granite_engine: Optional[Callable] = None,
+    get_granite2b_engine: Optional[Callable] = None,
+    granite2b_src: str = "auto",
+    granite2b_task: str = "transcribe",
 ) -> str:
     import soundfile as sf
 
@@ -2074,6 +2089,9 @@ def _run_srt_job_inner(
         family = "canary"
     elif "qwen" in kind:
         family = "qwen"
+    # "granite 2b" must be tested before the plain Granite check.
+    elif "granite 2b" in kind or "granite2b" in kind:
+        family = "granite2b"
     elif "granite" in kind:
         family = "granite"
     elif "moonshine" in kind:
@@ -2590,6 +2608,115 @@ def _run_srt_job_inner(
                     f"Canary chunk {index + 1}/{len(spans)} complete",
                 )
 
+        elif family == "granite2b":
+            if not callable(get_granite2b_engine):
+                raise RuntimeError("Granite 2B engine is not configured")
+
+            task = str(granite2b_task or "transcribe").strip().lower()
+            if task not in {"transcribe", "translate"}:
+                raise ValueError(f"Unsupported Granite 2B task: {task}")
+
+            # The model is not timestamped either, so cues come from the VAD
+            # spans exactly like Canary/Qwen3-ASR. Unlike them it can
+            # translate, but only into English.
+            source_language = (
+                input_language
+                if input_language != "auto"
+                else str(granite2b_src or "auto").strip().lower()
+            )
+
+            _en_out = output_language in {"en", "english"}
+            _mirror = (
+                output_language in {"same", "source"}
+                or (source_language != "auto"
+                    and output_language == source_language)
+            )
+            if task == "translate":
+                if _mirror:
+                    log("Granite 2B: output follows the input language - "
+                        "switching to transcribe")
+                    task = "transcribe"
+                elif not _en_out:
+                    log("Granite 2B can only translate to English; "
+                        f"output {output_language} -> en")
+                    output_language = "en"
+            elif not _mirror:
+                if _en_out:
+                    log(f"Granite 2B: {source_language} -> en requested - "
+                        "using translate")
+                    task = "translate"
+                elif source_language != "auto":
+                    log("Granite 2B transcription keeps the source language; "
+                        f"output {output_language} -> {source_language}")
+                    output_language = source_language
+                else:
+                    log("Granite 2B cannot translate to "
+                        f"{output_language} without a known input language; "
+                        "transcribing in the source language")
+
+            engine = get_granite2b_engine()
+            wait_for_model(engine, "Granite 2B")
+
+            checker = getattr(engine, "_check_lang_support", None)
+            if callable(checker):
+                error = checker(source_language)
+                if error:
+                    raise RuntimeError(str(error))
+
+            ensure_chunks()
+            log(
+                f"Granite 2B language={source_language}, task={task}, "
+                f"device={getattr(engine, 'device_info', '?')}"
+            )
+
+            for index, (start, end) in enumerate(spans):
+                _check_cancel(cancel_event)
+                status.set_stage(f"Granite 2B chunk {index + 1}/{len(spans)}")
+                first = round(start * sample_rate)
+                last = min(len(audio), round(end * sample_rate))
+                chunk_path = work_dir / f"{family}_{index:06d}.wav"
+
+                sf.write(
+                    str(chunk_path),
+                    audio[first:last],
+                    sample_rate,
+                    subtype="PCM_16",
+                )
+
+                base = 0.20 + 0.64 * index / len(spans)
+                span = 0.64 / len(spans)
+
+                try:
+                    with ProgressPump(
+                        prog,
+                        base,
+                        span,
+                        max(1.0, (end - start) * eta.factor),
+                        f"Granite 2B chunk {index + 1}/{len(spans)}",
+                    ):
+                        text = _engine_text(
+                            engine.transcribe_file(
+                                str(chunk_path),
+                                task=task,
+                                source_lang=source_language,
+                                target_lang=output_language,
+                            )
+                        )
+
+                    if text:
+                        segments.append((
+                            first / sample_rate,
+                            last / sample_rate,
+                            text,
+                        ))
+                finally:
+                    chunk_path.unlink(missing_ok=True)
+
+                prog(
+                    base + span,
+                    f"Granite 2B chunk {index + 1}/{len(spans)} complete",
+                )
+
         elif family in ("qwen", "granite"):
             _label = "Granite" if family == "granite" else "Qwen3-ASR"
             if family == "granite":
@@ -2755,6 +2882,8 @@ def _run_srt_job_inner(
             log(f"Aligning {len(segments)} segments to the audio")
 
             if family == "whisper" and task == "translate":
+                alignment_language = "en"
+            elif family == "granite2b" and task == "translate":
                 alignment_language = "en"
             elif family == "canary" and task == "translate":
                 alignment_language = output_language

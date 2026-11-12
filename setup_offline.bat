@@ -78,12 +78,13 @@ call :PIP requirements.txt "base"
 if errorlevel 1 goto BASE_FAIL
 call :PIP requirements-whisper.txt "Whisper"
 call :PIP requirements-canary.txt "Canary"
+call :PIP requirements-granite2b.txt "Granite 2B"
 call :PIP requirements-qwen.txt "Qwen3-ASR"
 :INSTALLED
 
 echo.
 echo [4/4] Verifying imports...
-"%~dp0venv\Scripts\python.exe" -c "import importlib.util as u; m=[('moonshine_voice','Moonshine'),('customtkinter','GUI toolkit'),('sounddevice','audio input'),('faster_whisper','Whisper'),('torch','Canary torch'),('nemo','Canary NeMo'),('transcribe_cpp','Qwen3-ASR')]; [print(('  OK    ' if u.find_spec(k) else '  MISS  ')+v) for k,v in m]"
+"%~dp0venv\Scripts\python.exe" -c "import importlib.util as u; m=[('moonshine_voice','Moonshine'),('customtkinter','GUI toolkit'),('sounddevice','audio input'),('faster_whisper','Whisper'),('torch','Canary torch'),('nemo','Canary NeMo'),('transformers','Granite 2B transformers'),('torchaudio','Granite 2B torchaudio'),('transcribe_cpp','Qwen3-ASR')]; [print(('  OK    ' if u.find_spec(k) else '  MISS  ')+v) for k,v in m]"
 if errorlevel 1 goto VERIFY_FAIL
 
 echo.

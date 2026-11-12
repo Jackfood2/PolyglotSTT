@@ -59,6 +59,8 @@ echo.
 echo Installing %~nx1 ...
 if /i "%~nx1"=="requirements-canary.txt" (
     "%~dp0venv\Scripts\python.exe" -m pip install -r "%~1" --extra-index-url https://download.pytorch.org/whl/cpu
+) else if /i "%~nx1"=="requirements-granite2b.txt" (
+    "%~dp0venv\Scripts\python.exe" -m pip install -r "%~1" --extra-index-url https://download.pytorch.org/whl/cpu
 ) else (
     "%~dp0venv\Scripts\python.exe" -m pip install -r "%~1"
 )

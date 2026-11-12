@@ -9,6 +9,10 @@ Two engines can be nudged with a word list:
 * **Qwen3-ASR** (transcribe.cpp) accepts ``vocabulary`` (a priority-ordered
   list of terms) and ``prompt`` (free-text context). It has no hard cap in the
   wrapper, but long lists cost accuracy, so we warn past a soft limit.
+* **Granite 2B** (Transformers) accepts the model card's keyword-biasing form
+  ``Keywords: <term>, <term>, ...`` with up to 2000 terms, plus free-text
+  context. Every term is prompt tokens, so long lists are correct but make
+  each decode slower.
 
 Moonshine and Canary expose no equivalent knob, so they are not offered.
 
@@ -23,10 +27,13 @@ WHISPER_TOKEN_LIMIT = 223
 # Qwen has no hard cap; these are quality guard rails.
 QWEN_SOFT_LIMIT = 200
 QWEN_HARD_LIMIT = 500
+# Granite Speech 5.0 2B documents keyword biasing for up to 2000 terms.
+GRANITE2B_SOFT_LIMIT = 800
+GRANITE2B_HARD_LIMIT = 2000
 # A single term longer than this is almost certainly a pasted paragraph.
 MAX_TERM_CHARS = 64
 
-DICT_ENGINES: Tuple[str, ...] = ("Whisper", "Qwen3-ASR")
+DICT_ENGINES: Tuple[str, ...] = ("Whisper", "Qwen3-ASR", "Granite 2B")
 
 _ENGINE_HELP = {
     "Whisper": (
@@ -36,6 +43,11 @@ _ENGINE_HELP = {
     "Qwen3-ASR": (
         "Qwen3-ASR gets these as a priority-ordered vocabulary plus your "
         "context text. Around 200 terms is the practical sweet spot."
+    ),
+    "Granite 2B": (
+        "Granite 2B gets these as an instruction 'Keywords:' list (up to "
+        "2000 terms) plus your context text. Very long lists stay accurate "
+        "but add prompt tokens, so each decode takes longer."
     ),
 }
 
@@ -174,6 +186,36 @@ def _qwen_budget(terms: Sequence[str], context: str) -> Dict:
     }
 
 
+def _granite2b_budget(terms: Sequence[str], context: str) -> Dict:
+    """Granite 2B: every term is a prompt token, so cap at 2000."""
+    limit = GRANITE2B_SOFT_LIMIT
+    kept = list(terms)
+    warning = ""
+    if len(kept) > GRANITE2B_HARD_LIMIT:
+        kept = kept[:GRANITE2B_HARD_LIMIT]
+        warning = (
+            f"Granite 2B accepts up to {GRANITE2B_HARD_LIMIT} terms; "
+            f"the rest were ignored."
+        )
+    elif len(kept) > GRANITE2B_SOFT_LIMIT:
+        warning = (
+            f"{len(kept)} terms is a lot for Granite 2B; it still biases, "
+            f"but each decode gets slower. Up to ~{GRANITE2B_SOFT_LIMIT} "
+            f"stays quick."
+        )
+    return {
+        "engine": "Granite 2B",
+        "eligible": True,
+        "limit": GRANITE2B_HARD_LIMIT,
+        "tokens": len(kept),
+        "kept": kept,
+        "dropped": len(terms) - len(kept),
+        "keywords": list(kept) or None,
+        "prompt": context or None,
+        "warning": warning,
+    }
+
+
 def build(engine: str, terms: Sequence[str], context: str) -> Dict:
     """Return the decode payload plus budget info for one engine."""
     clean_terms = norm_terms(terms)
@@ -182,6 +224,8 @@ def build(engine: str, terms: Sequence[str], context: str) -> Dict:
         return _whisper_budget(clean_terms, clean_ctx)
     if engine == "Qwen3-ASR":
         return _qwen_budget(clean_terms, clean_ctx)
+    if engine == "Granite 2B":
+        return _granite2b_budget(clean_terms, clean_ctx)
     return {
         "engine": engine,
         "eligible": False,
@@ -201,6 +245,10 @@ def engine_available(engine: str) -> bool:
             return True
         if engine == "Qwen3-ASR":
             import transcribe_cpp  # noqa: F401
+            return True
+        if engine == "Granite 2B":
+            import torchaudio  # noqa: F401
+            import transformers  # noqa: F401
             return True
     except Exception:
         return False
@@ -235,9 +283,13 @@ def describe(engine: str, terms: Sequence[str], context: str) -> str:
             text += " ✓"
         return text
     count = len(info["kept"])
+    soft = (GRANITE2B_SOFT_LIMIT if engine == "Granite 2B"
+            else QWEN_SOFT_LIMIT)
     text = f"{count} term(s)"
-    if count > QWEN_SOFT_LIMIT:
-        text += f" — over the ~{QWEN_SOFT_LIMIT} sweet spot"
+    if info["dropped"]:
+        text += f" — {info['dropped']} term(s) over the limit"
+    elif count > soft:
+        text += f" — over the ~{soft} sweet spot"
     else:
         text += " ✓"
     return text
@@ -266,6 +318,8 @@ def status_text(terms: Sequence[str], context: str,
         info = build(engine, terms, context)
         if engine == "Whisper":
             parts.append(f"Whisper {info['tokens']}/{info['limit']} tok")
+        elif engine == "Granite 2B":
+            parts.append(f"Granite 2B {len(info['kept'])} terms")
         else:
             parts.append(f"Qwen {len(info['kept'])} terms")
     return "Dictionary on — " + ", ".join(parts)

@@ -7,7 +7,7 @@ import customtkinter as ctk
 import threading
 from typing import Optional, Callable, Tuple
 from ui.theme import ACCENT, ACCENT_DARK, ACCENT_GLOW, SUCCESS, DANGER, BG_CARD, BG_INPUT, FG_PRIMARY, FG_SECONDARY, FG_DIM, BTN_DIM, BTN_DIM_HOVER, BTN_GO_HOVER, BTN_DANGER_HOVER, BTN_BURN, BTN_BURN_HOVER, BTN_TEXT, theme_color
-from ui.choices import MODEL_CHOICES, MODEL_CHOICES_REV, WHISPER_MODEL_CHOICES, WHISPER_MODEL_CHOICES_REV, CANARY_MODEL_LABEL, ENGINE_CHOICES, WHISPER_LANGS, SRT_LANG_NAMES, SRT_LANG_DISPLAY, CANARY_LIVE_SRC_CODES, CANARY_SRT_IN_CODES, CANARY_SRT_OUT_CODES, WHISPER_SRT_IN_CODES, WHISPER_SRT_OUT_CODES, QWEN_MODEL_CHOICES, QWEN_MODEL_CHOICES_REV, QWEN_SRT_IN_CODES, QWEN_LANG_NAMES, GRANITE_MODEL_CHOICES, GRANITE_MODEL_CHOICES_REV, GRANITE_SRT_IN_CODES, BURN_SPEED_HELP, lang_display, lang_code_from_display
+from ui.choices import MODEL_CHOICES, MODEL_CHOICES_REV, WHISPER_MODEL_CHOICES, WHISPER_MODEL_CHOICES_REV, CANARY_MODEL_LABEL, ENGINE_CHOICES, WHISPER_LANGS, SRT_LANG_NAMES, SRT_LANG_DISPLAY, CANARY_LIVE_SRC_CODES, CANARY_SRT_IN_CODES, CANARY_SRT_OUT_CODES, WHISPER_SRT_IN_CODES, WHISPER_SRT_OUT_CODES, QWEN_MODEL_CHOICES, QWEN_MODEL_CHOICES_REV, QWEN_SRT_IN_CODES, QWEN_LANG_NAMES, GRANITE_MODEL_CHOICES, GRANITE_MODEL_CHOICES_REV, GRANITE_SRT_IN_CODES, GRANITE2B_MODEL_CHOICES, GRANITE2B_MODEL_CHOICES_REV, GRANITE2B_SRT_IN_CODES, GRANITE2B_SRT_OUT_CODES, BURN_SPEED_HELP, lang_display, lang_code_from_display
 
 
 class SrtTabMixin:
@@ -506,6 +506,8 @@ class SrtTabMixin:
                 return list(QWEN_MODEL_CHOICES.keys())
             if kind == "Granite":
                 return list(GRANITE_MODEL_CHOICES.keys())
+            if kind == "Granite 2B":
+                return list(GRANITE2B_MODEL_CHOICES.keys())
             if kind == "Canary-1B":
                 return [CANARY_MODEL_LABEL]
             return list(MODEL_CHOICES.keys())
@@ -544,6 +546,9 @@ class SrtTabMixin:
             if kind == "Granite":
                 return GRANITE_MODEL_CHOICES_REV.get(
                     str(wmid or "granite-5.0-470m-q8_0"))
+            if kind == "Granite 2B":
+                return GRANITE2B_MODEL_CHOICES_REV.get(
+                    str(wmid or "granite-speech-5.0-2b"))
             if kind == "Canary-1B":
                 return CANARY_MODEL_LABEL
             return MODEL_CHOICES_REV.get(int(arch if arch is not None else 5))
@@ -627,6 +632,10 @@ class SrtTabMixin:
             srt_in_codes = list(GRANITE_SRT_IN_CODES)
             srt_out_codes = []
             out_locked = True
+        elif kind == "Granite 2B":
+            srt_in_codes = list(GRANITE2B_SRT_IN_CODES)
+            srt_out_codes = list(GRANITE2B_SRT_OUT_CODES)
+            out_locked = False
         else:
             srt_in_codes = list(WHISPER_SRT_IN_CODES)
             srt_out_codes = list(WHISPER_SRT_OUT_CODES)
@@ -637,7 +646,7 @@ class SrtTabMixin:
                 srt_out_codes = [c for c in srt_out_codes if c != "en"]
 
 
-        has_lang = kind in ("Canary-1B", "Whisper", "Qwen3-ASR")
+        has_lang = kind in ("Canary-1B", "Whisper", "Qwen3-ASR", "Granite 2B")
         def _disp(c):
             return SRT_LANG_NAMES.get(c) or QWEN_LANG_NAMES.get(c) or c
         try:
@@ -2082,12 +2091,15 @@ class SrtTabMixin:
         is_canary = (eng == "Canary-1B")
         is_qwen = (eng == "Qwen3-ASR")
         is_granite = (eng == "Granite")
+        is_granite2b = (eng == "Granite 2B")
         if is_canary:
             live_codes = CANARY_LIVE_SRC_CODES
         elif is_qwen:
             live_codes = QWEN_SRT_IN_CODES
         elif is_granite:
             live_codes = GRANITE_SRT_IN_CODES
+        elif is_granite2b:
+            live_codes = GRANITE2B_SRT_IN_CODES
         else:
             live_codes = WHISPER_LANGS
         live_displays = [SRT_LANG_NAMES.get(c) or QWEN_LANG_NAMES.get(c) or c
@@ -2135,6 +2147,11 @@ class SrtTabMixin:
                 hint = ("Granite TurboCTC is English only and has no timestamps "
                         "of its own: SRT cues come from VAD chunks, and output "
                         "text has no punctuation.")
+            elif engine_kind == "Granite 2B":
+                hint = ("Granite 2B handles en/fr/de/es/pt/ja with punctuation and "
+                        "no timestamps of its own (SRT cues come from VAD "
+                        "chunks). Pick English as output to translate; pick the "
+                        "spoken language to transcribe it as-is.")
             elif engine_kind == "Whisper" and not can_translate:
                 hint = ("Whisper large-v3-turbo cannot translate - pick large-v3 in "
                         "the Live model list, or choose the spoken language as output.")

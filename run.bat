@@ -57,8 +57,8 @@ rem Corrupt-but-present installs are left to the app, whose per-engine
 rem fallbacks log clearly. If the probe itself fails, assume present.
 set "DEPFLAGS=%TEMP%\polyglotstt_deps.txt"
 del "%DEPFLAGS%" >nul 2>&1
-"%~dp0venv\Scripts\python.exe" -c "import importlib.util as _u; _m={'moonshine_voice':'base','faster_whisper':'whisper','torch':'canary','nemo':'canary','transcribe_cpp':'qwen'}; open(r'%TEMP%\polyglotstt_deps.txt','w').write(' '.join(_v for _m2,_v in _m.items() if _u.find_spec(_m2) is None))" >nul 2>&1
-set "NEED_BASE=" & set "NEED_WHISPER=" & set "NEED_CANARY=" & set "NEED_QWEN="
+"%~dp0venv\Scripts\python.exe" -c "import importlib.util as _u; _m={'moonshine_voice':'base','faster_whisper':'whisper','torch':'canary','nemo':'canary','transcribe_cpp':'qwen','transformers':'granite2b','torchaudio':'granite2b'}; open(r'%TEMP%\polyglotstt_deps.txt','w').write(' '.join(_v for _m2,_v in _m.items() if _u.find_spec(_m2) is None))" >nul 2>&1
+set "NEED_BASE=" & set "NEED_WHISPER=" & set "NEED_CANARY=" & set "NEED_QWEN=" & set "NEED_GRANITE2B="
 if exist "%DEPFLAGS%" (
     findstr /c:"base" "%DEPFLAGS%" >nul 2>&1
     if not errorlevel 1 set "NEED_BASE=1"
@@ -68,6 +68,8 @@ if exist "%DEPFLAGS%" (
     if not errorlevel 1 set "NEED_CANARY=1"
     findstr /c:"qwen" "%DEPFLAGS%" >nul 2>&1
     if not errorlevel 1 set "NEED_QWEN=1"
+    findstr /c:"granite2b" "%DEPFLAGS%" >nul 2>&1
+    if not errorlevel 1 set "NEED_GRANITE2B=1"
     del "%DEPFLAGS%" >nul 2>&1
 )
 if not defined NEED_BASE goto CHECK_CANARY
@@ -82,14 +84,24 @@ if errorlevel 1 (
     exit /b 1
 )
 :CHECK_CANARY
-if not defined NEED_CANARY goto CHECK_WHISPER
-if not exist "requirements-canary.txt" goto CHECK_WHISPER
+if not defined NEED_CANARY goto CHECK_GRANITE2B
+if not exist "requirements-canary.txt" goto CHECK_GRANITE2B
 echo Installing Canary dependencies (torch+nemo, large)...
 "%~dp0venv\Scripts\python.exe" -m pip install -r requirements-canary.txt --extra-index-url https://download.pytorch.org/whl/cpu
-if not errorlevel 1 goto CHECK_WHISPER
+if not errorlevel 1 goto CHECK_GRANITE2B
 echo Online Canary install failed, trying offline wheels...
 "%~dp0venv\Scripts\python.exe" -m pip install --no-index --find-links="%~dp0wheels" -r requirements-canary.txt
 if errorlevel 1 echo Warning: Canary deps failed. Moonshine still works.
+:CHECK_GRANITE2B
+rem Granite 2B's Transformers backend (GGUF variants need only llama.cpp).
+if not defined NEED_GRANITE2B goto CHECK_WHISPER
+if not exist "requirements-granite2b.txt" goto CHECK_WHISPER
+echo Installing Granite 2B dependencies (torch+transformers)...
+"%~dp0venv\Scripts\python.exe" -m pip install -r requirements-granite2b.txt --extra-index-url https://download.pytorch.org/whl/cpu
+if not errorlevel 1 goto CHECK_WHISPER
+echo Online Granite 2B install failed, trying offline wheels...
+"%~dp0venv\Scripts\python.exe" -m pip install --no-index --find-links="%~dp0wheels" -r requirements-granite2b.txt
+if errorlevel 1 echo Warning: Granite 2B deps failed. Other engines still work.
 :CHECK_WHISPER
 if not defined NEED_WHISPER goto CHECK_QWEN
 if not exist "requirements-whisper.txt" goto CHECK_QWEN

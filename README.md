@@ -1,13 +1,15 @@
 # PolyglotSTT
 
 Offline, on-device speech-to-text for Windows: hold-to-talk live dictation
-plus video/audio-to-SRT subtitle generation. Five engines, multilingual
-transcription — and **translation to English** on Whisper and Canary-1B.
-No API keys, no cloud, no admin rights needed once set up.
+plus video/audio-to-SRT subtitle generation. Six engines, multilingual
+transcription — and **translation to English** on Whisper, Canary-1B and
+Granite Speech 5.0 2B. No API keys, no cloud, no admin rights needed once
+set up.
 
 > Windows 10/11 only. The app window is titled "MoonshineSTT" (original
 > project name); the repository is named PolyglotSTT because it now covers
-> Moonshine v2, NVIDIA Canary-1B, Whisper, Qwen3-ASR and Granite Speech.
+> Moonshine v2, NVIDIA Canary-1B, Whisper, Qwen3-ASR and the Granite Speech
+> family (470M TurboCTC and 5.0 2B).
 
 ## Engines
 
@@ -18,6 +20,7 @@ No API keys, no cloud, no admin rights needed once set up.
 | Whisper | Full-size Whisper, native timestamps, word-level alignment | ~100 source languages; `transcribe` keeps source, `translate` outputs English |
 | Qwen3-ASR | 1.7B GGUF ASR (Q8_0 → Q4_K_M), 30 languages, transcription only | 30 languages incl. zh/yue/ja/ko/ar/hi/th/vi/tr/… ; keeps the spoken language |
 | Granite 5.0 TurboCTC | 470M GGUF CTC ASR (Q8_0 → Q4_K_M), English only, transcription only | English |
+| Granite Speech 5.0 2B | 2B speech-LLM, punctuation + keyword biasing, translate to English | en/fr/de/es/pt/ja (`auto` or pinned); English output |
 
 **Turbo is transcription-only.** OpenAI trained `large-v3-turbo` on
 transcription data only, explicitly excluding translation data — its
@@ -38,6 +41,19 @@ and notes you intend to read. It also has no vocabulary or prompt input, so
 the Dictionary does not apply to it. The GUI only offers each engine the
 languages it can actually do.
 
+**Granite Speech 5.0 2B is the accurate multilingual sibling.** It is a full
+speech-LLM (conformer encoder + projector + Granite 4.0 1B), so unlike the
+470M CTC model it produces punctuation and capitalisation, accepts the
+Dictionary as real keyword biasing (up to 2000 terms plus free-text
+context), and can translate into English from all six spoken languages. It
+has no timestamps, so SRT and Import run it over VAD chunks like
+Canary/Qwen3-ASR, and it is CPU-slow for its size: expect roughly 0.9x
+realtime on the float32 CPU path. Two backends are offered: the default
+Transformers snapshot (4.8 GB, the most accurate, works on CPU and CUDA) and
+optional llama.cpp GGUF builds (Q8_0 3.0 GB and Q6_K 2.6 GB on disk, about
+3x faster here and much lighter in RAM). The GGUFs are downloaded only when
+picked; the Transformers snapshot stays the default.
+
 ## GPU acceleration (automatic)
 
 CPU is the default and always works. When an NVIDIA dedicated GPU is
@@ -57,6 +73,10 @@ Moonshine stay on CPU.
   (`qwen3_asr: using vulkan backend: Vulkan0`).
 - **Granite** → same `transcribe.cpp` backend choice as Qwen3-ASR
   (`granite5_ctc: using vulkan backend: Vulkan0`).
+- **Granite 2B** → CUDA `bfloat16` when the GPU has room, float32 on CPU
+  (consumer CPUs emulate bf16, which measured about 12x slower than float32
+  here). The GGUF variants run on CPU through llama.cpp. `GRANITE2B_DTYPE`
+  overrides the dtype for experiments.
 - The SRT log states the chosen device per job, e.g.
   `Transcribing … (translate ja->en, cuda float16, native timestamps)`.
 - `setup.bat` installs a CUDA torch build automatically when an NVIDIA
@@ -76,9 +96,10 @@ Moonshine stay on CPU.
    follows the engine: Moonshine sizes, downloadable Whisper sizes (Tiny
    75MB → Large v3 3GB; Large v3 Turbo 1.6GB, fetched once on first pick),
    the fixed Canary-1B, Qwen3-ASR 1.7B in Q8_0 (2.2GB, default) →
-   Q6_K (1.7GB) → Q5_K_M (1.5GB) → Q4_K_M (1.3GB), or Granite 5.0
+   Q6_K (1.7GB) → Q5_K_M (1.5GB) → Q4_K_M (1.3GB), Granite 5.0
    TurboCTC 470M in Q8_0 (506MB, default) → Q6_K (392MB) → Q5_K_M (336MB)
-   → Q4_K_M (279MB). Whisper generations: v1
+   → Q4_K_M (279MB), or Granite Speech 5.0 2B (4.8GB Transformers default,
+   Q8_0 3.0GB, Q6_K 2.6GB). Whisper generations: v1
    oldest, v2 middle, v3
    newest and best. Large v3 is ~3GB; Large v3 Turbo is ~1.6GB and
    transcription-only. The bare Large entry is gone: the installed
@@ -86,14 +107,17 @@ Moonshine stay on CPU.
    pure duplication (saved "large" configs switch to Large v3, no
    re-download).
   Recording is politely refused for a moment while a model is swapping.
-- **Dictionary (Whisper / Qwen3-ASR)** — the Live tab's *Dictionary: Edit…*
-  button opens a shared word list plus optional context text. Add, edit or
-  delete terms; tick which engines should use them. Whisper receives them as
-  `hotwords` + `initial_prompt` (its decoder keeps 223 tokens), Qwen3-ASR as a
-  priority-ordered `vocabulary` + `prompt`. If the list is too long for an
+- **Dictionary (Whisper / Qwen3-ASR / Granite 2B)** — the Live tab's
+  *Dictionary: Edit…* button opens a shared word list plus optional context
+  text. Add, edit or delete terms; tick which engines should use them. Whisper
+  receives them as `hotwords` + `initial_prompt` (its decoder keeps 223
+  tokens), Qwen3-ASR as a priority-ordered `vocabulary` + `prompt`, and
+  Granite 2B as the model card's `Keywords: …` instruction (up to 2000
+  terms) with the context appended. If the list is too long for an
   enabled engine the dialog asks whether to trim it, keep it (extra terms are
   ignored) or go back and edit; engines that are not installed are greyed out.
-  Moonshine v2 and Canary-1B have no equivalent knob, so they are not offered.
+  Moonshine v2, Canary-1B and Granite TurboCTC have no equivalent knob, so
+  they are not offered.
 - **SRT File tab** — queue one or many video/audio files (batch runs one by
   one, failures don't stop the queue), pick an output folder, generate
   `.srt` with live progress bar, per-file status list, per-chunk log,
@@ -195,7 +219,8 @@ Moonshine stay on CPU.
 - Disk for models (see below) and patience on first run (large downloads).
 - ~16 GB RAM if you use Canary-1B; ~4 GB free for Qwen3-ASR (2.8 GB
   resident for the default Q8_0 model), ~1 GB free for Granite (700 MB
-  resident). Whisper runs on CPU:
+  resident), ~7 GB free for Granite 2B in Transformers form (or ~3 GB for
+  its Q8_0/Q6_K GGUF builds). Whisper runs on CPU:
   large-v3-turbo is the fast default for transcription; large-v3 is slower
   but supports translation.
 
@@ -211,11 +236,15 @@ run_windowless.vbs :: same, with no console window at all (needs venv set up)
 
 `setup.bat` installs online with `pip`, falling back to a local `wheels\`
 folder when present, then caches wheels there for fully-offline reinstalls.
-It installs the base, Whisper, Canary, and Qwen3-ASR dependency groups; the
-Canary group is large, and setup warns but continues if it cannot be
-installed. Qwen3-ASR needs `transcribe-cpp` + `transcribe-cpp-native`
+It installs the base, Whisper, Canary, Qwen3-ASR and Granite 2B dependency
+groups; the Canary group is large, and setup warns but continues if it cannot
+be installed. Qwen3-ASR needs `transcribe-cpp` + `transcribe-cpp-native`
 (`requirements-qwen.txt`), whose native wheel bundles the CPU and Vulkan
-backends — no CUDA toolkit required.
+backends — no CUDA toolkit required. Granite 2B needs `torch` +
+`transformers` + `torchaudio` (`requirements-granite2b.txt`, CPU wheels by
+default); its GGUF variants need no Python packages beyond
+`huggingface_hub`, because they run on a pinned llama.cpp build that the
+engine fetches on first use.
 
 **Portable / offline copy:** `make_portable_zip.bat` builds
 `..\PolyglotSTT-portable.zip` with the source, the bundled `python\`
@@ -251,6 +280,8 @@ connection — grab them manually:
 | `mobiuslabsgmbh/faster-whisper-large-v3-turbo` | ~1.6 GB | <https://huggingface.co/mobiuslabsgmbh/faster-whisper-large-v3-turbo> — fast default for `transcribe`; **cannot translate by design**, so the app blocks it in `translate` mode | `models_cache\whisper-models\` |
 | `handy-computer/Qwen3-ASR-1.7B-gguf` | 2.2 GB (Q8_0) / 1.7 / 1.5 / 1.3 GB | <https://huggingface.co/handy-computer/Qwen3-ASR-1.7B-gguf> — single `.gguf` files, auto-downloaded on first pick; drop `Qwen3-ASR-1.7B-Q8_0.gguf` (or any quant) at `models_cache\qwen3-asr\` for fully-offline use | `models_cache\qwen3-asr\` |
 | `handy-computer/granite-speech-5.0-470m-turboctc-gguf` | 506 MB (Q8_0) / 392 / 336 / 279 MB | <https://huggingface.co/handy-computer/granite-speech-5.0-470m-turboctc-gguf> — single `.gguf` files, auto-downloaded on first pick; drop `granite-speech-5.0-470m-turboctc-Q8_0.gguf` at `models_cache\granite\` for fully-offline use. Apache-2.0, English only. | `models_cache\granite\` |
+| `ibm-granite/granite-speech-5.0-2b` | ~4.8 GB (Transformers snapshot) | <https://huggingface.co/ibm-granite/granite-speech-5.0-2b> — the default Granite 2B backend, auto-downloaded on first pick. Apache-2.0, en/fr/de/es/pt/ja, punctuated output, translates to English. | `models_cache\granite-2b\` (+ `models_cache\huggingface\`) |
+| `ibm-granite/granite-speech-5.0-2b-GGUF` | 3.0 GB (Q8_0) / 2.6 GB (Q6_K), each incl. the 1.1 GB f16 audio projector | <https://huggingface.co/ibm-granite/granite-speech-5.0-2b-GGUF> — optional llama.cpp builds, downloaded only when picked. The engine also fetches the pinned llama.cpp `b9768` CPU runtime (~17 MB) once. | `models_cache\granite-2b-gguf\` and `models_cache\llama.cpp\b9768\` |
 
 `ffmpeg` ships via the `imageio-ffmpeg` wheel (no system install needed).
 Everything the app needs lives inside the project folder (except the
@@ -349,10 +380,12 @@ whisper_engine.py  Faster-Whisper wrapper (large-v3 / turbo, per-call task/lang 
 qwen_engine.py     Qwen3-ASR wrapper (transcribe.cpp GGUF, 30 languages, no timestamps)
 granite_engine.py  Granite Speech 5.0 TurboCTC wrapper (transcribe.cpp GGUF,
                  English only, fastest, no punctuation/timestamps)
+granite2b_engine.py Granite Speech 5.0 2B wrapper (Transformers default, optional
+                 Q8_0/Q6_K GGUF on a pinned llama.cpp server, keyword biasing)
 gpu.py             dGPU/VRAM/NVENC detection, device recommendation
 setup.bat          one-click setup (venv, deps, wheels cache, Moonshine model)
 run.bat            one-click launch (dependency self-check)
-requirements*.txt  dependency pins (base / Canary / Whisper)
+requirements*.txt  dependency pins (base / Canary / Whisper / Qwen / Granite 2B)
 ```
 
 ## Troubleshooting
@@ -395,6 +428,49 @@ requirements*.txt  dependency pins (base / Canary / Whisper)
   and reburn to relearn.
 
 ## Changelog
+
+### v1.6
+
+New sixth engine: **Granite Speech 5.0 2B** (IBM, Apache-2.0) — the
+speech-LLM sibling of the 470M TurboCTC model, added as its own engine kind
+(next to `Granite`, not as another quant of it) in the Live, SRT, Note and
+Import tabs.
+
+- **Two backends, one engine.** The default is the Hugging Face Transformers
+  snapshot (~4.8 GB) at `models_cache\granite-2b`, which runs float32 on CPU
+  and bfloat16 on CUDA. Optional **Q8_0** (3.0 GB) and **Q6_K** (2.6 GB) GGUF
+  builds run through the pinned llama.cpp `b9768` CPU runtime and are
+  downloaded only when picked, so they add to rather than replace the
+  Transformers model.
+- **Dictionary and prompt actually work.** Terms reach the model as the model
+  card's `Keywords: <term>, …` instruction (up to 2000, with the live count in
+  the dictionary panel) and free-text context is sent as `Context: …`.
+- **Prompt order is load-bearing.** The model follows the last instruction,
+  so the wording is `Keywords: …` → `Context: …` → language sentence →
+  "proper punctuation and capitalization". Putting the context *after* the
+  punctuation request made it return all-lowercase text and lowercase the
+  keyword it had just been given. Leading capitals are also restored
+  deterministically after decoding, so lowercase-prompted translations can no
+  longer start mid-sentence.
+- **CPU speed, measured.** Transformers float32 runs at about **1.0x realtime**
+  on this machine (0.85–1.0x depending on clip; bfloat16 on CPU was ~3x slower
+  because it is emulated). GGUF Q8_0 warms to ~**4.3x realtime** and Q6_K to
+  ~**4.8x**, at ~2.9 GB / 2.4 GB resident versus ~6.4 GB for Transformers — the
+  GGUFs are labelled faster but slightly less accurate, since their keyword
+  biasing is looser ("Polyglot stt" instead of exact "PolyglotSTT").
+- **Six languages, English-only output.** en/fr/de/es/pt/ja are auto-detected
+  or pinned, and translation targets English only (the model's en→it/zh paths
+  are intentionally not exposed). Output is already punctuated and
+  capitalised.
+- **No timestamps, as before.** SRT derives cue boundaries from VAD chunking
+  exactly as it does for Canary-1B, Qwen3-ASR and the 470M Granite, and
+  segments longer than ~110 s are split internally at low-energy cuts as the
+  model card recommends.
+- **New dependency group.** `requirements-granite2b.txt` (torch, torchaudio,
+  transformers) keeps the Granite-only install lean instead of pulling NeMo in
+  with Canary's group. `setup.bat` now installs matching CUDA `torch` **and**
+  `torchaudio` wheels when a GPU is chosen, avoiding the ABI mismatch that a
+  torch-only install could cause.
 
 ### v1.5
 
