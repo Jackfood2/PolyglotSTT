@@ -3,15 +3,15 @@ setlocal EnableExtensions
 cd /d "%~dp0"
 
 rem ============================================================
-rem  PolyglotSTT v1.6 - offline update builder
+rem  PolyglotSTT v1.6.1 - offline update builder
 rem
 rem  Run this on the ONLINE machine where PolyglotSTT is
 rem  installed and working. It produces, next to this folder:
 rem
-rem     PolyglotSTT-update-v1.6-offline\      (the package)
-rem     PolyglotSTT-update-v1.6-offline.zip   (same, zipped)
+rem     PolyglotSTT-update-v1.6.1-offline\      (the package)
+rem     PolyglotSTT-update-v1.6.1-offline.zip   (same, zipped)
 rem
-rem  The package carries the v1.6 source, a portable Python
+rem  The package carries the v1.6.1 source, a portable Python
 rem  3.11 runtime, every dependency wheel and the two Granite
 rem  models, so apply_offline_update.bat can upgrade a
 rem  1.4.16 / 1.4.17 / 1.4.18 / 1.5 install with no internet.
@@ -24,8 +24,8 @@ rem
 rem  Usage:  make_offline_update.bat [--no-pause]
 rem ============================================================
 
-set "PKG_VER=1.6"
-set "PKG_NAME=PolyglotSTT-update-v1.6-offline"
+set "PKG_VER=1.6.1"
+set "PKG_NAME=PolyglotSTT-update-v1.6.1-offline"
 set "OUTDIR=%~dp0..\%PKG_NAME%"
 set "ZIP=%~dp0..\%PKG_NAME%.zip"
 set "PY=%~dp0venv\Scripts\python.exe"

@@ -255,7 +255,7 @@ and does not survive being moved. `models_cache\` is not included; copy it
 across, or let the engines download on first use where there is internet.
 
 **Updating an existing install with no internet:** `make_offline_update.bat`
-upgrades a 1.4.16 / 1.4.17 / 1.4.18 / 1.5 install to 1.6. Run it on a machine
+upgrades a 1.4.16 / 1.4.17 / 1.4.18 / 1.5 / 1.6 install to 1.6.1. Run it on a machine
 that has PolyglotSTT working and has internet: it audits `wheels\` against
 every requirements file, re-downloads whatever cannot resolve offline,
 rebuilds a portable `python\` runtime, stages the source, wheels and the
@@ -450,6 +450,27 @@ requirements*.txt  dependency pins (base / Canary / Whisper / Qwen / Granite 2B)
   and reburn to relearn.
 
 ## Changelog
+
+### v1.6.1
+
+Offline-update fixes on top of v1.6; the engines and the transcription
+behaviour are unchanged.
+
+- **Desktop audio is verified after an offline update.** The `soundcard`
+  wheel was already bundled and installed, but `apply_offline_update.bat`
+  left it out of its post-install import check, so a desktop-audio failure
+  only surfaced later as a silent "no system audio" in the app. The check
+  now reports `OK desktop audio` or `MISS desktop audio` with the rest of
+  the modules.
+- **The offline update workflow is documented.** `make_offline_update.bat`
+  (build the package on the online machine) and `apply_offline_update.bat`
+  (apply it on the offline one) are described in the README, including that
+  these model-bearing packages are built locally and never hosted on GitHub.
+  The stale `wheels\freeze.txt` claim is gone: with
+  `pip --no-index --find-links` the bundled wheel set is itself the pin.
+- **The package name carries the patch version**, so
+  `PolyglotSTT-update-v1.6.1-offline` is built next to an existing v1.6
+  package instead of over it.
 
 ### v1.6
 

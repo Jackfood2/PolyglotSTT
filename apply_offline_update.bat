@@ -3,10 +3,10 @@ setlocal EnableExtensions
 cd /d "%~dp0"
 
 rem ============================================================
-rem  PolyglotSTT v1.6 - offline updater
+rem  PolyglotSTT v1.6.1 - offline updater
 rem
 rem  Upgrades an existing PolyglotSTT 1.4.16 / 1.4.17 / 1.4.18
-rem  / 1.5 install to 1.6 with NO internet access.
+rem  / 1.5 / 1.6 install to 1.6.1 with NO internet access.
 rem
 rem  Run this from the extracted package folder. It finds the
 rem  install next to it, or use:
@@ -18,7 +18,7 @@ rem    1. checks the package carries every wheel + model it needs
 rem    2. checks the target is a PolyglotSTT folder and notes its
 rem       current version
 rem    3. backs up the settings file
-rem    4. copies the v1.6 source, wheels, Python runtime and the
+rem    4. copies the v1.6.1 source, wheels, Python runtime and the
 rem       Granite models into the target
 rem    5. rebuilds venv\ offline and verifies the imports
 rem
@@ -26,7 +26,7 @@ rem  Your models_cache\, notes_audio\ and settings are kept.
 rem  Usage:  apply_offline_update.bat [target] [--no-pause]
 rem ============================================================
 
-set "PKG_VER=1.6"
+set "PKG_VER=1.6.1"
 set "TARGET="
 set "NO_PAUSE="
 for %%a in (%*) do (
