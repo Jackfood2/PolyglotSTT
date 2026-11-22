@@ -28,6 +28,7 @@ class LiveTabMixin:
         self.output_text.delete("1.0", "end")
         self.output_text.insert("1.0", "Cleared.")
         self.output_text.configure(state="disabled")
+        self._refresh_history_count()
 
     def _copy_last(self):
         from input_sim import copy_to_clipboard
@@ -91,6 +92,7 @@ class LiveTabMixin:
             import datetime
             ts = datetime.datetime.now().strftime("%H:%M:%S")
             self.history.add_entry(text, ts)
+            self._refresh_history_count()
 
     def update_level(self, level: float):
         self.meter.set_level(level)
@@ -166,6 +168,7 @@ class LiveTabMixin:
             self.refresh_lang_options(value)
         except Exception:
             pass
+        self._update_live_summary()
 
     def _sync_task_menu(self, engine_kind):
         """Offer only the tasks this engine can actually perform.
@@ -229,11 +232,13 @@ class LiveTabMixin:
         self._refresh_srt_engine_label()
         if self._canary_task_callback:
             self._canary_task_callback(value)
+        self._update_live_summary()
 
     def _on_canary_lang_changed(self, value):
         self._refresh_srt_engine_label()
         if self._canary_lang_callback:
             self._canary_lang_callback(value)
+        self._update_live_summary()
 
     def set_settings(self, method: str, suffix: str, method_cb: Callable, suffix_cb: Callable,
                      itn: bool = True, hint: bool = True,
@@ -285,9 +290,12 @@ class LiveTabMixin:
 
     def set_model_title(self, engine_name: str):
         try:
-            self.model_title_label.configure(text=f"Model ({engine_name}):")
+            # The engine name is already visible in the engine menu; the
+            # caption stays short so it cannot widen the config card.
+            self.model_title_label.configure(text="Model")
         except Exception:
             pass
+        self._update_live_summary()
 
     def set_model_manage_callback(self, cb: Callable):
         self._model_manage_cb = cb if callable(cb) else None
@@ -315,6 +323,7 @@ class LiveTabMixin:
             self.dict_status_label.configure(text=str(text or "Dictionary off"))
         except Exception:
             pass
+        self._update_live_summary()
 
     def set_unload_callback(self, cb: Callable):
         self._unload_cb = cb if callable(cb) else None
@@ -352,6 +361,7 @@ class LiveTabMixin:
             self.refresh_lang_options(engine)
         except Exception:
             pass
+        self._update_live_summary()
 
     def set_model_status(self, text: str, color: str = WARNING):
         self.set_status(text, color)
@@ -419,5 +429,161 @@ class LiveTabMixin:
                 self.mic_frame.grid()
             else:
                 self.mic_frame.grid_remove()
+        except Exception:
+            pass
+
+    # ------------------------------------------------------------------
+    # Live layout: collapsible setup + responsive card arrangement
+    # ------------------------------------------------------------------
+    def _toggle_setup(self):
+        self._set_setup(not bool(getattr(self, "_setup_expanded", False)))
+
+    def _set_setup(self, expanded: bool, relayout: bool = True):
+        prev = bool(getattr(self, "_setup_expanded", False))
+        self._setup_expanded = bool(expanded)
+        frame = getattr(self, "live_setup_frame", None)
+        try:
+            if frame is not None:
+                if self._setup_expanded:
+                    frame.grid(row=5, column=0, columnspan=2, sticky="ew",
+                               padx=0, pady=(0, 2))
+                else:
+                    frame.grid_remove()
+        except Exception:
+            pass
+        # The waveform is decoration; hiding it while Setup is open keeps
+        # the history readable on a small window.
+        try:
+            if self._setup_expanded:
+                self.waveform.grid_remove()
+            else:
+                self.waveform.grid()
+        except Exception:
+            pass
+        try:
+            self.setup_btn.configure(
+                text="\u2699 Setup \u25B4" if self._setup_expanded
+                else "\u2699 Setup \u25BE")
+        except Exception:
+            pass
+        if relayout and self._setup_expanded != prev:
+            self._apply_live_layout(force=True)
+
+    def _on_live_configure(self, event=None):
+        live = getattr(self, "_live_frame", None)
+        if live is None:
+            return
+        if event is not None and getattr(event, "widget", None) is not live:
+            return
+        try:
+            if getattr(self, "_live_fit_after", None) is not None:
+                self.after_cancel(self._live_fit_after)
+        except Exception:
+            pass
+        try:
+            self._live_fit_after = self.after(140, self._apply_live_layout)
+        except Exception:
+            self._live_fit_after = None
+
+    def _apply_live_layout(self, mode=None, force=False):
+        """Stack the cards on a narrow window, split them in two columns
+        when there is room. History always keeps the slack height."""
+        live = getattr(self, "_live_frame", None)
+        if live is None:
+            return
+        self._live_fit_after = None
+        if mode is None:
+            try:
+                width = int(live.winfo_width())
+            except Exception:
+                width = 0
+            mode = "wide" if width >= 720 else "narrow"
+        if not force and mode == getattr(self, "_live_layout_mode", None):
+            return
+        self._live_layout_mode = mode
+        cards = []
+        for name in ("live_config_card", "live_record_card",
+                     "live_output_card", "live_history_card"):
+            w = getattr(self, name, None)
+            if w is None:
+                return
+            cards.append(w)
+        config, record, output, history = cards
+        try:
+            for w in cards:
+                w.grid_remove()
+            for r in range(6):
+                live.grid_rowconfigure(r, weight=0, minsize=0)
+            for c in range(3):
+                live.grid_columnconfigure(c, weight=0, minsize=0)
+            # While Setup is open the last-transcription card is hidden:
+            # the history is the part that must stay readable.
+            setup_open = bool(getattr(self, "_setup_expanded", False))
+            if mode == "wide":
+                live.grid_columnconfigure(0, weight=3, minsize=380)
+                live.grid_columnconfigure(1, weight=2, minsize=300)
+                live.grid_rowconfigure(2, weight=1, minsize=140)
+                config.grid(row=0, column=0, sticky="ew",
+                            padx=(8, 4), pady=(0, 6))
+                record.grid(row=1, column=0, sticky="new",
+                            padx=(8, 4), pady=(0, 6))
+                if not setup_open:
+                    output.grid(row=2, column=0, sticky="nsew",
+                                padx=(8, 4), pady=(0, 8))
+                history.grid(row=0, column=1, rowspan=3, sticky="nsew",
+                             padx=(4, 8), pady=(0, 8))
+            else:
+                live.grid_columnconfigure(0, weight=1)
+                config.grid(row=0, column=0, sticky="ew",
+                            padx=8, pady=(0, 6))
+                record.grid(row=1, column=0, sticky="ew",
+                            padx=8, pady=(0, 6))
+                if setup_open:
+                    live.grid_rowconfigure(2, weight=1, minsize=160)
+                    history.grid(row=2, column=0, sticky="nsew",
+                                 padx=8, pady=(0, 8))
+                else:
+                    live.grid_rowconfigure(2, weight=1, minsize=110)
+                    live.grid_rowconfigure(3, weight=3, minsize=150)
+                    output.grid(row=2, column=0, sticky="nsew",
+                                padx=8, pady=(0, 6))
+                    history.grid(row=3, column=0, sticky="nsew",
+                                 padx=8, pady=(0, 8))
+        except Exception:
+            pass
+        # grid_remove on the parent card does not un-hide the setup frame,
+        # but its state must be re-applied after the card is re-gridded.
+        self._set_setup(bool(getattr(self, "_setup_expanded", False)),
+                        relayout=False)
+
+    def _update_live_summary(self):
+        parts = []
+        try:
+            parts.append(str(self.canary_task_var.get() or "transcribe"))
+        except Exception:
+            pass
+        try:
+            parts.append(str(self.canary_lang_var.get() or "Auto-detect"))
+        except Exception:
+            pass
+        try:
+            parts.append(str(self.dict_status_label.cget("text")
+                             or "Dictionary off"))
+        except Exception:
+            pass
+        try:
+            self.live_summary_label.configure(
+                text="  \u00b7  ".join(p for p in parts if p))
+        except Exception:
+            pass
+
+    def _refresh_history_count(self):
+        try:
+            n = self.history.count()
+        except Exception:
+            n = 0
+        try:
+            self.history_count_label.configure(
+                text=f"{n} entr{'y' if n == 1 else 'ies'}")
         except Exception:
             pass

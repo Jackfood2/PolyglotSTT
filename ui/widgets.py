@@ -7,6 +7,8 @@
 import math
 import time
 
+import tkinter as tk
+
 import customtkinter as ctk
 
 from . import theme as _t
@@ -162,14 +164,47 @@ class StatusBadge(ctk.CTkFrame):
 
 
 class HistoryPanel(ctk.CTkScrollableFrame):
+    """Selectable transcription history.
+
+    Each entry is a read-only tk.Text (selectable, Ctrl+C works even when
+    disabled) instead of a Label, so long transcripts can be read and
+    copied directly. Long entries are capped at MAX_LINES and can be opened
+    in a resizable window from the Expand button.
+    """
+
     MAX_ENTRIES = 100
+    MAX_LINES = 6
+    EMPTY_TEXT = ("No transcriptions yet.\n"
+                  "Hold F2, speak, release \u2014 each transcript appears "
+                  "here.\nClick the text to select it, or use Copy / Expand.")
 
     def __init__(self, master, **kwargs):
         super().__init__(master, fg_color=_t.BG_INPUT, corner_radius=12,
                          scrollbar_button_color=_t.ACCENT, **kwargs)
         self._entries = []
         self._texts: list[str] = []
+        self._boxes = []
+        self._more_btns = []
+        self._refit_after = None
+        self._empty = None
+        self._show_empty()
+        try:
+            self.bind("<Configure>", self._on_resize, add="+")
+        except Exception:
+            pass
 
+    # -- empty state ---------------------------------------------------
+    def _show_empty(self):
+        try:
+            if self._empty is None:
+                self._empty = ctk.CTkLabel(
+                    self, text=self.EMPTY_TEXT, font=("Segoe UI", 10),
+                    text_color=_t.FG_DIM, justify="left")
+            self._empty.pack(padx=12, pady=18)
+        except Exception:
+            pass
+
+    # -- clipboard -----------------------------------------------------
     def _copy_text(self, text: str) -> bool:
         """Copy to OS clipboard. Never raises."""
         try:
@@ -198,7 +233,7 @@ class HistoryPanel(ctk.CTkScrollableFrame):
             if ts_label is not None and timestamp:
                 if ok:
                     ts_label.configure(
-                        text=f"{timestamp}   •   Copied ✓",
+                        text=f"{timestamp}   \u2022   Copied \u2713",
                         text_color=_t.theme_color(_t.SUCCESS))
                     try:
                         self.after(1200, lambda: self._restore_ts(
@@ -234,33 +269,148 @@ class HistoryPanel(ctk.CTkScrollableFrame):
         except Exception:
             return 0
 
-    def add_entry(self, text: str, timestamp: str):
-        entry_frame = ctk.CTkFrame(self, fg_color=_t.BG_CARD, corner_radius=8,
-                                   cursor="hand2")
-        entry_frame.pack(fill="x", padx=4, pady=3)
-        ts_label = ctk.CTkLabel(entry_frame, text=timestamp,
-                                font=("Segoe UI", 10), text_color=_t.FG_DIM)
-        ts_label.pack(anchor="w", padx=8, pady=(6, 0))
-        text_label = ctk.CTkLabel(entry_frame, text=text,
-                                  font=("Consolas", 12),
-                                  text_color=_t.FG_PRIMARY,
-                                  wraplength=360, justify="left")
-        text_label.pack(anchor="w", padx=8, pady=(2, 6))
-        # Click anywhere on the entry copies that entry's text.
+    def count(self) -> int:
         try:
-            _cb = lambda _e=None, _t=text, _l=ts_label, _ts=timestamp: \
-                self._copy_one(_t, _l, _ts)
-            entry_frame.bind("<Button-1>", _cb)
-            ts_label.bind("<Button-1>", _cb)
-            text_label.bind("<Button-1>", _cb)
+            return len(self._texts)
+        except Exception:
+            return 0
+
+    # -- entry sizing --------------------------------------------------
+    def _on_resize(self, event=None):
+        if event is not None and getattr(event, "widget", None) is not self:
+            return
+        try:
+            if self._refit_after is not None:
+                self.after_cancel(self._refit_after)
+        except Exception:
+            pass
+        try:
+            self._refit_after = self.after(120, self._refit_all)
+        except Exception:
+            self._refit_after = None
+
+    def _refit_all(self):
+        self._refit_after = None
+        for box, text, more in zip(list(self._boxes), list(self._texts),
+                                   list(self._more_btns)):
+            try:
+                self._size_box(box, text, more)
+            except Exception:
+                pass
+
+    def _size_box(self, box, text, more_btn=None):
+        try:
+            import tkinter.font as _font
+            f = _font.Font(font=box.cget("font"))
+            cw = max(6, int(f.measure("0") or 7))
+        except Exception:
+            cw = 7
+        try:
+            w = int(box.winfo_width())
+            if w <= 2:
+                w = max(120, int(self.winfo_width()) - 40)
+        except Exception:
+            w = 240
+        cpl = max(12, int(w / cw))
+        total = 0
+        for para in (str(text).splitlines() or [""]):
+            total += max(1, int(math.ceil(len(para) / float(cpl))))
+        lines = max(1, min(self.MAX_LINES, total))
+        try:
+            box.configure(height=lines)
+        except Exception:
+            pass
+        try:
+            if more_btn is not None:
+                more_btn.configure(text="Show all" if total > lines
+                                   else "Expand")
+        except Exception:
+            pass
+
+    # -- interaction ---------------------------------------------------
+    @staticmethod
+    def _select_all(event=None):
+        try:
+            w = event.widget
+            w.tag_add("sel", "1.0", "end-1c")
+            w.mark_set("insert", "1.0")
+        except Exception:
+            pass
+        return "break"
+
+    def _wheel_outer(self, event=None):
+        """The read-only text boxes never scroll themselves; send the
+        wheel to the history list instead of swallowing it."""
+        try:
+            delta = int(getattr(event, "delta", 0) or 0)
+        except Exception:
+            delta = 0
+        step = -3 if delta > 0 else 3
+        try:
+            self._parent_canvas.yview_scroll(step, "units")
+        except Exception:
+            try:
+                self._canvas.yview_scroll(step, "units")
+            except Exception:
+                pass
+        return "break"
+
+    # -- entries -------------------------------------------------------
+    def add_entry(self, text: str, timestamp: str):
+        try:
+            if self._empty is not None:
+                self._empty.pack_forget()
+                self._empty.destroy()
+        except Exception:
+            pass
+        self._empty = None
+        entry_frame = ctk.CTkFrame(self, fg_color=_t.BG_CARD, corner_radius=8)
+        entry_frame.pack(fill="x", padx=4, pady=3)
+        head = ctk.CTkFrame(entry_frame, fg_color="transparent")
+        head.pack(fill="x", padx=8, pady=(6, 0))
+        ts_label = ctk.CTkLabel(head, text=timestamp,
+                                font=("Segoe UI", 10), text_color=_t.FG_DIM)
+        ts_label.pack(side="left")
+        expand_btn = ctk.CTkButton(
+            head, text="Expand", width=64, height=20, font=("Segoe UI", 9),
+            fg_color="transparent", hover_color=_t.BTN_DIM, corner_radius=6,
+            text_color=_t.FG_DIM,
+            command=lambda _t=text, _ts=timestamp: self._show_full(_t, _ts))
+        expand_btn.pack(side="right")
+        copy_btn = ctk.CTkButton(
+            head, text="Copy", width=46, height=20, font=("Segoe UI", 9),
+            fg_color="transparent", hover_color=_t.BTN_DIM, corner_radius=6,
+            text_color=_t.FG_DIM,
+            command=lambda _t=text, _l=ts_label, _ts=timestamp:
+                self._copy_one(_t, _l, _ts))
+        copy_btn.pack(side="right", padx=(0, 2))
+        box = tk.Text(entry_frame, wrap="word", height=2, width=1,
+                      font=("Consolas", 11), bg=_t.BG_CARD,
+                      fg=_t.FG_PRIMARY, insertbackground=_t.FG_PRIMARY,
+                      selectbackground=_t.ACCENT,
+                      selectforeground=_t.BTN_TEXT,
+                      bd=0, highlightthickness=0, padx=2, pady=4,
+                      cursor="xterm", spacing1=0, spacing3=2)
+        box.insert("1.0", text)
+        box.configure(state="disabled")
+        box.pack(fill="x", padx=8, pady=(2, 6))
+        try:
+            box.bind("<Control-a>", self._select_all)
+            box.bind("<Control-A>", self._select_all)
+            box.bind("<MouseWheel>", self._wheel_outer)
         except Exception:
             pass
         self._entries.append(entry_frame)
         self._texts.append(text)
+        self._boxes.append(box)
+        self._more_btns.append(expand_btn)
+        self._size_box(box, text, expand_btn)
         while len(self._entries) > self.MAX_ENTRIES:
             try:
                 self._entries.pop(0).destroy()
                 self._texts.pop(0)
+                self._boxes.pop(0)
+                self._more_btns.pop(0)
             except Exception:
                 break
         try:
@@ -271,11 +421,70 @@ class HistoryPanel(ctk.CTkScrollableFrame):
             except Exception:
                 pass
 
+    def _show_full(self, text: str, timestamp: str):
+        """Open one entry in a resizable window with a selectable view."""
+        try:
+            top = ctk.CTkToplevel(self.winfo_toplevel())
+            top.title(f"Transcription {timestamp}")
+            top.geometry("620x420")
+            top.configure(fg_color=_t.BG_DARK)
+            top.transient(self.winfo_toplevel())
+            ctk.CTkLabel(top,
+                         text=f"{timestamp}  \u00b7  select the text "
+                              f"or press Ctrl+A / Ctrl+C",
+                         font=("Segoe UI", 10), text_color=_t.FG_DIM
+                         ).pack(anchor="w", padx=14, pady=(12, 4))
+            tb = ctk.CTkTextbox(top, fg_color=_t.BG_INPUT,
+                                text_color=_t.FG_PRIMARY,
+                                font=("Consolas", 12), wrap="word",
+                                corner_radius=8)
+            tb.pack(fill="both", expand=True, padx=12, pady=(0, 8))
+            tb.insert("1.0", text)
+            tb.configure(state="disabled")
+            btns = ctk.CTkFrame(top, fg_color="transparent")
+            btns.pack(fill="x", padx=12, pady=(0, 12))
+            cbtn = ctk.CTkButton(btns, text="Copy", width=90, height=30,
+                                 font=("Segoe UI", 11), fg_color=_t.ACCENT,
+                                 hover_color=_t.ACCENT_DARK,
+                                 text_color=_t.BTN_TEXT, corner_radius=8)
+            cbtn.configure(command=lambda: self._dialog_copy(cbtn, text))
+            cbtn.pack(side="right")
+            ctk.CTkButton(btns, text="Close", width=90, height=30,
+                          font=("Segoe UI", 11), fg_color=_t.BTN_DIM,
+                          hover_color=_t.BTN_DIM_HOVER,
+                          text_color=_t.FG_SECONDARY, corner_radius=8,
+                          command=top.destroy).pack(side="right", padx=(0, 8))
+            try:
+                top.bind("<Escape>", lambda _e=None: top.destroy())
+                top.after(60, top.focus_force)
+            except Exception:
+                pass
+        except Exception:
+            pass
+
+    def _dialog_copy(self, btn, text):
+        try:
+            if self._copy_text(text):
+                btn.configure(text="Copied \u2713")
+                try:
+                    btn.after(1200, lambda: btn.configure(text="Copy"))
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
     def clear(self):
         for entry in self._entries:
-            entry.destroy()
+            try:
+                entry.destroy()
+            except Exception:
+                pass
         self._entries.clear()
         try:
             self._texts.clear()
+            self._boxes.clear()
+            self._more_btns.clear()
         except Exception:
             pass
+        self._empty = None
+        self._show_empty()

@@ -92,7 +92,13 @@ Moonshine stay on CPU.
 
 - **Live tab** — hold `F2` to record, release to transcribe; text is typed
   into the focused window (clipboard fallback), with level meter, waveform,
-  history, and per-engine Task / source-language selectors. The *Model* row
+  history, and per-engine Task / source-language selectors. The layout
+  adapts to the window: stacked cards when narrow, two columns when wide,
+  and a collapsible *Setup* block so Engine/Model stay visible while Task,
+  language, dictionary and typing options fold away. The history panel takes
+  the spare height; every entry is a selectable read-only text field with
+  its own *Copy*, *Show all* and *Expand* (full text in its own window)
+  controls. The *Model* row
    follows the engine: Moonshine sizes, downloadable Whisper sizes (Tiny
    75MB → Large v3 3GB; Large v3 Turbo 1.6GB, fetched once on first pick),
    the fixed Canary-1B, Qwen3-ASR 1.7B in Q8_0 (2.2GB, default) →
@@ -255,7 +261,7 @@ and does not survive being moved. `models_cache\` is not included; copy it
 across, or let the engines download on first use where there is internet.
 
 **Updating an existing install with no internet:** `make_offline_update.bat`
-upgrades a 1.4.16 / 1.4.17 / 1.4.18 / 1.5 / 1.6 install to 1.6.1. Run it on a machine
+upgrades a 1.4.16 / 1.4.17 / 1.4.18 / 1.5 / 1.6 / 1.6.1 install to 1.6.2. Run it on a machine
 that has PolyglotSTT working and has internet: it audits `wheels\` against
 every requirements file, re-downloads whatever cannot resolve offline,
 rebuilds a portable `python\` runtime, stages the source, wheels and the
@@ -450,6 +456,33 @@ requirements*.txt  dependency pins (base / Canary / Whisper / Qwen / Granite 2B)
   and reburn to relearn.
 
 ## Changelog
+
+### v1.6.2
+
+Live-tab layout rebuild. The engine list and transcription behaviour are
+unchanged; this is the UI fix for the history panel being squeezed out of
+view on a normal or maximised window.
+
+- **The history gets the spare height.** The Live tab is now a grid whose
+  record, output and history cards share the available space, with the
+  history taking the slack. It switches to a two-column layout when the
+  window is at least ~720 px wide, so a wide window shows the last
+  transcription and the full history side by side.
+- **Engine and Model are always visible.** Task, source language, dictionary,
+  insert/suffix and the two digit-normalisation checkboxes live in a
+  collapsible **⚙ Setup** block (collapsed by default), with a one-line
+  summary of the current task, language and dictionary state still shown.
+  Opening Setup hides the waveform and the last-transcription card so the
+  history keeps its space on a small window.
+- **History entries are selectable.** Each entry is a read-only text field
+  (mouse selection, `Ctrl+A`, `Ctrl+C`) with *Copy*, *Show all* and
+  *Expand* controls; *Expand* opens the full text in a resizable window.
+  Entries wrap at the real panel width instead of a fixed 360 px, and the
+  list keeps its scroll position at the newest entry.
+- **Fewer cramped controls.** The history header now owns *Copy All* and
+  *Clear*; the last-transcription card owns its *Copy* button; the record
+  card is just the meter, waveform and one full-width RECORD button. The
+  footer is shortened so it no longer clips on a 440 px window.
 
 ### v1.6.1
 

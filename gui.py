@@ -233,7 +233,6 @@ class MoonshineGUI(LiveTabMixin, NoteTabMixin, ImportTabMixin, SrtTabMixin, Dial
         note_tab = self.tabs.add("Note")
         import_tab = self.tabs.add("Import")
         live.grid_columnconfigure(0, weight=1)
-        live.grid_rowconfigure(5, weight=1)
         srt_tab.grid_columnconfigure(0, weight=1)
         srt_tab.grid_rowconfigure(0, weight=1)
         note_tab.grid_columnconfigure(0, weight=1)
@@ -261,20 +260,186 @@ class MoonshineGUI(LiveTabMixin, NoteTabMixin, ImportTabMixin, SrtTabMixin, Dial
                     pass
         except Exception:
             pass
-        record_card = ctk.CTkFrame(live, fg_color=BG_CARD, corner_radius=16)
-        record_card.grid(row=2, column=0, sticky="ew", padx=8, pady=(0, 6))
+        # ---------------------------------------------------------------
+        # Live tab, v1.6.2: compact cards, collapsible Setup block and a
+        # history panel that owns the spare height. LiveTabMixin._apply_live_layout
+        # re-grids these four cards (stacked when narrow, two columns when
+        # the window is wide) so nothing is ever squeezed out of view.
+        # ---------------------------------------------------------------
+        config_card = ctk.CTkFrame(live, fg_color=BG_CARD, corner_radius=14)
+        self.live_config_card = config_card
+        config_card.grid_columnconfigure(0, weight=1)
+        self.setup_btn = ctk.CTkButton(
+            config_card, text="\u2699 Setup \u25BE", width=86, height=28,
+            font=("Segoe UI", 11), fg_color=BTN_DIM,
+            hover_color=BTN_DIM_HOVER, corner_radius=8,
+            text_color=FG_SECONDARY, command=self._toggle_setup)
+        self.setup_btn.grid(row=0, column=1, rowspan=2, sticky="e",
+                            padx=(4, 10), pady=(8, 0))
+        ctk.CTkLabel(config_card, text="Engine", font=("Segoe UI", 9, "bold"),
+                     text_color=FG_DIM, anchor="w").grid(
+            row=0, column=0, sticky="w", padx=(12, 4), pady=(8, 0))
+        self.engine_var = ctk.StringVar(value="Moonshine v2")
+        self.engine_menu = ctk.CTkOptionMenu(
+            config_card, variable=self.engine_var, values=ENGINE_CHOICES,
+            width=160, height=28, fg_color=BG_INPUT, button_color=ACCENT,
+            command=self._on_engine_changed)
+        self.engine_menu.grid(row=1, column=0, sticky="ew",
+                              padx=(12, 4), pady=(1, 4))
+        self.model_title_label = ctk.CTkLabel(
+            config_card, text="Model", font=("Segoe UI", 9, "bold"),
+            text_color=FG_DIM, anchor="w")
+        self.model_title_label.grid(row=2, column=0, columnspan=2,
+                                    sticky="w", padx=(12, 10),
+                                    pady=(2, 0))
+        self.model_var = ctk.StringVar(value="Medium Streaming (110MB, best)")
+        self.model_menu = ctk.CTkOptionMenu(
+            config_card, variable=self.model_var,
+            values=list(MODEL_CHOICES.keys()), width=180, height=28,
+            fg_color=BG_INPUT, button_color=ACCENT,
+            command=self._on_model_changed)
+        self.model_menu.grid(row=3, column=0, columnspan=2, sticky="ew",
+                             padx=(12, 10), pady=(1, 4))
+        self.live_summary_label = ctk.CTkLabel(
+            config_card,
+            text="transcribe  \u00b7  Auto-detect  \u00b7  Dictionary off",
+            font=("Segoe UI", 9), text_color=FG_DIM, anchor="w",
+            cursor="hand2")
+        self.live_summary_label.grid(row=4, column=0, columnspan=2,
+                                     sticky="ew", padx=(12, 10), pady=(0, 6))
+        try:
+            self.live_summary_label.bind(
+                "<Button-1>", lambda _e=None: self._toggle_setup())
+        except Exception:
+            pass
+        setup_frame = ctk.CTkFrame(config_card, fg_color="transparent")
+        self.live_setup_frame = setup_frame
+        setup_frame.grid_columnconfigure(1, weight=1)
+        setup_frame.grid_columnconfigure(3, weight=1)
+        ctk.CTkLabel(setup_frame, text="Task", font=("Segoe UI", 10),
+                     text_color=FG_DIM).grid(
+            row=0, column=0, sticky="w", padx=(12, 4), pady=(2, 4))
+        self.canary_task_var = ctk.StringVar(value="transcribe")
+        self.canary_task_menu = ctk.CTkOptionMenu(
+            setup_frame, variable=self.canary_task_var, values=CANARY_TASKS,
+            width=100, fg_color=BG_INPUT, button_color=ACCENT,
+            command=self._on_canary_task_changed)
+        self.canary_task_menu.grid(row=0, column=1, sticky="ew",
+                                   padx=(4, 8), pady=(2, 4))
+        ctk.CTkLabel(setup_frame, text="Source", font=("Segoe UI", 10),
+                     text_color=FG_DIM).grid(
+            row=0, column=2, sticky="w", padx=(0, 4), pady=(2, 4))
+        self.canary_lang_var = ctk.StringVar(value="Auto-detect")
+        self.canary_lang_menu = ctk.CTkOptionMenu(
+            setup_frame, variable=self.canary_lang_var,
+            values=[SRT_LANG_NAMES[c] for c in CANARY_LANGS], width=116,
+            fg_color=BG_INPUT, button_color=ACCENT,
+            command=self._on_canary_lang_changed)
+        self.canary_lang_menu.grid(row=0, column=3, sticky="ew",
+                                   padx=(4, 12), pady=(2, 4))
+        ctk.CTkLabel(setup_frame, text="Dictionary", font=("Segoe UI", 10),
+                     text_color=FG_DIM).grid(
+            row=1, column=0, sticky="w", padx=(12, 4), pady=4)
+        self.dict_status_label = ctk.CTkLabel(
+            setup_frame, text="Dictionary off", font=("Segoe UI", 10),
+            text_color=FG_DIM, anchor="w")
+        self.dict_status_label.grid(row=1, column=1, columnspan=2,
+                                    sticky="ew", padx=(4, 8), pady=4)
+        self.dictionary_btn = ctk.CTkButton(
+            setup_frame, text="Edit...", width=64, height=26,
+            font=("Segoe UI", 10), fg_color=BTN_DIM,
+            hover_color=BTN_DIM_HOVER, corner_radius=6,
+            text_color=FG_SECONDARY, command=self._on_dictionary)
+        self.dictionary_btn.grid(row=1, column=3, sticky="e",
+                                 padx=(4, 12), pady=4)
+        ctk.CTkLabel(setup_frame, text="Insert via", font=("Segoe UI", 10),
+                     text_color=FG_DIM).grid(
+            row=2, column=0, sticky="w", padx=(12, 4), pady=4)
+        self.method_var = ctk.StringVar(value="clipboard")
+        self.method_menu = ctk.CTkOptionMenu(
+            setup_frame, variable=self.method_var,
+            values=["clipboard", "unicode"], width=104, fg_color=BG_INPUT,
+            button_color=ACCENT, command=self._on_method_changed)
+        self.method_menu.grid(row=2, column=1, sticky="ew",
+                              padx=(4, 8), pady=4)
+        ctk.CTkLabel(setup_frame, text="Suffix", font=("Segoe UI", 10),
+                     text_color=FG_DIM).grid(
+            row=2, column=2, sticky="w", padx=(0, 4), pady=4)
+        self.suffix_var = ctk.StringVar(value="none")
+        self.suffix_menu = ctk.CTkOptionMenu(
+            setup_frame, variable=self.suffix_var,
+            values=["none", "space", "newline", "period_space"], width=104,
+            fg_color=BG_INPUT, button_color=ACCENT,
+            command=self._on_suffix_changed)
+        self.suffix_menu.grid(row=2, column=3, sticky="ew",
+                              padx=(4, 12), pady=4)
+        self.itn_var = ctk.BooleanVar(value=True)
+        self.itn_check = ctk.CTkCheckBox(
+            setup_frame, text="Numbers \u2192 digits",
+            variable=self.itn_var, font=("Segoe UI", 10),
+            text_color=FG_SECONDARY, fg_color=ACCENT,
+            checkbox_width=18, checkbox_height=18,
+            command=self._on_itn_toggled)
+        self.itn_check.grid(row=3, column=0, columnspan=2, sticky="w",
+                            padx=(12, 4), pady=(2, 4))
+        self.itn_hint_var = ctk.BooleanVar(value=True)
+        self.itn_hint_check = ctk.CTkCheckBox(
+            setup_frame, text="Qwen digit prompt",
+            variable=self.itn_hint_var, font=("Segoe UI", 10),
+            text_color=FG_SECONDARY, fg_color=ACCENT,
+            checkbox_width=18, checkbox_height=18,
+            command=self._on_itn_hint_toggled)
+        self.itn_hint_check.grid(row=3, column=2, columnspan=2, sticky="w",
+                                 padx=(0, 12), pady=(2, 4))
+        self.model_manage_btn = ctk.CTkButton(
+            setup_frame, text="Manage models\u2026", width=118,
+            font=("Segoe UI", 10), fg_color=BTN_DIM,
+            hover_color=BTN_DIM_HOVER, height=26, corner_radius=6,
+            text_color=FG_SECONDARY, command=self._on_model_manage)
+        self.model_manage_btn.grid(row=4, column=0, columnspan=2, sticky="w",
+                                   padx=(12, 4), pady=(4, 8))
+        self.live_unload_btn = ctk.CTkButton(
+            setup_frame, text="Unload model", width=112,
+            font=("Segoe UI", 10), fg_color=BTN_DIM,
+            hover_color=BTN_DIM_HOVER, height=26, corner_radius=6,
+            text_color=FG_SECONDARY, command=self._on_live_unload)
+        self.live_unload_btn.grid(row=4, column=2, columnspan=2, sticky="e",
+                                  padx=(4, 12), pady=(4, 8))
+        self._dictionary_cb = None
+        self._engine_callback = None
+        self._canary_task_callback = None
+        self._canary_lang_callback = None
+        self._itn_callback = None
+        self._itn_hint_callback = None
+        self._method_callback = None
+        self._suffix_callback = None
+        self._model_callback = None
+        self._model_manage_cb = None
+        self._unload_cb = None
+        self._model_value_map = {}
+        self._setup_expanded = False
+        setup_frame.grid_remove()
+        # Never let the model dropdown's first value be truncated: it is
+        # the one control whose label is always longer than its menu.
+        try:
+            self.model_menu._dynamic_resizing = False
+        except Exception:
+            pass
+
+        record_card = ctk.CTkFrame(live, fg_color=BG_CARD, corner_radius=14)
+        self.live_record_card = record_card
         record_card.grid_columnconfigure(0, weight=1)
-        self.meter = LevelMeter(record_card, width=280, height=10)
-        self.meter.grid(row=0, column=0, padx=20, pady=(12, 4), sticky="ew")
-        self.waveform = WaveformDisplay(record_card, width=280, height=70)
-        self.waveform.grid(row=1, column=0, padx=16, pady=(8, 4), sticky="ew")
+        self.meter = LevelMeter(record_card, width=280, height=8)
+        self.meter.grid(row=0, column=0, padx=16, pady=(10, 2), sticky="ew")
+        self.waveform = WaveformDisplay(record_card, width=280, height=46)
+        self.waveform.grid(row=1, column=0, padx=12, pady=(4, 2), sticky="ew")
         self.mic_frame = ctk.CTkFrame(record_card, fg_color="transparent")
-        self.mic_frame.grid(row=2, column=0, padx=16, pady=(0, 4), sticky="ew")
-        ctk.CTkLabel(self.mic_frame, text="Mic:", width=30,
-                     font=("Segoe UI", 11), text_color=FG_DIM,
+        self.mic_frame.grid(row=2, column=0, padx=12, pady=(0, 2), sticky="ew")
+        ctk.CTkLabel(self.mic_frame, text="Mic", width=30,
+                     font=("Segoe UI", 10), text_color=FG_DIM,
                      anchor="w").grid(row=0, column=0, sticky="w")
         self.mic_menu = ctk.CTkOptionMenu(
-            self.mic_frame, values=["System default"], width=300, height=28,
+            self.mic_frame, values=["System default"], width=300, height=26,
             fg_color=BG_INPUT, button_color=ACCENT,
             button_hover_color=ACCENT_DARK, text_color=FG_PRIMARY,
             corner_radius=8, command=self._on_mic_changed)
@@ -282,149 +447,76 @@ class MoonshineGUI(LiveTabMixin, NoteTabMixin, ImportTabMixin, SrtTabMixin, Dial
         self.mic_menu.set("System default")
         self.mic_frame.grid_remove()
         btn_frame = ctk.CTkFrame(record_card, fg_color="transparent")
-        btn_frame.grid(row=3, column=0, pady=(8, 12), sticky="ew")
+        btn_frame.grid(row=3, column=0, sticky="ew", padx=12, pady=(6, 10))
         btn_frame.grid_columnconfigure(0, weight=1)
-        btn_frame.grid_columnconfigure(1, weight=1)
-        btn_frame.grid_columnconfigure(2, weight=1)
         self.record_btn = ctk.CTkButton(
-            btn_frame, text="\u25CF  RECORD", font=("Segoe UI", 13, "bold"), width=130,
-            fg_color=ACCENT, hover_color=ACCENT_DARK, height=40,
-            text_color=BTN_TEXT,
-            corner_radius=10, command=self._toggle_record)
-        self.record_btn.grid(row=0, column=0, padx=(16, 4), sticky="ew")
-        self.clear_btn = ctk.CTkButton(
-            btn_frame, text="Clear", font=("Segoe UI", 12), width=80,
-            fg_color=BTN_DIM, hover_color=BTN_DIM_HOVER, height=40,
-            corner_radius=10, text_color=FG_SECONDARY,
-            command=self._clear_history)
-        self.clear_btn.grid(row=0, column=1, padx=4, sticky="ew")
-        self.copy_last_btn = ctk.CTkButton(
-            btn_frame, text="Copy", font=("Segoe UI", 12), width=80,
-            fg_color=BTN_DIM, hover_color=BTN_DIM_HOVER, height=40,
-            corner_radius=10, text_color=FG_SECONDARY,
-            command=self._copy_last)
-        self.copy_last_btn.grid(row=0, column=2, padx=(4, 16), sticky="ew")
-        output_card = ctk.CTkFrame(live, fg_color=BG_CARD, corner_radius=16)
-        output_card.grid(row=3, column=0, sticky="ew", padx=8, pady=(0, 6))
-        output_card.grid_columnconfigure(0, weight=1)
-        ctk.CTkLabel(output_card, text="Last Transcription",
-                     font=("Segoe UI", 11, "bold"), text_color=FG_DIM
-                     ).pack(anchor="w", padx=16, pady=(12, 2))
-        self.output_text = ctk.CTkTextbox(
-            output_card, font=("Consolas", 13), fg_color=BG_INPUT,
-            text_color=FG_PRIMARY, corner_radius=8, height=60,
-            activate_scrollbars=False, wrap="word")
-        self.output_text.pack(fill="x", padx=12, pady=(0, 12))
-        self.output_text.insert("1.0", "Waiting for voice input...")
-        self.output_text.configure(state="disabled")
-        history_label_frame = ctk.CTkFrame(live, fg_color="transparent")
-        history_label_frame.grid(row=4, column=0, sticky="ew", padx=12, pady=(8, 4))
-        ctk.CTkLabel(history_label_frame, text="Transcription History",
+            btn_frame, text="\u25CF  RECORD", font=("Segoe UI", 13, "bold"),
+            width=130, fg_color=ACCENT, hover_color=ACCENT_DARK, height=40,
+            text_color=BTN_TEXT, corner_radius=10,
+            command=self._toggle_record)
+        self.record_btn.grid(row=0, column=0, sticky="ew")
+
+        output_card = ctk.CTkFrame(live, fg_color=BG_CARD, corner_radius=14)
+        self.live_output_card = output_card
+        out_head = ctk.CTkFrame(output_card, fg_color="transparent")
+        out_head.pack(fill="x", padx=12, pady=(8, 2))
+        ctk.CTkLabel(out_head, text="Last Transcription",
                      font=("Segoe UI", 11, "bold"), text_color=FG_DIM
                      ).pack(side="left")
-        ctk.CTkLabel(history_label_frame, text="click an entry to copy",
-                     font=("Segoe UI", 10), text_color=FG_DIM
-                     ).pack(side="left", padx=(8, 0))
-        self.history_copy_all_btn = ctk.CTkButton(
-            history_label_frame, text="Copy All", width=72, height=24,
-            font=("Segoe UI", 11),
+        self.copy_last_btn = ctk.CTkButton(
+            out_head, text="Copy", font=("Segoe UI", 10), width=54, height=22,
             fg_color=BTN_DIM, hover_color=BTN_DIM_HOVER,
-            corner_radius=8, text_color=FG_SECONDARY,
-            command=self._copy_history_all)
-        self.history_copy_all_btn.pack(side="right")
-        self.history = HistoryPanel(live, height=140)
-        self.history.grid(row=5, column=0, sticky="nsew", padx=8, pady=(0, 6))
-        engine_frame = ctk.CTkFrame(live, fg_color=BG_CARD, corner_radius=10)
-        engine_frame.grid(row=0, column=0, sticky="ew", padx=8, pady=(0, 6))
-        engine_frame.grid_columnconfigure(1, weight=1)
-        engine_frame.grid_columnconfigure(3, weight=1)
-        ctk.CTkLabel(engine_frame, text="Engine:", font=("Segoe UI", 10, "bold"), text_color=FG_DIM).grid(row=0, column=0, sticky="w", padx=(12, 4), pady=(8, 2))
-        self.engine_var = ctk.StringVar(value="Moonshine v2")
-        self.engine_menu = ctk.CTkOptionMenu(engine_frame, variable=self.engine_var, values=ENGINE_CHOICES, width=120, fg_color=BG_INPUT, button_color=ACCENT, command=self._on_engine_changed)
-        self.engine_menu.grid(row=0, column=1, columnspan=3, sticky="ew", padx=(4, 12), pady=(8, 2))
-        ctk.CTkLabel(engine_frame, text="Task:", font=("Segoe UI", 10), text_color=FG_DIM).grid(row=1, column=0, sticky="w", padx=(12, 4), pady=(2, 8))
-        self.canary_task_var = ctk.StringVar(value="transcribe")
-        self.canary_task_menu = ctk.CTkOptionMenu(engine_frame, variable=self.canary_task_var, values=CANARY_TASKS, width=90, fg_color=BG_INPUT, button_color=ACCENT, command=self._on_canary_task_changed)
-        self.canary_task_menu.grid(row=1, column=1, sticky="ew", padx=(4, 8), pady=(2, 8))
-        ctk.CTkLabel(engine_frame, text="Src:", font=("Segoe UI", 10), text_color=FG_DIM).grid(row=1, column=2, sticky="w", padx=(0, 4), pady=(2, 8))
-        self.canary_lang_var = ctk.StringVar(value="Auto-detect")
-        self.canary_lang_menu = ctk.CTkOptionMenu(engine_frame, variable=self.canary_lang_var, values=[SRT_LANG_NAMES[c] for c in CANARY_LANGS], width=100, fg_color=BG_INPUT, button_color=ACCENT, command=self._on_canary_lang_changed)
-        self.canary_lang_menu.grid(row=1, column=3, sticky="ew", padx=(4, 12), pady=(2, 8))
-        ctk.CTkLabel(engine_frame, text="Dictionary:", font=("Segoe UI", 10), text_color=FG_DIM).grid(row=2, column=0, sticky="w", padx=(12, 4), pady=(0, 8))
-        self.dict_status_label = ctk.CTkLabel(engine_frame, text="Dictionary off", font=("Segoe UI", 10), text_color=FG_DIM, anchor="w")
-        self.dict_status_label.grid(row=2, column=1, columnspan=2, sticky="ew", padx=(4, 8), pady=(0, 8))
-        self.dictionary_btn = ctk.CTkButton(engine_frame, text="Edit...", width=64, height=26, font=("Segoe UI", 10), fg_color=BTN_DIM, hover_color=BTN_DIM_HOVER, corner_radius=6, text_color=FG_SECONDARY, command=self._on_dictionary)
-        self.dictionary_btn.grid(row=2, column=3, sticky="e", padx=(4, 12), pady=(0, 8))
-        self._dictionary_cb = None
-        self._engine_callback = None
-        self._canary_task_callback = None
-        self._canary_lang_callback = None
-        settings_frame = ctk.CTkFrame(live, fg_color=BG_CARD, corner_radius=10)
-        settings_frame.grid(row=6, column=0, sticky="ew", padx=8, pady=(0, 6))
-        settings_frame.grid_columnconfigure(1, weight=1)
-        settings_frame.grid_columnconfigure(3, weight=1)
-        ctk.CTkLabel(settings_frame, text="Insert via:", font=("Segoe UI", 10), text_color=FG_DIM).grid(row=0, column=0, sticky="w", padx=(12, 4), pady=8)
-        self.method_var = ctk.StringVar(value="clipboard")
-        self.method_menu = ctk.CTkOptionMenu(settings_frame, variable=self.method_var, values=["clipboard", "unicode"], width=100, fg_color=BG_INPUT, button_color=ACCENT, command=self._on_method_changed)
-        self.method_menu.grid(row=0, column=1, sticky="ew", padx=(4, 8), pady=8)
-        ctk.CTkLabel(settings_frame, text="Suffix:", font=("Segoe UI", 10), text_color=FG_DIM).grid(row=0, column=2, sticky="w", padx=(0, 4), pady=8)
-        self.suffix_var = ctk.StringVar(value="none")
-        self.suffix_menu = ctk.CTkOptionMenu(settings_frame, variable=self.suffix_var, values=["none", "space", "newline", "period_space"], width=100, fg_color=BG_INPUT, button_color=ACCENT, command=self._on_suffix_changed)
-        self.suffix_menu.grid(row=0, column=3, sticky="ew", padx=(4, 12), pady=8)
-        self.itn_var = ctk.BooleanVar(value=True)
-        self.itn_check = ctk.CTkCheckBox(
-            settings_frame, text="Numbers \u2192 digits",
-            variable=self.itn_var, font=("Segoe UI", 10),
-            text_color=FG_SECONDARY, fg_color=ACCENT,
-            checkbox_width=18, checkbox_height=18,
-            command=self._on_itn_toggled)
-        self.itn_check.grid(row=1, column=0, columnspan=2, sticky="w",
-                            padx=(12, 4), pady=(0, 8))
-        self.itn_hint_var = ctk.BooleanVar(value=True)
-        self.itn_hint_check = ctk.CTkCheckBox(
-            settings_frame, text="Qwen digit prompt",
-            variable=self.itn_hint_var, font=("Segoe UI", 10),
-            text_color=FG_SECONDARY, fg_color=ACCENT,
-            checkbox_width=18, checkbox_height=18,
-            command=self._on_itn_hint_toggled)
-        self.itn_hint_check.grid(row=1, column=2, columnspan=2, sticky="w",
-                                 padx=(0, 12), pady=(0, 8))
-        self._itn_callback = None
-        self._itn_hint_callback = None
-        self._method_callback = None
-        self._suffix_callback = None
-        model_frame = ctk.CTkFrame(live, fg_color=BG_CARD, corner_radius=10)
-        model_frame.grid(row=1, column=0, sticky="ew", padx=8, pady=(0, 6))
-        model_frame.grid_columnconfigure(1, weight=1)
-        self.model_title_label = ctk.CTkLabel(model_frame, text="Model:",
-                                              font=("Segoe UI", 10, "bold"), text_color=FG_DIM)
-        self.model_title_label.grid(row=0, column=0, sticky="w", padx=(12, 4), pady=(8, 2))
-        self.model_var = ctk.StringVar(value="Medium Streaming (110MB, best)")
-        self.model_menu = ctk.CTkOptionMenu(model_frame, variable=self.model_var, values=list(MODEL_CHOICES.keys()), width=128, fg_color=BG_INPUT, button_color=ACCENT, command=self._on_model_changed)
-        self.model_menu.grid(row=0, column=1, sticky="ew", padx=(4, 8), pady=(8, 2))
-        self.model_manage_btn = ctk.CTkButton(
-            model_frame, text="Manage…", width=76, font=("Segoe UI", 12),
-            fg_color=BTN_DIM, hover_color=BTN_DIM_HOVER, height=32,
-            corner_radius=8, text_color=FG_SECONDARY,
-            command=self._on_model_manage)
-        self.model_manage_btn.grid(row=0, column=2, sticky="e", padx=(0, 6), pady=(8, 2))
-        self.live_unload_btn = ctk.CTkButton(
-            model_frame, text="Unload", width=58, font=("Segoe UI", 12),
-            fg_color=BTN_DIM, hover_color=BTN_DIM_HOVER, height=32,
-            corner_radius=8, text_color=FG_SECONDARY,
-            command=self._on_live_unload)
-        self.live_unload_btn.grid(row=0, column=3, sticky="e", padx=(0, 12), pady=(8, 2))
-        ctk.CTkLabel(model_frame, text="Restart not needed", font=("Segoe UI", 9), text_color=FG_DIM).grid(row=1, column=1, columnspan=3, sticky="w", padx=(4, 12), pady=(0, 6))
-        self._model_callback = None
-        self._model_manage_cb = None
-        self._unload_cb = None
-        self._model_value_map = {}
-        self.model_frame = model_frame
-        self.engine_frame = engine_frame
+            corner_radius=6, text_color=FG_SECONDARY,
+            command=self._copy_last)
+        self.copy_last_btn.pack(side="right")
+        self.output_text = ctk.CTkTextbox(
+            output_card, font=("Consolas", 13), fg_color=BG_INPUT,
+            text_color=FG_PRIMARY, corner_radius=8, height=58, wrap="word")
+        self.output_text.pack(fill="both", expand=True, padx=10,
+                              pady=(0, 10))
+        self.output_text.insert("1.0", "Waiting for voice input...")
+        self.output_text.configure(state="disabled")
+
+        history_card = ctk.CTkFrame(live, fg_color=BG_CARD, corner_radius=14)
+        self.live_history_card = history_card
+        hist_head = ctk.CTkFrame(history_card, fg_color="transparent")
+        hist_head.pack(fill="x", padx=12, pady=(8, 2))
+        ctk.CTkLabel(hist_head, text="Transcription History",
+                     font=("Segoe UI", 11, "bold"), text_color=FG_DIM
+                     ).pack(side="left")
+        self.history_count_label = ctk.CTkLabel(
+            hist_head, text="0 entries", font=("Segoe UI", 9),
+            text_color=FG_DIM)
+        self.history_count_label.pack(side="left", padx=(6, 0))
+        self.clear_btn = ctk.CTkButton(
+            hist_head, text="Clear", font=("Segoe UI", 10), width=50,
+            height=22, fg_color=BTN_DIM, hover_color=BTN_DIM_HOVER,
+            corner_radius=6, text_color=FG_SECONDARY,
+            command=self._clear_history)
+        self.clear_btn.pack(side="right")
+        self.history_copy_all_btn = ctk.CTkButton(
+            hist_head, text="Copy All", width=62, height=22,
+            font=("Segoe UI", 10), fg_color=BTN_DIM,
+            hover_color=BTN_DIM_HOVER, corner_radius=6,
+            text_color=FG_SECONDARY, command=self._copy_history_all)
+        self.history_copy_all_btn.pack(side="right", padx=(0, 4))
+        self.history = HistoryPanel(history_card, height=160)
+        self.history.pack(fill="both", expand=True, padx=8, pady=(2, 8))
+
+        self._live_frame = live
+        self._live_layout_mode = None
+        self._live_fit_after = None
+        # NOTE: CTkFrame.bind() forwards to its internal canvas, so the
+        # window-level <Configure> handler (below) drives the responsive
+        # relayout instead of a binding on this frame.
+        self._apply_live_layout("narrow", force=True)
+
+        self.model_frame = config_card
+        self.engine_frame = config_card
         footer = ctk.CTkFrame(self, fg_color="transparent")
         footer.grid(row=3, column=0, sticky="ew", padx=20, pady=(0, 12))
         self._footer_label = ctk.CTkLabel(
-            footer, text="Moonshine v2 + Canary-1B + Whisper + Qwen3-ASR + Granite + Granite 2B \u2022 On-device \u2022 No API keys",
+            footer, text="On-device \u2022 No API keys",
             font=("Segoe UI", 10), text_color=FG_DIM)
         self._footer_label.pack(side="left")
         self.windowless_var = ctk.BooleanVar(value=False)
@@ -448,7 +540,7 @@ class MoonshineGUI(LiveTabMixin, NoteTabMixin, ImportTabMixin, SrtTabMixin, Dial
             pass
     def set_footer_version(self, version: str):
         try:
-            base = "Moonshine v2 + Canary-1B + Whisper + Qwen3-ASR + Granite + Granite 2B \u2022 On-device \u2022 No API keys"
+            base = "On-device \u2022 No API keys"
             v = str(version or "").strip()
             self._footer_label.configure(
                 text=f"{base} \u2022 v{v}" if v else base)
@@ -497,6 +589,11 @@ class MoonshineGUI(LiveTabMixin, NoteTabMixin, ImportTabMixin, SrtTabMixin, Dial
             self.after(0, self._run_fit)
         except Exception:
             pass
+        if name == "Live":
+            try:
+                self.after(10, self._apply_live_layout)
+            except Exception:
+                pass
     def set_tab_callback(self, cb: Callable):
         self._tab_callback = cb if callable(cb) else None
     def set_active_tab(self, name: str):
@@ -588,6 +685,10 @@ class MoonshineGUI(LiveTabMixin, NoteTabMixin, ImportTabMixin, SrtTabMixin, Dial
             self._fit_after = self.after(120, self._run_fit)
         except Exception:
             self._fit_after = None
+        try:
+            self._on_live_configure()
+        except Exception:
+            pass
 
     def _run_fit(self):
         self._fit_after = None
