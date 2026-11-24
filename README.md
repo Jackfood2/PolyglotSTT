@@ -457,6 +457,39 @@ requirements*.txt  dependency pins (base / Canary / Whisper / Qwen / Granite 2B)
 
 ## Changelog
 
+### v1.6.3
+
+GPU selection fix for Whisper. On a card without fp16 support the app used to
+run Whisper on the CPU no matter what *Compute* was set to; it now picks the
+fastest CUDA compute type the card actually supports.
+
+- **Pascal and other no-fp16 GPUs now run on the GPU.** `gpu.ct2_cuda()`
+  treated "no `float16` in the CUDA compute types" as "no CUDA at all", so a
+  GTX 10-series card (compute capability 6.1, which only offers `int8`,
+  `int8_float32` and `float32`) fell back to `cpu int8`. CUDA is now accepted
+  when any usable compute type is present, and `recommend_whisper()` picks the
+  fastest that fits the free VRAM: `float16` → `int8_float16` →
+  `int8_float32` → `int8` → `float32`.
+- **An explicit GPU choice is no longer overridden.** `_resolve_device()`
+  returned the CPU verdict immediately, so the fallback list below it was
+  unreachable. A `cpu` recommendation now only wins when the request was
+  `auto`; an explicit *GPU* request tries CUDA with the best supported type
+  and still rebuilds on the CPU if construction fails.
+- **The last-resort CUDA probe keeps the VRAM budget.** It now only runs when
+  `gpu.py` cannot be imported, so an `auto` request can no longer skip the
+  free-VRAM check and attempt a load that cannot fit.
+- **Visible effect:** the SRT log line reads `device=cuda int8_float32` instead
+  of `device=cpu int8`. Measured on a GTX 1050 Ti, 120 s of audio took 12.2 s
+  on the GPU versus 25.0 s on the CPU (~2×), with ~1.5 GB VRAM in use.
+
+  Whisper's CUDA path needs the CUDA 12 runtime DLLs (`cublas64_12.dll`,
+  `cublasLt64_12.dll`, `cudart64_12.dll` and the cuDNN 9 libraries). A CUDA 13
+  toolkit does not satisfy them — CUDA 13 has no Pascal kernels — so install
+  them with
+  `pip install nvidia-cublas-cu12 nvidia-cudnn-cu12==9.* nvidia-cuda-runtime-cu12`
+  and copy the DLLs from `site-packages/nvidia/*/bin/` into
+  `site-packages/ctranslate2/`.
+
 ### v1.6.2
 
 Live-tab layout rebuild. The engine list and transcription behaviour are

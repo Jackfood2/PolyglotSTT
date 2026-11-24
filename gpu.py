@@ -79,6 +79,22 @@ def torch_cuda():
                 "total_mb": int(props.total_memory // (1024 * 1024))}
     except Exception as e:
         return {"ok": False, "reason": str(e)[:120]}
+# CUDA compute types ctranslate2 can offer, in preference order: fastest/most
+# accurate first, cheapest last. float16 is NOT required: Pascal (compute
+# capability 6.1, e.g. GP107/GTX 1050 Ti) has no fp16 at all and only exposes
+# int8 / int8_float32 / float32. Those are still a large win over CPU, so the
+# absence of fp16 must never be read as "no CUDA".
+_CUDA_COMPUTE_ORDER = (
+    "float16",
+    "int8_float16",
+    "int8_bfloat16",
+    "int8_float32",
+    "int8",
+    "float32",
+    "bfloat16",
+)
+
+
 def ct2_cuda():
     try:
         import ctranslate2
@@ -86,9 +102,12 @@ def ct2_cuda():
         return {"ok": False, "reason": f"no ctranslate2: {e}"[:120]}
     try:
         types = list(ctranslate2.get_supported_compute_types("cuda") or [])
-        if "float16" in types:
-            return {"ok": True, "types": types}
-        return {"ok": False, "reason": f"no fp16 CUDA types: {types}"[:120]}
+        usable = [t for t in _CUDA_COMPUTE_ORDER if t in types]
+        if usable:
+            return {"ok": True, "types": types, "usable": usable,
+                    "fp16": "float16" in types}
+        return {"ok": False,
+                "reason": f"no usable CUDA compute types: {types}"[:120]}
     except Exception as e:
         return {"ok": False, "reason": str(e)[:160]}
 _WHISPER_FP16_MB = {"tiny": 1200, "base": 1200, "small": 1500,
@@ -114,24 +133,60 @@ _WHISPER_RESIDENT_MB = {
 def whisper_resident_mb(model_id: str) -> int:
     """Estimated RAM a model holds while resident (int8 on CPU)."""
     return int(_WHISPER_RESIDENT_MB.get((model_id or "").strip(), 3400))
-def recommend_whisper(model_id: str):
+def whisper_cuda_vram_mb(model_id: str, compute: str) -> int:
+    """Approximate VRAM a Whisper model needs on CUDA for a compute type."""
     mid = (model_id or "large-v3").strip() or "large-v3"
-    need_fp16 = _WHISPER_FP16_MB.get(mid, 5200)
     need_int8 = _WHISPER_INT8_MB.get(mid, 2800)
-    gpu = best_gpu()
-    if gpu is None:
-        return "cpu", "int8", "no NVIDIA dGPU detected"
+    need_fp16 = _WHISPER_FP16_MB.get(mid, 5200)
+    compute = str(compute or "").strip().lower()
+    if compute in ("float16", "bfloat16"):
+        return need_fp16
+    if compute in ("int8_float16", "int8_bfloat16"):
+        return int(round(need_int8 * 1.15))
+    if compute == "int8_float32":
+        return int(round(need_int8 * 1.25))
+    if compute == "float32":
+        return need_fp16 * 2
+    return need_int8
+
+
+def best_cuda_compute(model_id: str, ignore_vram: bool = False):
+    """Fastest CUDA compute type ctranslate2 can actually run here.
+
+    Returns (compute, reason). `compute` is None when CUDA is unusable.
+    With ignore_vram=True the VRAM table is skipped (an explicit GPU request
+    outranks the heuristic; the caller falls back to CPU on load failure).
+    """
     cuda = ct2_cuda()
     if not cuda.get("ok"):
-        return "cpu", "int8", f"ctranslate2 has no CUDA ({cuda.get('reason', '?')})"
-    free = int(gpu.get("free_mb") or 0)
-    if free >= need_fp16:
-        return "cuda", "float16", f"{gpu['name']} ({free}MB free)"
-    if free >= need_int8 and "int8_float16" in (cuda.get("types") or []):
-        return "cuda", "int8_float16", f"{gpu['name']} ({free}MB free, int8)"
-    return ("cpu", "int8",
-            f"only {free}MB VRAM free on {gpu.get('name', 'GPU')} "
-            f"(need ~{need_int8}MB)")
+        return None, f"ctranslate2 has no CUDA ({cuda.get('reason', '?')})"
+    usable = list(cuda.get("usable") or [])
+    if not usable:
+        return None, "ctranslate2 has no usable CUDA compute type"
+    gpu = best_gpu()
+    free = int((gpu or {}).get("free_mb") or 0)
+    short = []
+    for compute in usable:
+        if ignore_vram or gpu is None:
+            name = gpu["name"] if gpu else "CUDA GPU"
+            return compute, f"{name} ({compute})"
+        need = whisper_cuda_vram_mb(model_id, compute)
+        if free < need:
+            short.append(f"{compute} needs ~{need}MB")
+            continue
+        return compute, f"{gpu['name']} ({free}MB free, {compute})"
+    return None, (f"only {free}MB VRAM free on "
+                  f"{(gpu or {}).get('name', 'GPU')} "
+                  f"({'; '.join(short)})")
+
+
+def recommend_whisper(model_id: str):
+    if best_gpu() is None:
+        return "cpu", "int8", "no NVIDIA dGPU detected"
+    compute, reason = best_cuda_compute(model_id)
+    if compute:
+        return "cuda", compute, reason
+    return "cpu", "int8", reason
 def recommend_canary():
     gpu = best_gpu()
     if gpu is None:

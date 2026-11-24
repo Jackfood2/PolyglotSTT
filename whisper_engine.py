@@ -685,26 +685,48 @@ class WhisperEngine:
         if device == "cpu":
             return "cpu", "int8", "CPU requested"
 
+        explicit_cuda = device == "cuda"
+
         try:
             import gpu
         except ImportError:
             gpu = None
 
+        reason = "CUDA unavailable"
+
         if gpu is not None:
             try:
-                recommended, compute, reason = gpu.recommend_whisper(
+                recommended, compute, why = gpu.recommend_whisper(
                     model_id
                 )
 
-                if recommended in {"cpu", "cuda"} and compute:
-                    return recommended, compute, str(reason)
+                if recommended == "cuda" and compute:
+                    return "cuda", compute, str(why)
+
+                reason = str(why or reason)
+
+                # An explicit GPU request outranks the VRAM heuristic: the
+                # loader below already rebuilds on CPU if CUDA construction
+                # fails, so never silently override the user's choice here.
+                if explicit_cuda:
+                    picker = getattr(gpu, "best_cuda_compute", None)
+                    if picker is not None:
+                        tried, why = picker(model_id, ignore_vram=True)
+                        if tried:
+                            return ("cuda", tried,
+                                    f"GPU requested; {why}")
+                        reason = str(why or reason)
             except Exception:
                 _LOG.debug("GPU recommendation failed", exc_info=True)
 
         try:
             import ctranslate2
 
-            if ctranslate2.get_cuda_device_count() > 0:
+            # Only used when gpu.py itself is unavailable: with the module
+            # present, gpu.best_cuda_compute() already covers the ctranslate2
+            # probe AND the VRAM budget, so a raw probe here would quietly
+            # bypass the budget on an "auto" request.
+            if gpu is None and ctranslate2.get_cuda_device_count() > 0:
                 supported = ctranslate2.get_supported_compute_types(
                     "cuda"
                 )
@@ -712,15 +734,17 @@ class WhisperEngine:
                 for compute in (
                     "float16",
                     "int8_float16",
-                    "float32",
+                    "int8_bfloat16",
+                    "int8_float32",
                     "int8",
+                    "float32",
                 ):
                     if compute in supported:
                         return "cuda", compute, "CUDA available"
         except Exception:
             _LOG.debug("CUDA detection failed", exc_info=True)
 
-        return "cpu", "int8", "CUDA unavailable"
+        return "cpu", "int8", reason
 
     def _ensure_dirs(self) -> None:
         WHISPER_MODELS_ROOT.mkdir(parents=True, exist_ok=True)
